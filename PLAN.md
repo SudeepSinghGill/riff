@@ -766,6 +766,28 @@ Port C++ modules and React component to Android (new architecture).
 
 ---
 
+### F5.2 — Web port (React Native Web)
+
+Port to React Native Web using the same TS component layer.
+
+**Deliverable:**
+- `web/` adapter: replace C++ JSI calls with JS-only fallbacks
+  - Layout engines re-implemented in JS (no JSI on web)
+  - ScrollView → DOM scroll container
+  - Fabric components (RNMeasuredCell, RNScrollCoordinatedView) → DOM equivalents or no-ops
+- All built-in layouts (list, grid, masonry, flow) work on web via JS engines
+- Custom TS layouts work unchanged
+- C++ features degrade gracefully: no window controller on UI thread (JS fallback), no Activity suspension (visibility observer)
+
+**Acceptance:**
+- Grid, masonry, flow, list render correctly in browser
+- Scroll virtualization works (IntersectionObserver or scroll event)
+- No native module calls crash on web
+
+**Deps:** F5.1. **Platform: React Native Web.**
+
+---
+
 ## Phase R1 — Research
 
 ### R0 — Memory Optimization (Future Research)
@@ -884,6 +906,20 @@ Auto-transpile `CustomLayoutPlugin.compute()` from TypeScript to C++ at build ti
 
 ---
 
+### R1.5 — JSI object lifecycle on RN reload (dev mode)
+
+On JS-only reload (Cmd+R), cached `std::optional<jsi::Object>` fields in CollectionViewModule
+hold dangling pointers to the destroyed runtime, causing a crash.
+
+**Fix direction:** Override `invalidate()` in CollectionViewModule — reset all cached JSI objects.
+Alternatively, skip caching and recreate JSI objects on each `get()` call (safe, minor overhead).
+
+**Priority:** Dev-only. Does not affect production. Fix before open-sourcing.
+
+**Deps:** M0.3
+
+---
+
 ## Phase DOC — Documentation
 
 ### DOC.1 — Solution document (HLD, LLD, optimizations)
@@ -928,17 +964,19 @@ METRICS:      P5.1 (collection) → P5.2 (HUD) → P5.3 (traces)
                                                                     ↓
 FEATURES:     F1.1 (diff engine) ✅ → F1.2 (snapshot API) ✅ → F1.3 (prefetch) ✅
               F2.1 (supplementary) ✅ → F2.2 (sticky) ✅ → F2.3 (sticky push) ✅ → F2.4 (decorations) ✅
-              F3.1 (grid) → F3.2 (masonry) → F3.3 (compositional) → F3.4 (orthogonal)
-              F4.1–F4.4 (persistence)
-              F5.1 (Android)
+              F3.1 (grid C++) ✅ → F3.2 (masonry C++) ✅ → F3.5 (flow C++) ✅
+              F3.3 (compositional) → F3.4 (orthogonal)
+              F4.1–F4.4 (state persistence + scroll restore)
+              F5.1 (Android) → F5.2 (Web / React Native Web)
                                                                     ↓
 MEMORY:       P4.1 (budget refinement) ✅ — os_proc_available_memory + UIApplicationDidReceiveMemoryWarning
                                                                     ↓
-COMPARISON:   P6.1 (full demo: state/animation/form/media/layout/sticky/snapshot/perf)
-              → P6.2 (device benchmarks on release build)
-              [all features complete — the money shot]
+COMPARISON:   P6.1 ✅ (all 7 tabs: prefetch/sticky/deco/layouts/perf/resize/state)
+              → P6.2 (device benchmarks on release build — only remaining for POC)
                                                                     ↓
-RESEARCH:     R1.1 (UICollectionView host) → R1.2 (virtual ShadowNode)
+RESEARCH:     R1.5 (JSI reload fix) → R1.1 (UICollectionView host) → R1.2 (virtual ShadowNode)
+              R1.3 (layout protocol) ✅ → R1.4 (TS→C++ codegen)
+              R0.1–R0.5 (memory optimizations)
                                                                     ↓
 DOCS:         DOC.1 (solution document)
 ```

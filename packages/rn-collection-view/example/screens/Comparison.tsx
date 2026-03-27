@@ -23,10 +23,11 @@ import LayoutsTab     from './comparison/LayoutsTab';
 import PerfTab        from './comparison/PerfTab';
 import ResizeTab      from './comparison/ResizeTab';
 import StateTab       from './comparison/StateTab';
+import SnapshotTab    from './comparison/SnapshotTab';
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type TabId = 'prefetch' | 'sticky' | 'deco' | 'layouts' | 'perf' | 'resize' | 'state';
+type TabId = 'prefetch' | 'sticky' | 'deco' | 'layouts' | 'perf' | 'resize' | 'state' | 'snapshot';
 
 const TABS: { id: TabId; label: string; cvOnly?: boolean }[] = [
   { id: 'prefetch', label: 'Prefetch' },
@@ -36,6 +37,7 @@ const TABS: { id: TabId; label: string; cvOnly?: boolean }[] = [
   { id: 'perf',     label: 'Perf' },
   { id: 'resize',   label: 'Resize' },
   { id: 'state',    label: 'State' },
+  { id: 'snapshot', label: 'Snapshot', cvOnly: true },
 ];
 
 type Engine = 'cv' | 'flash';
@@ -95,7 +97,11 @@ export default function Comparison() {
       )}
       {isCvOnly && (
         <View style={S.engineBar}>
-          <Text style={S.cvOnlyLabel}>CollectionView only — impossible in FlashList</Text>
+          <Text style={S.cvOnlyLabel}>
+            {activeTab === 'snapshot'
+              ? 'CollectionView only — FlashList has no snapshot API'
+              : 'CollectionView only — impossible in FlashList'}
+          </Text>
         </View>
       )}
 
@@ -108,6 +114,7 @@ export default function Comparison() {
         {activeTab === 'perf'     && <PerfTab        mode={engine} />}
         {activeTab === 'resize'   && <ResizeTab      mode={engine} />}
         {activeTab === 'state'    && <StateTab       mode={engine} />}
+        {activeTab === 'snapshot' && <SnapshotTab />}
       </View>
     </SafeAreaView>
   );
