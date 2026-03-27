@@ -21,7 +21,6 @@ import {
 } from 'react-native';
 
 // ── Demos ─────────────────────────────────────────────────────────────────────
-import CollectionViewDemo from './screens/CollectionViewDemo';
 import Comparison         from './screens/Comparison';
 
 // ── Phase 1 — Layout Engine ───────────────────────────────────────────────────
@@ -47,6 +46,9 @@ import M3_5_CellBudget        from './tests/M3_5_CellBudget';
 // ── Performance — C++ Window Controller ──────────────────────────────────────
 import P1_1_CppWindowController from './tests/P1_1_CppWindowController';
 
+// ── Performance — Memory Management ──────────────────────────────────────────
+import P4_1_MemoryBudget from './tests/P4_1_MemoryBudget';
+
 // ── Performance — Metrics + HUD ───────────────────────────────────────────────
 import P5_1_Metrics from './tests/P5_1_Metrics';
 
@@ -54,6 +56,9 @@ import P5_1_Metrics from './tests/P5_1_Metrics';
 import F1_1_DiffEngine        from './tests/F1_1_DiffEngine';
 import F1_2_SnapshotAPI       from './tests/F1_2_SnapshotAPI';
 import F1_3_PrefetchCallbacks from './tests/F1_3_PrefetchCallbacks';
+
+// ── R1.3: Layout Protocol ────────────────────────────────────────────────────
+import R1_3_LayoutProtocol     from './tests/R1_3_LayoutProtocol';
 
 // ── Phase F2 — Supplementary Views & Sticky Headers ──────────────────────────
 import F2_1_SupplementaryViews from './tests/F2_1_SupplementaryViews';
@@ -74,14 +79,6 @@ type ScreenEntry = {
 
 const SCREENS: ScreenEntry[] = [
   // ── Demos (interactive, always at top) ───────────────────────────────────
-  {
-    key:       'demo_cv',
-    label:     'CollectionView Demo',
-    detail:    '200 items · fixed height · C++ layout cache · non-virtualized',
-    group:     'Demos',
-    isDemo:    true,
-    component:  CollectionViewDemo,
-  },
   {
     key:       'demo_comparison',
     label:     'FlashList Comparison',
@@ -183,6 +180,15 @@ const SCREENS: ScreenEntry[] = [
     component:  M3_5_CellBudget,
   },
 
+  // ── Performance: Memory Management ───────────────────────────────────────
+  {
+    key:       'P4_1',
+    label:     'P4.1 — Memory Budget',
+    detail:    'os_proc_available_memory · pressure levels · automatic budget reduction · simulate',
+    group:     'Performance — C++ Core',
+    component:  P4_1_MemoryBudget,
+  },
+
   // ── Performance: C++ Window Controller ───────────────────────────────────
   {
     key:       'P1_1',
@@ -220,6 +226,15 @@ const SCREENS: ScreenEntry[] = [
     detail:    'onPrefetch · onEvict · 12× viewport ahead · cancel in-flight loads',
     group:     'Phase F1 — Data Layer',
     component:  F1_3_PrefetchCallbacks,
+  },
+
+  // ── R1.3: Layout Protocol ─────────────────────────────────────────────────
+  {
+    key:       'R1_3',
+    label:     'R1.3 — Layout Protocol',
+    detail:    'Grid & Flow C++ engines · JSI bindings · correctness · perf',
+    group:     'R1 — Layout Protocol',
+    component:  R1_3_LayoutProtocol,
   },
 
   // ── Phase F2: Supplementary Views & Sticky Headers ───────────────────────

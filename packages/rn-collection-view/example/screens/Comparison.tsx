@@ -1,148 +1,58 @@
 /**
- * Comparison screen — CollectionView vs FlashList vs FlatList.
+ * P6.1 — FlashList Comparison Demo
  *
- * All three implementations render the same complex ComparisonCell.
- * The cell has local like state (useState) that is NOT derived from props.
+ * 7 tabs, each isolating one differentiator:
+ *   1. Prefetch — sub-tabs: simulated delay + real images (picsum 600×600)
+ *   2. Sticky — push behavior + ms ticker + shimmer continuity
+ *   3. Decorations — animated section backgrounds
+ *   4. Layouts — all built-in layouts + FlashList parity callouts
+ *   5. Perf — 4 scenarios × FPS/blank/mount metrics
+ *   6. Resize — dynamic container resize reflow (3→2→1 cols vs fixed)
+ *   7. State — like button state bleed
  *
- * What to observe:
- *   · FlashList: scrolling fast causes the like state from one cell to bleed
- *     into a different item (recycling artifact). Mount count stays low.
- *   · FlatList: no recycling, but renders ALL items (no windowing). Mount count
- *     equals item count. Memory pressure grows with list size.
- *   · CollectionView: virtualized, no recycling. Mount count matches
- *     rendered window size × scroll distance. Like state is always correct.
- *     C++ layout engine + C++ window controller on every scroll tick.
- *
- * Metrics overlay (top-right):
- *   FPS — live frame rate via RAF
- *   Rendered — current render window size (CollectionView only)
- *   Mounts — cumulative cell mount count since screen opened
+ * Tabs 1–3, 5–7 toggle between CV and FlashList.
+ * Tab 4 is CV-only (FlashList can't do these layouts).
  */
 import React, { useCallback, useState } from 'react';
-import {
-  FlatList,
-  Pressable,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { FlashList } from '@shopify/flash-list';
+import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
-import { CollectionView } from '../components/CollectionView';
-import {
-  ComparisonCell,
-  getMountCount,
-  makeComparisonData,
-  resetMountCount,
-} from '../components/ComparisonCell';
-import { useFPS } from '../utils/useMetrics';
+import PrefetchTab    from './comparison/PrefetchTab';
+import StickyTab      from './comparison/StickyTab';
+import DecorationsTab from './comparison/DecorationsTab';
+import LayoutsTab     from './comparison/LayoutsTab';
+import PerfTab        from './comparison/PerfTab';
+import ResizeTab      from './comparison/ResizeTab';
+import StateTab       from './comparison/StateTab';
 
-// ─── Dataset ──────────────────────────────────────────────────────────────────
+// ── Tab definitions ───────────────────────────────────────────────────────────
 
-const ITEM_COUNT = 500;
-const ITEM_H     = 88; // enough for avatar + 2 lines + actions
-const DATA       = makeComparisonData(ITEM_COUNT);
+type TabId = 'prefetch' | 'sticky' | 'deco' | 'layouts' | 'perf' | 'resize' | 'state';
 
-// ─── Tab type ─────────────────────────────────────────────────────────────────
-
-type Tab = 'cv' | 'flash' | 'flat';
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'cv',    label: 'CV' },
-  { id: 'flash', label: 'Flash'  },
-  { id: 'flat',  label: 'Flat'   },
+const TABS: { id: TabId; label: string; cvOnly?: boolean }[] = [
+  { id: 'prefetch', label: 'Prefetch' },
+  { id: 'sticky',   label: 'Sticky' },
+  { id: 'deco',     label: 'Decor' },
+  { id: 'layouts',  label: 'Layouts', cvOnly: true },
+  { id: 'perf',     label: 'Perf' },
+  { id: 'resize',   label: 'Resize' },
+  { id: 'state',    label: 'State' },
 ];
 
-// ─── Metrics overlay ──────────────────────────────────────────────────────────
+type Engine = 'cv' | 'flash';
 
-function MetricsOverlay({
-  renderCount,
-  totalCount,
-  tab,
-}: {
-  renderCount: number | null;
-  totalCount:  number;
-  tab:         Tab;
-}) {
-  const fps    = useFPS();
-  const mounts = getMountCount();
-
-  return (
-    <View style={M.overlay} pointerEvents="none">
-      <Text style={M.line}>FPS: <Text style={M.val}>{fps}</Text></Text>
-      {tab === 'cv' && renderCount !== null && (
-        <Text style={M.line}>
-          Rendered: <Text style={M.val}>{renderCount}/{totalCount}</Text>
-        </Text>
-      )}
-      <Text style={M.line}>Mounts: <Text style={M.val}>{mounts}</Text></Text>
-    </View>
-  );
-}
-
-const M = StyleSheet.create({
-  overlay: { position: 'absolute', top: 8, right: 8, backgroundColor: '#000a',
-             borderRadius: 8, padding: 8, minWidth: 130, zIndex: 100 },
-  line:    { fontSize: 11, color: '#94a3b8', fontFamily: 'Menlo' },
-  val:     { color: '#4ade80' },
-});
-
-// ─── List implementations ─────────────────────────────────────────────────────
-
-function CVList({ onRenderCountChange }: { onRenderCountChange: (n: number, t: number) => void }) {
-  return (
-    <CollectionView
-      data={DATA}
-      keyExtractor={item => String(item.id)}
-      renderItem={({ item }) => <ComparisonCell item={item} />}
-      itemHeight={ITEM_H}
-      itemSpacing={1}
-      renderMultiplier={1.0}
-      onRenderCountChange={onRenderCountChange}
-    />
-  );
-}
-
-function FlashListImpl() {
-  return (
-    <FlashList
-      data={DATA}
-      keyExtractor={item => String(item.id)}
-      renderItem={({ item }) => <ComparisonCell item={item} />}
-      estimatedItemSize={ITEM_H}
-    />
-  );
-}
-
-function FlatListImpl() {
-  return (
-    <FlatList
-      data={DATA}
-      keyExtractor={item => String(item.id)}
-      renderItem={({ item }) => <ComparisonCell item={item} />}
-      getItemLayout={(_, index) => ({
-        length: ITEM_H, offset: ITEM_H * index, index,
-      })}
-      removeClippedSubviews
-    />
-  );
-}
-
-// ─── Screen ───────────────────────────────────────────────────────────────────
+// ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function Comparison() {
-  const [activeTab,    setActiveTab]    = useState<Tab>('cv');
-  const [renderCount,  setRenderCount]  = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('prefetch');
+  const [engine, setEngine]       = useState<Engine>('cv');
 
-  const handleTabPress = useCallback((tab: Tab) => {
-    resetMountCount();
-    setRenderCount(null);
-    setActiveTab(tab);
-  }, []);
+  const tab = TABS.find(t => t.id === activeTab)!;
+  const isCvOnly = tab.cvOnly;
 
-  const handleRenderCountChange = useCallback((n: number, t: number) => {
-    setRenderCount(n);
+  const handleTabPress = useCallback((id: TabId) => {
+    setActiveTab(id);
+    const t = TABS.find(t => t.id === id)!;
+    if (t.cvOnly) setEngine('cv');
   }, []);
 
   return (
@@ -162,53 +72,69 @@ export default function Comparison() {
         ))}
       </View>
 
-      {/* Subtitle */}
-      <View style={S.subtitle}>
-        <Text style={S.subtitleText}>
-          {ITEM_COUNT} items · {ITEM_H}px · local like state · mount counter
-        </Text>
-        <Text style={S.subtitleHint}>
-          {activeTab === 'flash'
-            ? 'Scroll fast → watch like state bleed (recycling artifact)'
-            : activeTab === 'flat'
-            ? 'All items mounted at once — watch mount count'
-            : 'No recycling — like state always correct · C++ layout + window controller'}
-        </Text>
-      </View>
+      {/* Engine toggle */}
+      {!isCvOnly && (
+        <View style={S.engineBar}>
+          <Pressable
+            style={[S.engineBtn, engine === 'cv' && S.engineBtnActive]}
+            onPress={() => setEngine('cv')}
+          >
+            <Text style={[S.engineText, engine === 'cv' && S.engineTextActive]}>
+              CollectionView
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[S.engineBtn, engine === 'flash' && S.engineBtnFlash]}
+            onPress={() => setEngine('flash')}
+          >
+            <Text style={[S.engineText, engine === 'flash' && S.engineTextFlash]}>
+              FlashList
+            </Text>
+          </Pressable>
+        </View>
+      )}
+      {isCvOnly && (
+        <View style={S.engineBar}>
+          <Text style={S.cvOnlyLabel}>CollectionView only — impossible in FlashList</Text>
+        </View>
+      )}
 
-      {/* List area */}
-      <View style={S.listArea}>
-        <MetricsOverlay
-          renderCount={renderCount}
-          totalCount={ITEM_COUNT}
-          tab={activeTab}
-        />
-
-        {activeTab === 'cv'    && <CVList        onRenderCountChange={handleRenderCountChange} />}
-        {activeTab === 'flash' && <FlashListImpl />}
-        {activeTab === 'flat'  && <FlatListImpl  />}
+      {/* Tab content */}
+      <View style={S.content}>
+        {activeTab === 'prefetch' && <PrefetchTab    mode={engine} />}
+        {activeTab === 'sticky'   && <StickyTab      mode={engine} />}
+        {activeTab === 'deco'     && <DecorationsTab mode={engine} />}
+        {activeTab === 'layouts'  && <LayoutsTab />}
+        {activeTab === 'perf'     && <PerfTab        mode={engine} />}
+        {activeTab === 'resize'   && <ResizeTab      mode={engine} />}
+        {activeTab === 'state'    && <StateTab       mode={engine} />}
       </View>
     </SafeAreaView>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const S = StyleSheet.create({
-  root:         { flex: 1, backgroundColor: '#0a0a0a' },
+  root:           { flex: 1, backgroundColor: '#0a0a0a' },
 
-  tabBar:       { flexDirection: 'row', paddingHorizontal: 12,
-                  paddingTop: 8, paddingBottom: 4, gap: 8 },
-  tab:          { flex: 1, paddingVertical: 7, borderRadius: 8,
-                  backgroundColor: '#1a1a1a', alignItems: 'center' },
-  tabActive:    { backgroundColor: '#1e3a1e' },
-  tabText:      { fontSize: 12, fontWeight: '600', color: '#555' },
-  tabTextActive:{ color: '#4ade80' },
+  tabBar:         { flexDirection: 'row', paddingHorizontal: 6, paddingTop: 6,
+                    paddingBottom: 2, gap: 4 },
+  tab:            { flex: 1, paddingVertical: 6, borderRadius: 6,
+                    backgroundColor: '#1a1a1a', alignItems: 'center' },
+  tabActive:      { backgroundColor: '#1e3a1e' },
+  tabText:        { fontSize: 10, fontWeight: '600', color: '#555' },
+  tabTextActive:  { color: '#4ade80' },
 
-  subtitle:     { paddingHorizontal: 16, paddingVertical: 6,
-                  borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
-  subtitleText: { fontSize: 11, color: '#555' },
-  subtitleHint: { fontSize: 11, color: '#4a5568', marginTop: 2 },
+  engineBar:      { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, gap: 8 },
+  engineBtn:      { flex: 1, paddingVertical: 5, borderRadius: 6,
+                    backgroundColor: '#1a1a1a', alignItems: 'center' },
+  engineBtnActive:{ backgroundColor: '#1e3a1e' },
+  engineBtnFlash: { backgroundColor: '#3a1e1e' },
+  engineText:     { fontSize: 11, fontWeight: '600', color: '#555' },
+  engineTextActive:{ color: '#4ade80' },
+  engineTextFlash:{ color: '#f87171' },
+  cvOnlyLabel:    { fontSize: 11, color: '#4a5568', fontStyle: 'italic' },
 
-  listArea:     { flex: 1 },
+  content:        { flex: 1 },
 });

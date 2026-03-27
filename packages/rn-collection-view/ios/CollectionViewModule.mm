@@ -1,6 +1,7 @@
 #import "CollectionViewModule.h"
 #import "RNCVScrollObserver.h"
 #import <os/signpost.h>
+#import <os/proc.h>
 
 // New Arch / TurboModule includes
 #import <React/RCTUtils.h>
@@ -63,6 +64,19 @@ RCT_EXPORT_MODULE(RNCollectionViewModule)
       });
     }
   );
+
+  // P4.1 — memory: synchronous available-bytes query via os_proc_available_memory().
+  mod->setGetAvailableMemoryCallback(^int64_t {
+    return (int64_t)os_proc_available_memory();
+  });
+
+  // Register for system memory warnings — fires triggerMemoryPressure(2) on the
+  // C++ module, which then invokes the JS callback via jsInvoker.
+  [[NSNotificationCenter defaultCenter]
+      addObserver:self
+         selector:@selector(handleMemoryWarning)
+             name:UIApplicationDidReceiveMemoryWarningNotification
+           object:nil];
 
   // P5.3 — signpost callbacks. Called on JS thread; os_signpost is thread-safe.
   // Names must be compile-time string literals — os_signpost requirement.
@@ -168,8 +182,20 @@ RCT_EXPORT_MODULE(RNCollectionViewModule)
   _lastTimestamp = now;
 }
 
+// ── P4.1: memory warning handler ─────────────────────────────────────────────
+
+- (void)handleMemoryWarning
+{
+  if (_cppModule) {
+    _cppModule->triggerMemoryPressure(2);
+  }
+}
+
 - (void)dealloc
 {
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+      name:UIApplicationDidReceiveMemoryWarningNotification
+    object:nil];
   [self stopDisplayLink];
 }
 

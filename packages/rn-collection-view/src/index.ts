@@ -17,5 +17,28 @@ export { LayoutCache, layoutCache } from './LayoutCache';
 // (avoids dual-React-instance crash from the package's own node_modules/react).
 // Will re-export from here once the monorepo uses workspace-hoisted React.
 
-// Custom layout plugin interface
+// Custom layout plugin interface (legacy — use protocol types for new code)
 export type { CustomLayoutPlugin, LayoutPluginContext } from './types/plugin';
+
+// Layout protocol — unified interface for all layout engines
+export type {
+  CollectionViewLayout,
+  LayoutContext,
+  SectionInfo,
+  SupplementaryInfo,
+  SupplementaryAlignment,
+  PinBehavior,
+  StickyMode,
+  InvalidationScope,
+  ListLayoutDelegate,
+  MasonryLayoutDelegate,
+  GridLayoutDelegate,
+  FlowLayoutDelegate,
+  CustomLayoutDelegate,
+  SupplementaryItem,
+  SectionConfig,
+  CollectionViewProps,
+} from './types/protocol';
+
+// Layout factories
+export { list, masonry, grid, flow, customLayout } from './layouts';

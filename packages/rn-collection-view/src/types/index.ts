@@ -6,3 +6,4 @@ export * from './geometry';
 export * from './layout';
 export * from './window';
 export * from './plugin';
+export * from './protocol';

@@ -8,7 +8,10 @@ CollectionViewModule::CollectionViewModule(
     std::shared_ptr<CallInvoker> jsInvoker)
     : TurboModule(kModuleName, jsInvoker)
     , _layoutCache(std::make_shared<rncv::LayoutCache>())
-    , _listLayout(std::make_shared<rncv::ListLayout>(_layoutCache)) {}
+    , _listLayout(std::make_shared<rncv::ListLayout>(_layoutCache))
+    , _masonryLayout(std::make_shared<rncv::MasonryLayout>(_layoutCache))
+    , _gridLayout(std::make_shared<rncv::GridLayout>(_layoutCache))
+    , _flowLayout(std::make_shared<rncv::FlowLayout>(_layoutCache)) {}
 
 std::string CollectionViewModule::ping() {
   return "pong";
@@ -302,6 +305,10 @@ Value CollectionViewModule::get(Runtime& rt, const PropNameID& name) {
   if (prop == "metrics")          return getMetricsObject(rt);
   if (prop == "signpost")         return getSignpostObject(rt);
   if (prop == "diffEngine")       return getDiffEngineObject(rt);
+  if (prop == "memory")           return getMemoryObject(rt);
+  if (prop == "masonryLayout")    return getMasonryLayoutObject(rt);
+  if (prop == "gridLayout")       return getGridLayoutObject(rt);
+  if (prop == "flowLayout")       return getFlowLayoutObject(rt);
 
   return Value::undefined();
 }
@@ -483,6 +490,115 @@ Value CollectionViewModule::getDiffEngineObject(Runtime& rt) {
     _diffEngineJSI = std::move(obj);
   }
   return Value(rt, *_diffEngineJSI);
+}
+
+// ── F3.2: masonry layout JSI object ───────────────────────────────────────────
+
+Value CollectionViewModule::getMasonryLayoutObject(Runtime& rt) {
+  if (!_masonryLayoutJSI.has_value()) {
+    Object obj(rt);
+    _masonryLayout->installJSIBindings(rt, obj);
+    _masonryLayoutJSI = std::move(obj);
+  }
+  return Value(rt, *_masonryLayoutJSI);
+}
+
+// ── R1.3: grid layout JSI object ──────────────────────────────────────────────
+
+Value CollectionViewModule::getGridLayoutObject(Runtime& rt) {
+  if (!_gridLayoutJSI.has_value()) {
+    Object obj(rt);
+    _gridLayout->installJSIBindings(rt, obj);
+    _gridLayoutJSI = std::move(obj);
+  }
+  return Value(rt, *_gridLayoutJSI);
+}
+
+// ── R1.3: flow layout JSI object ─────────────────────────────────────────────
+
+Value CollectionViewModule::getFlowLayoutObject(Runtime& rt) {
+  if (!_flowLayoutJSI.has_value()) {
+    Object obj(rt);
+    _flowLayout->installJSIBindings(rt, obj);
+    _flowLayoutJSI = std::move(obj);
+  }
+  return Value(rt, *_flowLayoutJSI);
+}
+
+// ── P4.1: memory JSI object ───────────────────────────────────────────────────
+
+void CollectionViewModule::setGetAvailableMemoryCallback(std::function<int64_t()> cb) {
+  _getAvailableMemoryCb = std::move(cb);
+}
+
+void CollectionViewModule::triggerMemoryPressure(int level) {
+  if (!_memoryPressureJsFn || !_memoryPressureRt) return;
+  auto fn = _memoryPressureJsFn;
+  auto rt = _memoryPressureRt;
+  jsInvoker_->invokeAsync([fn, rt, level]() {
+    fn->call(*rt, Value(level));
+  });
+}
+
+Value CollectionViewModule::getMemoryObject(Runtime& rt) {
+  if (!_memoryJSI.has_value()) {
+    Object obj(rt);
+
+    // availableBytes() → number
+    // Returns bytes available to this process via os_proc_available_memory().
+    obj.setProperty(rt, "availableBytes",
+      Function::createFromHostFunction(rt,
+        PropNameID::forAscii(rt, "availableBytes"), 0,
+        [this](Runtime&, const Value&, const Value*, size_t) -> Value {
+          int64_t bytes = _getAvailableMemoryCb ? _getAvailableMemoryCb() : -1;
+          return Value((double)bytes);
+        }));
+
+    // pressureLevel() → 0|1|2
+    // 0=normal  1=low (< 150 MB)  2=critical (< 50 MB)
+    obj.setProperty(rt, "pressureLevel",
+      Function::createFromHostFunction(rt,
+        PropNameID::forAscii(rt, "pressureLevel"), 0,
+        [this](Runtime&, const Value&, const Value*, size_t) -> Value {
+          int64_t bytes = _getAvailableMemoryCb ? _getAvailableMemoryCb() : INT64_MAX;
+          int level = 0;
+          if      (bytes < 50LL  * 1024 * 1024) level = 2;
+          else if (bytes < 150LL * 1024 * 1024) level = 1;
+          return Value(level);
+        }));
+
+    // onPressure(callback: (level: number) => void) → undefined
+    // Registers a JS callback invoked via jsInvoker when a system memory warning
+    // is received (or simulate() is called).
+    obj.setProperty(rt, "onPressure",
+      Function::createFromHostFunction(rt,
+        PropNameID::forAscii(rt, "onPressure"), 1,
+        [this](Runtime& rtInner, const Value&, const Value* args, size_t count) -> Value {
+          if (count > 0 && args[0].isObject()) {
+            auto fnObj = args[0].getObject(rtInner);
+            if (fnObj.isFunction(rtInner)) {
+              _memoryPressureRt = &rtInner;
+              _memoryPressureJsFn = std::make_shared<Function>(fnObj.getFunction(rtInner));
+            }
+          }
+          return Value::undefined();
+        }));
+
+    // simulate(level: number) → undefined
+    // Fires the JS pressure callback immediately — used for testing.
+    obj.setProperty(rt, "simulate",
+      Function::createFromHostFunction(rt,
+        PropNameID::forAscii(rt, "simulate"), 1,
+        [this](Runtime&, const Value&, const Value* args, size_t count) -> Value {
+          int level = (count > 0 && args[0].isNumber())
+                      ? static_cast<int>(args[0].getNumber()) : 2;
+          triggerMemoryPressure(level);
+          return Value::undefined();
+        }));
+
+    _memoryJSI = std::move(obj);
+  }
+  return Value(rt, *_memoryJSI);
 }
 
 } // namespace facebook::react

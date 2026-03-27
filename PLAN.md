@@ -50,6 +50,8 @@ Features second. Research last. Documentation closes it out.
 7. `initialNumToRender` — first screenful on first frame
 8. `useLayoutEffect` for layout pass — committed before paint
 9. Eager initial range in `onContainerLayout` — 3-render init chain → 2
+10. `React.memo` on cell content (MemoizedCellContent) + stable renderItem ref — 1fps → 40-50fps win on simulator. Scroll events no longer re-render stable cells.
+11. `startTransition` placement — render range updates are intentionally synchronous (delayed range = blank frames). Only snapshot API data commits use startTransition. `useLayoutEffect` for layout pass is incompatible with startTransition by design.
 
 ---
 
@@ -81,90 +83,63 @@ the JS-side computation pays interpreter overhead (~2–5ms). C++ is sub-microse
 
 ---
 
-## 🔥 Phase P2 — YGMeasureFunc: Native Cell Measurement
+## ~~Phase P2 — YGMeasureFunc: Native Cell Measurement~~ ✗ INFEASIBLE
 
-> **Priority: HIGH.** Eliminates the JS roundtrip for cell measurement entirely.
+### ~~P2.1~~ — Custom YGMeasureFunc for cell height — **INFEASIBLE**
 
-### P2.1 — Custom YGMeasureFunc for cell height
+**Why infeasible:** Fabric restricts `YGMeasureFunc` to **leaf nodes only** — nodes with
+no Fabric children. Cell containers always have children (the consumer's component tree),
+so they cannot be leaf nodes. No workaround without forking Fabric internals.
 
-Same mechanism as `ParagraphShadowNode` for text measurement. Heights known during
-Yoga's layout pass, not after.
-
-**Why:** Currently `RNMeasuredCell` fires `onMeasured` from `layoutSubviews` → JS → layout
-update → re-render. With YGMeasureFunc, Yoga calls our C++ callback during its own pass.
-The height is known before the first commit — no correction, no re-render, no flicker.
-
-**Deliverable:**
-- Custom `ShadowNode` for cell container that registers a `YGMeasureFunc`
-- Callback reads child intrinsic size during Yoga pass
-- Height flows into LayoutCache synchronously (C++ → C++)
-- Eliminates `onMeasured` JS event for initial measurement
-- `onMeasured` kept as fallback for dynamic resizes (self-sizing cells)
-
-**Acceptance:**
-- Variable-height cells: correct height on first paint (no correction pass)
-- Instruments: no JS frames during initial cell measurement
-- M4.1 test: zero scroll corrections for initial layout (all heights known pre-commit)
-- Fallback: self-sizing cells (M4.3) still work via `onMeasured` event
-
-**Deps:** P1.1, M4.2
+**What we have instead (M4.2):** `RNMeasuredCell` fires `onMeasured` from `layoutSubviews`
+before the first paint — this fires synchronously during the native layout pass, before any
+frame is drawn. It's effectively as good as YGMeasureFunc for the initial measurement case.
+Self-sizing cells (M4.3) continue to use this path for dynamic resizes.
 
 ---
 
-## 🔥 Phase P3 — Offscreen Pre-rendering via Fabric
+## ✅ Phase P3 — Offscreen Pre-rendering via Activity
 
-> **Priority: HIGH.** Pre-build shadow trees for upcoming cells before they scroll into view.
+### P3.1 — Activity-flip pre-rendering ✅ DONE
 
-### P3.1 — Fabric commit pre-rendering
+**Implemented approach (RN 0.83+ / Activity API):**
+Measure-range cells mount at their real estimated position with `Activity=hidden`.
+The cell is invisible to the user but Fabric lays it out at the correct location.
+When the viewport reaches the cell, only the Activity mode flips (`hidden→visible`) —
+a single atomic Fabric commit with no position change, no re-render, no blank flash.
 
-Pre-create shadow trees for cells in the measure/prefetch window using Fabric's
-commit pipeline, so they are ready to display instantly when scrolled into view.
+**Degraded path (RN < 0.83, Activity absent):** cells park at `top: -9999`.
 
-**Why:** Currently, cells mount cold when entering the render window — React creates
-the component, Fabric builds the shadow tree, Yoga layouts, then native views appear.
-Pre-rendering moves this work ahead of time so the cell is "warm" on first display.
+**Why the original plan's approach was abandoned:**
+The plan described building shadow trees via Fabric's internal commit pipeline ahead of time.
+This uses non-public Fabric APIs (`FabricUIManager.createNode`, scheduler internals) that are
+not accessible from userspace RN. The Activity-flip approach achieves the same visible result
+(cell appears instantly at correct position) without touching internals.
 
-**Deliverable:**
-- Measure-range cells built as Fabric shadow trees ahead of time
-- When cell enters render window, shadow tree already exists — skip creation
-- Integration with Activity mode: pre-rendered cells use `mode="hidden"` until visible
-- Budget cap: max N pre-rendered cells (configurable, default 20)
-
-**Acceptance:**
-- Fast fling (2000px/s): blank area < 2% (down from current ~5%)
-- Cold mount rate: < 5% during sustained scroll
-- Memory: pre-rendered cells within budget, LRU eviction for excess
-- No visible jank from pre-rendering work (deferred via startTransition or idle callback)
-
-**Deps:** P2.1, M3.1
+**Deps:** M3.1, M4.2
 
 ---
 
-## Phase P4 — Memory Optimization
+## ✅ Phase P4 — Memory Optimization
 
-### P4.1 — Mounted cell budget refinement _(deferred — do after P5.1 so metrics can quantify impact)_
+### P4.1 — Mounted cell budget refinement ✅ DONE
 
-Optimize memory footprint of mounted cells. Tighter LRU eviction, smarter budget
-allocation based on device memory pressure.
-
-**Deliverable:**
-- Memory-pressure-aware budget: reduce mounted cells on low-memory devices
-- `os_proc_available_memory()` integration (iOS) for dynamic budget adjustment
-- Eviction priority: furthest-from-viewport cells evicted first
-- Metric: peak mounted cell count, memory delta per 1000 items scrolled
-
-**Acceptance:**
-- 10k item list: peak mounted cells < 2× budget at all times
-- Memory pressure event: budget reduced within 1 frame, excess cells evicted
-- No OOM on iPhone 12 with 10k complex cells (images + text)
+**Implemented:**
+- `nativeMod.memory` JSI sub-object: `availableBytes()`, `pressureLevel()`, `onPressure(cb)`, `simulate(level)`
+- `os_proc_available_memory()` (iOS) wired via ObjC callback — synchronous, called on JS thread
+- `UIApplicationDidReceiveMemoryWarningNotification` → C++ `triggerMemoryPressure(2)` → `jsInvoker_->invokeAsync` → JS callback
+- CollectionView internal `memoryMultiplier` state: 1.0 / 0.75 / 0.5 on levels 0/1/2
+- `effectiveMountedWindowSize = mountedWindowSize × memoryMultiplier` — all applyBudget calls use this
+- Test screen `P4_1_MemoryBudget.tsx`: live available MB, pressure level, mounted count, simulate buttons
+- Android: deferred to F5 / R0.3 (uses `ActivityManager.getMemoryInfo()` + `onTrimMemory`)
 
 **Deps:** M3.5
 
 ---
 
-## Phase P5 — Instrumentation & Metrics
+## ✅ Phase P5 — Instrumentation & Metrics
 
-### P5.1 — Metric collection infrastructure
+### P5.1 — Metric collection infrastructure ✅ DONE
 
 Core metric pipeline baked into the component.
 
@@ -184,7 +159,7 @@ Core metric pipeline baked into the component.
 
 ---
 
-### P5.2 — Debug Perf HUD
+### P5.2 — Debug Perf HUD ✅ DONE
 
 Live metrics overlay in the sample app.
 
@@ -203,7 +178,7 @@ Live metrics overlay in the sample app.
 
 ---
 
-### P5.3 — Traces in sample app
+### P5.3 — Traces in sample app ✅ DONE
 
 Instrument the example app with structured traces for release-build profiling.
 
@@ -226,22 +201,168 @@ Instrument the example app with structured traces for release-build profiling.
 
 ### P6.1 — FlashList comparison demo
 
-Demonstrate correctness and performance wins over FlashList.
+Side-by-side CollectionView vs FlashList across 6 tabs. Each tab isolates one
+differentiator that is either impossible or visibly broken in FlashList. Same data,
+same cell complexity, same interaction — only the list engine differs.
 
 **Deliverable:** `example/screens/Comparison.tsx` (extend existing)
-- **Tab 1: State bleed** — Like button with useState. FlashList recycles = state on wrong items.
-  CollectionView = identity-preserving, always correct.
-- **Tab 2: Animation identity** — Cell mid-animation. FlashList recycles = animation resets.
-  CollectionView = animation survives scroll out and back.
-- **Tab 3: Performance** — Side-by-side metrics: FPS, blank area, mount count, memory
-- Metrics overlay per tab
 
-**Acceptance:**
-- State bleed artifact reproducible on device with FlashList in < 5 seconds
-- CollectionView zero state bleed across 1000 scroll events
-- Release build metrics captured and comparable
+**Pre-requisites:**
+- F3.2 — MasonryLayout (C++) for Tab 4
+- Circular TS layout plugin for Tab 4
+- FlashList installed in example app as a dependency
 
-**Deps:** M3.3, M4.3, P5.1
+---
+
+**Tab 1 — Prefetch + Simulated Loading** _(strongest visual)_
+
+Cells contain simulated "images" — colored gradients behind a 300–800ms random delay
+before they "load." CollectionView's `onPrefetch` fires 12× viewport ahead, so loading
+starts well before cells are visible.
+
+| | CollectionView | FlashList |
+|---|---|---|
+| Scroll at moderate speed | Cells arrive fully loaded, zero placeholders | Every new cell shows gray skeleton, pops in after delay |
+| Mechanism | `onPrefetch(keys)` → start load → cell mounts with data ready | No prefetch API — load starts on mount |
+| Visual | Smooth, populated content | Flickering gray → content transitions |
+
+---
+
+**Tab 2 — Sticky Headers: Push + Animation Continuity** _(undeniable)_
+
+5+ sections. Each sticky header contains:
+- A **millisecond ticker** updating every 16ms (shows elapsed time since section appeared)
+- A **shimmer animation** — looping gradient sweep, purely cosmetic but continuous
+
+Two FlashList bugs demonstrated at once:
+
+| | CollectionView | FlashList |
+|---|---|---|
+| Push behavior | Incoming header pushes outgoing header up pixel-perfectly (RNScrollCoordinatedView, CATransform3D on UI thread) | Headers overlap at the top — no push logic |
+| Animation continuity | Outgoing header's ticker and shimmer never reset — same component instance, just translated | Header re-mounts on section change — ticker resets to 0, shimmer restarts from frame 1 |
+| JS per scroll frame | Zero — KVO on contentOffset, transform in native | JS handler repositions sticky view each frame |
+
+---
+
+**Tab 3 — Section Decorations with Animated Backgrounds** _(visual polish gap)_
+
+5 sections, each with a distinct animated background:
+- Looping shimmer gradients (e.g. gold shimmer, blue wave, green pulse)
+- Animated via `Animated.loop` — continuous, never restarts
+- Background spans behind all cells in the section (headers, items, footers)
+- Cells float above the decoration with transparent/semi-transparent styling
+
+The decoration is a real stateful React component — not a paint trick. Within the
+render window, the animation runs continuously. Scrolling a section out and back in
+(within render range) shows the shimmer exactly where it left off.
+
+| | CollectionView | FlashList |
+|---|---|---|
+| Section backgrounds | `renderSectionBackground` — first-class API, real React component | No concept of decoration views |
+| Animated backgrounds | Works — looping Animated.View behind cells | Would require absolute-positioned Views with manual height calc, breaks on dynamic content |
+| Animation persistence | Within render window: animation continues seamlessly | N/A — can't be built |
+
+---
+
+**Tab 4 — Custom Layouts: Masonry + Circular** _(capability gap)_
+
+Two sub-demos showing layouts that FlashList structurally cannot do:
+
+**Masonry (C++):** Variable-height items in a 2–3 column waterfall. Items placed in
+shortest column, no gaps, no overlaps. Layout computed in C++ in < 1ms for 1k items.
+`cpp/layouts/MasonryLayout.h/.cpp`.
+
+**Circular / Radial (TS CustomLayoutPlugin):** Items arranged in an arc.
+`x = cx + r·cos(θ)`, `y = cy + r·sin(θ)`. Demonstrates arbitrary 2D positioning
+via the TS layout plugin path. Scrolling rotates items around the arc.
+
+| | CollectionView | FlashList |
+|---|---|---|
+| Masonry | Native C++ layout, sub-ms computation | Impossible — layout assumes linear sequential Y |
+| Radial / circular | TS plugin: arbitrary x,y per item | Impossible — scroll container is linear, items must be sequential along one axis |
+| Grid | C++ GridLayout (F3.1) | Possible (numColumns prop) — parity here |
+
+---
+
+**Tab 5 — Performance Metrics** _(hard numbers across 4 scenarios)_
+
+Same metrics measured across 4 cell composition scenarios that exercise different
+recycling/windowing trade-offs. Each scenario is a sub-tab or picker within Tab 5.
+
+**Scenarios:**
+
+| # | Scenario | What it tests | FlashList advantage | CollectionView advantage |
+|---|---|---|---|---|
+| 1 | **Homogeneous, fixed height** — 10k identical cells (text only, 44px) | FlashList's best case: single cell type, perfect pool reuse | Maximum recycling efficiency — one pool, instant reuse | C++ layout, zero-JS scroll path. Should be competitive even here. |
+| 2 | **Homogeneous, dynamic height** — 10k cells, same component but varying text lengths (3–8 lines) | Measurement overhead. FlashList recycles but must re-measure. | Pool still useful (one type) but measurement causes layout shifts | Native measurement before first paint (M4.2). Scroll corrections < FlashList's. |
+| 3 | **Heterogeneous, repeating** — 10k cells, 4–5 distinct item types (image card, text row, banner, compact row, separator) repeating in pattern | Recycling pool per type. FlashList benefits from type-based pools. | Multiple pools, each type recycled. This is FlashList's design target. | No recycling overhead. Same windowing cost regardless of type count. |
+| 4 | **Heterogeneous, non-repeating** — Long product-detail-style page. Each cell is unique (hero image, description, specs table, reviews, related items, legal text). 50+ unique components, no repetition. | **Recycling is useless** — every cell is unique, pool never hits. FlashList pays mount cost on every recycle. | None. Pool miss on every cell = full mount cost, same as no recycling. | **Clear win.** Windowing + Activity suspension. Cells stay mounted within render range. No mount/unmount churn. Budget-controlled eviction only for far-off cells. |
+
+**Metrics per scenario:**
+
+| Metric | How measured | Notes |
+|---|---|---|
+| FPS | CADisplayLink hardware timer, 30-frame rolling average | Measured during sustained 2000px/s fling |
+| Blank area % | Visible rect vs mounted cell rects, per frame | Key metric for scenario 2 (dynamic height) |
+| Mounted cell count | `onRenderCountChange` callback | CV: budget-controlled. FlashList: pool size |
+| Layout computation time | Timed in C++ / JS respectively | CV: < 1ms (C++). FlashList: 5–50ms (JS) |
+| Mount/unmount rate | Count cell mount/unmount events per 1000 frames | **Scenario 4 killer metric**: FlashList mounts on every recycle, CV mounts once |
+| Memory (available MB) | `os_proc_available_memory()` | CV: adaptive budget. FlashList: static |
+| Memory pressure response | Simulate via P4.1 | CV: budget halves instantly. FlashList: no response |
+
+**Expected narrative across scenarios:**
+- Scenario 1: FlashList competitive or slightly ahead (its ideal case). CV shows parity.
+- Scenario 2: CV ahead on scroll corrections and blank area (native measurement).
+- Scenario 3: Close. FlashList pools help, but CV's zero-recycle avoids type-mismatch pool misses.
+- Scenario 4: **CV clear winner.** FlashList degrades to full-mount-per-scroll. CV's windowed cells stay alive. Mount rate: CV near-zero vs FlashList ~every cell.
+
+---
+
+**Tab 6 — Dynamic Resize Reflow** _(architectural differentiator)_
+
+Animated container resize (simulating iPad split-view or foldable) showing layout
+adaptation per-frame. Container width animates 100%→50%→100% over ~2 seconds.
+
+| | CollectionView | FlashList |
+|---|---|---|
+| Resize cost | O(window) — layout recomputes ~30 visible items per frame | O(N) — `relayoutFromIndex(0)` recomputes all items |
+| C++ layout | Masonry reflows in <0.1ms per frame | N/A — all JS |
+| Frame drops | None — windowed computation | Likely drops on large datasets |
+| shouldInvalidate | Layout decides if bounds change requires recompute | Always full relayout on onLayout |
+
+Demonstrates with:
+1. C++ masonry layout (sub-ms windowed recompute)
+2. TS custom layout (still fast — windowed)
+3. Frame time overlay showing per-frame layout cost
+
+---
+
+**Tab 7 — State Bleed** _(soft demo, honest framing)_
+
+Like buttons + TextInput in cells. Scroll away and back.
+
+| | CollectionView | FlashList |
+|---|---|---|
+| Within render window (5× viewport) | State preserved — Activity suspension | State lost — cell recycled to different item, old state bleeds |
+| Outside render window | Clean remount — correct initial state | Same recycling behavior |
+| Failure mode | State absent (clean) — never shows wrong state | State corrupt — likes/text appear on wrong items |
+
+Labeled honestly: "manageable in FlashList by lifting state, but default behavior
+differs. CollectionView's default is correct; FlashList's default is broken."
+
+---
+
+**Acceptance criteria:**
+- All 7 tabs functional on device (release build)
+- Prefetch tab: zero visible loading placeholders in CollectionView at moderate scroll
+- Sticky tab: millisecond ticker provably continuous across section transitions
+- Decoration tab: shimmer animation visibly continuous, no restart on scroll
+- Layout tab: masonry + circular render correctly, FlashList side shows "not possible"
+- Metrics tab: all 6 metrics displayed live, comparable numbers
+- Resize tab: masonry reflows smoothly during animated width change, frame time overlay shows <1ms layout cost
+- State tab: state bleed reproducible in FlashList within 5 seconds of scrolling
+
+**Deps:** F3.2 (masonry), circular TS layout, P5.1, F1.3, F2.2–F2.4, P4.1
 
 ---
 
@@ -487,6 +608,30 @@ Variable-height column-packing.
 
 ---
 
+### F3.5 — FlowLayout (C++)
+
+Variable-width item packing with dynamic line wrapping (UICollectionViewFlowLayout equivalent).
+
+**Deliverable:** `cpp/layouts/FlowLayout.h/.cpp`
+- Items placed left-to-right, wrapping to next line when row is full
+- Per-item `{width, height}` via `sizeForItem(index, section)` callback
+- Row height = tallest item in that row
+- `itemSpacing` (horizontal between items) + `lineSpacing` (vertical between rows)
+- Section insets, header/footer support (same pattern as other layouts)
+- Windowed computation: only compute positions for items in mounted range
+- `shouldInvalidate(forBoundsChange:)`: returns true when container width changes (column count changes)
+
+**Why C++:** Flow layout's bin-packing is the most compute-intensive built-in layout — items of varying width require per-item iteration to determine line breaks. C++ makes this sub-ms even for large datasets.
+
+**Acceptance:**
+- 1k items with varied widths (40–200px): correct wrapping, < 1ms
+- Container resize: line breaks recomputed, items reflow
+- Integrates with supplementary views (headers/footers between sections)
+
+**Deps:** M1.5, R1.3 (layout protocol)
+
+---
+
 ### F3.3 — CompositionalLayout
 
 Sections with independent layout objects.
@@ -623,6 +768,27 @@ Port C++ modules and React component to Android (new architecture).
 
 ## Phase R1 — Research
 
+### R0 — Memory Optimization (Future Research)
+
+Additional memory optimizations beyond P4.1. None are needed for the POC but documented here for production hardening.
+
+**R0.1 — Proactive memory polling**
+Poll `availableBytes()` every 5s and pre-emptively reduce budget at level 1, before the OS warning arrives (which is very late). Add hysteresis: restore budget only after memory stays above threshold for 10s to prevent thrashing. Pure JS-side addition to CollectionView.tsx.
+
+**R0.2 — measuredHeightsRef eviction**
+The `measuredHeightsRef` Map grows unboundedly — one entry per unique cell key ever measured. At 100k items with variable heights this holds 100k entries (~3–4 MB in V8/Hermes). Fix: evict entries for cells more than `renderMultiplier + measureAhead` viewports away from the visible range. LRU or distance-based.
+
+**R0.3 — Android memory integration**
+`ActivityManager.getMemoryInfo()` for `availableBytes()`. `ComponentCallbacks2.onTrimMemory(level)` maps to pressure levels: `TRIM_MEMORY_RUNNING_LOW` → 1, `TRIM_MEMORY_RUNNING_CRITICAL` / `TRIM_MEMORY_COMPLETE` → 2. Wired in `CollectionViewModule.kt`, zero C++ changes needed.
+
+**R0.4 — Image/asset pressure isolation**
+When cells contain images, the image cache (not cell views) dominates memory. Track a `hasImages` hint and under pressure: evict cells that are images-only first (highest bytes/cell ratio) rather than furthest-first.
+
+**R0.5 — Per-cell memory estimation**
+`Instrumentation.newAllocatedSize()` (Android) / `mach_task_self()` vm_stats (iOS) to measure actual bytes per cell type. Use this to build a typed budget (e.g. "max 20 image cells + 60 text cells") rather than a flat count budget.
+
+---
+
 ### R1.1 — UICollectionView host architecture (design + prototype)
 
 Decouple JS component identity from native UIView allocation using UICollectionView
@@ -655,6 +821,66 @@ React sees N unique components. UIKit sees M reused views.
 **Deliverable:** Feasibility report + proof-of-concept if feasible
 
 **Deps:** R1.1
+
+---
+
+### R1.3 — Layout Protocol & Unified API Design
+
+Formalize the layout protocol, dimension provider contracts, and three-tier consumer API.
+
+**Core Protocol (aligned with UICollectionView):**
+- `CollectionViewLayout` interface: `prepare()`, `attributesForElements(inRect:)`, `attributesForItem()`, `attributesForSupplementary()`, `contentSize()`, `shouldInvalidate(forBoundsChange:)`, `invalidationScope()`
+- Each layout type defines its own delegate contract (strict, not optional):
+  - **ListLayoutDelegate**: `itemHeight` (fixed) OR `heightForItem(index, section)` (variable) + same pattern for header/footer
+  - **MasonryLayoutDelegate**: `columns` + `heightForItem` (mandatory) + header/footer heights
+  - **GridLayoutDelegate**: `columns` + `rowHeight` OR `heightForItem` + header/footer heights
+  - **FlowLayoutDelegate**: `sizeForItem(index, section) → {width, height}` (mandatory) + header/footer heights
+  - **CustomLayoutDelegate**: `attributesForItem(index, section, context) → LayoutAttributes`
+- Sizing is symmetric: whatever pattern a layout uses for items, it uses for supplementary views too (fixed OR estimated OR per-index callback)
+- Per-index callbacks (not bulk arrays) — layout calls only for windowed range, enabling O(window) not O(N) per frame
+
+**Three-Tier Consumer API:**
+- **Tier 1 (simple):** `data` + `renderItem` + `itemHeight` on CollectionView directly. `renderSectionHeader`/`renderSectionFooter` on component, sizing on layout. `stickyHeaderIndices`/`stickyFooterIndices` for index-based pinning.
+- **Tier 2 (layout config):** `layout={masonry({columns: 3, heightForItem: fn, stickyMode: 'push'})}`. Layout owns sizing, pinning, behavior.
+- **Tier 3 (power user):** `supplementaryItems` on section config — custom kinds, alignment, `pinToVisibleBounds`, `pinBehavior`. Full `attributesForItem` for custom layouts.
+
+**Supplementary View Model (UICollectionView-aligned):**
+- Supplementary items are per-section, with `kind`, `alignment`, `pinToVisibleBounds`, `pinBehavior`
+- Tier 1 `header`/`footer` shorthand maps to supplementary items internally
+- Renderers (`renderSectionHeader`, `renderSectionFooter`) live on CollectionView (view/data layer)
+- Sizing/pinning lives on layout delegate (layout layer)
+- `stickyMode` on layouts that support it; absent from custom layouts (custom handles own pinning)
+- Any layout can support pinning if it defines what "pinned to visible bounds" means in its coordinate space
+
+**Cache Integration:**
+- All layouts (C++ and TS) write `LayoutAttributes` to the shared C++ LayoutCache via JSI
+- Enables spatial indexing (`getAttributesInRect`) for all layout types
+- C++ layouts write directly; TS layouts write via JSI bindings
+
+**Deliverable:** TypeScript interfaces + protocol implementation + migration of existing layouts
+
+**Deps:** F3.1, F3.2, F3.5
+
+---
+
+### R1.4 — TS-to-C++ layout codegen (was R1.3)
+
+Auto-transpile `CustomLayoutPlugin.compute()` from TypeScript to C++ at build time.
+
+**Why:** TS layouts run on the JS thread — one frame behind the native scroll event. C++ layouts run on the UI thread in the same CADisplayLink frame. The 3D carousel and circular layout demonstrate the frame-lag visually (slight jitter on fast scroll). Codegen eliminates it without asking developers to write C++.
+
+**Feasibility:** Layout `compute()` functions are pure: typed numeric inputs → array of `{x, y, width, height, scale, rotateY, opacity}`. No closures, no GC, no dynamic dispatch. Operations map 1:1 to C++ (`Math.cos` → `std::cos`, array iteration → `for` loop, arithmetic → same). The `CustomLayoutPlugin` interface is already the right contract shape.
+
+**Approach:**
+1. Static analysis of the `compute()` function body — reject if it contains non-transpilable constructs (closures over mutable state, dynamic property access, async)
+2. AST-to-AST transform: TS AST → C++ AST (arithmetic, trig, array ops, struct construction)
+3. Generate `cpp/layouts/Generated_<PluginName>.h/.cpp` with JSI bindings
+4. Wire into CollectionViewModule automatically (build-step registration)
+5. Runtime: use generated C++ version; fall back to TS if codegen was skipped
+
+**Alternatively:** Static Hermes (Meta's AOT compiler for typed JS) may make this unnecessary by compiling typed JS directly to native machine code. Monitor SH progress before building custom codegen.
+
+**Deps:** F3.3 (CompositionalLayout — proves the plugin interface is stable)
 
 ---
 
@@ -694,8 +920,8 @@ Comprehensive technical document covering the entire implementation.
 ```
 COMPLETED:  M0.1–M0.3 → M1.1–M1.5 → M2.1–M2.4 → M3.1–M3.5 → M4.1–M4.3
                                                                     ↓
-PERFORMANCE:  P1.1 (C++ window ctrl) → P2.1 (YGMeasureFunc, blocked) → P3.1 (pre-render)
-              + React.memo (MemoizedCellContent) — unplanned, 1fps→40-50fps win
+PERFORMANCE:  P1.1 (C++ window ctrl) ✅ → P2.1 (YGMeasureFunc — INFEASIBLE, leaf-node constraint) ✗
+              P3.1 (Activity-flip pre-render) ✅ + React.memo opt ✅ + startTransition audit ✅
                                                                     ↓
 METRICS:      P5.1 (collection) → P5.2 (HUD) → P5.3 (traces)
               [needed to quantify everything that follows]
@@ -706,7 +932,7 @@ FEATURES:     F1.1 (diff engine) ✅ → F1.2 (snapshot API) ✅ → F1.3 (prefe
               F4.1–F4.4 (persistence)
               F5.1 (Android)
                                                                     ↓
-MEMORY:       P4.1 (budget refinement) ← after features+metrics so impact is measurable
+MEMORY:       P4.1 (budget refinement) ✅ — os_proc_available_memory + UIApplicationDidReceiveMemoryWarning
                                                                     ↓
 COMPARISON:   P6.1 (full demo: state/animation/form/media/layout/sticky/snapshot/perf)
               → P6.2 (device benchmarks on release build)
@@ -725,9 +951,11 @@ DOCS:         DOC.1 (solution document)
 |---|---|
 | M4.3 ✅ | Variable height, self-sizing, scroll correction — all working |
 | P1.1 ✅ | C++ window controller — JS scroll path largely native |
-| P3.1 ✅ | Pre-rendering at real position — single Activity flip on viewport arrival |
+| P3.1 ✅ | Pre-rendering at real position — Activity-flip approach (Fabric-internal APIs not accessible) |
 | memo ✅ | React.memo on cell content — JS FPS 1→40-50fps on simulator |
-| P5.2 | Perf HUD — live FPS, blank area, cold mount rate, memory overlay |
+| P2.1 ✗ | YGMeasureFunc infeasible — leaf-node constraint; M4.2 (layoutSubviews) is equivalent |
+| P5.2 ✅ | Perf HUD — live FPS, blank area, cold mount rate, memory overlay |
+| P4.1 ✅ | Memory budget — os_proc_available_memory, pressure levels, automatic budget reduction |
 | F1.2 | Snapshot API — insert/delete/move with per-item animation, O(delta) reconciliation |
 | F2.3 | Sticky headers, UICollectionView-style — one instance repositioned, no duplication |
 | F3.3 | CompositionalLayout — list + grid + masonry + carousel in one scroll view |

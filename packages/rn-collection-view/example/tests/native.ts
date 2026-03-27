@@ -24,6 +24,15 @@ type NativeModule = {
     computeSections(sections: object[]): void;
     invalidateSectionsFrom(sectionIndex: number, sections: object[]): void;
   };
+  masonryLayout: {
+    computeMasonryLayout(params: object): { positions: number[]; contentHeight: number };
+  };
+  gridLayout: {
+    computeGridLayout(params: object): { positions: number[]; contentHeight: number };
+  };
+  flowLayout: {
+    computeFlowLayout(params: object): { positions: number[]; contentHeight: number };
+  };
   windowController: {
     updateScrollPosition(y: number, x: number): void;
     getScrollPosition(): { y: number; x: number };

@@ -10,6 +10,9 @@
 
 #include "LayoutCache.h"
 #include "layouts/ListLayout.h"
+#include "layouts/MasonryLayout.h"
+#include "layouts/GridLayout.h"
+#include "layouts/FlowLayout.h"
 #include "WindowController.h"
 #include "MetricCollector.h"
 #include "DiffEngine.h"
@@ -76,11 +79,23 @@ public:
   void setSignpostCallbacks(std::function<void(int)> beginCb,
                             std::function<void(int)> endCb);
 
+  /**
+   * P4.1 — Memory management.
+   * getMemoryCb: called synchronously on JS thread to get available process memory.
+   * triggerMemoryPressure(level): called by ObjC on UIApplicationDidReceiveMemoryWarningNotification.
+   *   level: 0=normal  1=low  2=critical
+   */
+  void setGetAvailableMemoryCallback(std::function<int64_t()> cb);
+  void triggerMemoryPressure(int level);
+
   static constexpr const char* kModuleName = "RNCollectionViewModule";
 
 private:
-  std::shared_ptr<rncv::LayoutCache> _layoutCache;
-  std::shared_ptr<rncv::ListLayout>  _listLayout;
+  std::shared_ptr<rncv::LayoutCache>   _layoutCache;
+  std::shared_ptr<rncv::ListLayout>    _listLayout;
+  std::shared_ptr<rncv::MasonryLayout> _masonryLayout;
+  std::shared_ptr<rncv::GridLayout>    _gridLayout;
+  std::shared_ptr<rncv::FlowLayout>    _flowLayout;
 
   // Scroll position — written from UI thread (M2.2b) or JS thread (M2.2).
   std::atomic<double> _scrollY{0.0};
@@ -97,6 +112,11 @@ private:
   std::function<void(int)> _signpostBeginCb;
   std::function<void(int)> _signpostEndCb;
 
+  // P4.1 — memory management callbacks.
+  std::function<int64_t()>              _getAvailableMemoryCb;
+  std::shared_ptr<jsi::Function>        _memoryPressureJsFn;
+  jsi::Runtime*                         _memoryPressureRt{nullptr};
+
   // P5.1 — frame time ring buffer, written from main thread via recordFrame().
   rncv::MetricCollector _metricCollector;
 
@@ -107,6 +127,10 @@ private:
   std::optional<jsi::Object> _metricsJSI;
   std::optional<jsi::Object> _signpostJSI;
   std::optional<jsi::Object> _diffEngineJSI;
+  std::optional<jsi::Object> _memoryJSI;
+  std::optional<jsi::Object> _masonryLayoutJSI;
+  std::optional<jsi::Object> _gridLayoutJSI;
+  std::optional<jsi::Object> _flowLayoutJSI;
 
   jsi::Value getLayoutCacheObject(jsi::Runtime& rt);
   jsi::Value getListLayoutObject(jsi::Runtime& rt);
@@ -114,6 +138,10 @@ private:
   jsi::Value getMetricsObject(jsi::Runtime& rt);
   jsi::Value getSignpostObject(jsi::Runtime& rt);
   jsi::Value getDiffEngineObject(jsi::Runtime& rt);
+  jsi::Value getMemoryObject(jsi::Runtime& rt);
+  jsi::Value getMasonryLayoutObject(jsi::Runtime& rt);
+  jsi::Value getGridLayoutObject(jsi::Runtime& rt);
+  jsi::Value getFlowLayoutObject(jsi::Runtime& rt);
 };
 
 } // namespace facebook::react

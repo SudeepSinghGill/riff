@@ -65,6 +65,7 @@ import { CollectionSnapshot } from './CollectionSnapshot';
 import RNMeasuredCell from './RNMeasuredCellNativeComponent';
 import RNScrollCoordinatedView from './RNScrollCoordinatedViewNativeComponent';
 import { layoutCache } from 'rn-collection-view/src/LayoutCache';
+import type { CollectionViewLayout, LayoutContext } from 'rn-collection-view/src/types/protocol';
 
 // ─── JSI module types ─────────────────────────────────────────────────────────
 
@@ -93,6 +94,13 @@ const nativeMod = NativeCollectionViewModule as unknown as {
   signpost: {
     begin(id: number): void;
     end(id: number): void;
+  };
+  /** P4.1 — Memory management. */
+  memory: {
+    availableBytes(): number;
+    pressureLevel(): number;
+    onPressure(callback: (level: number) => void): void;
+    simulate(level: number): void;
   };
   windowController: {
     getScrollPosition(): { y: number; x: number };
@@ -190,6 +198,18 @@ export interface CollectionViewProps<T = unknown> {
   data?: T[];
   /** Sectioned mode. Mutually exclusive with `data`. */
   sections?: SectionConfig<T>[];
+
+  /**
+   * Layout engine conforming to the CollectionViewLayout protocol.
+   * When provided, the layout handles position computation, content sizing,
+   * and invalidation. Built-in props (itemHeight, estimatedItemHeight) are
+   * ignored — the layout's delegate owns sizing.
+   *
+   * Usage:
+   *   import { list, masonry, grid, flow, customLayout } from 'rn-collection-view/layouts';
+   *   <CollectionView layout={masonry({ columns: 3, heightForItem: fn })} ... />
+   */
+  layout?: CollectionViewLayout;
 
   /**
    * Flat mode: (info: { item: T; index: number }) => element
@@ -710,6 +730,7 @@ const MemoizedCellContent = React.memo(function MemoizedCellContent({
 export function CollectionView<T = unknown>({
   data: propData,
   sections: propSections,
+  layout: layoutProp,
   renderItem: propRenderItem,
   keyExtractor: propKeyExtractor,
   itemHeight,
@@ -810,6 +831,18 @@ export function CollectionView<T = unknown>({
     mountedCells: 0, coldMountCount: 0, scrollCorrectionCount: 0, offsetStart: 0, offsetEnd: 0,
   }));
 
+  // P4.1 — memory pressure: multiplier applied to mountedWindowSize.
+  // 1.0 = normal  0.75 = low memory  0.5 = critical memory pressure
+  const [memoryMultiplier, setMemoryMultiplier] = useState(1.0);
+  useEffect(() => {
+    nativeMod.memory?.onPressure((level: number) => {
+      if (level >= 2)      setMemoryMultiplier(0.5);
+      else if (level >= 1) setMemoryMultiplier(0.75);
+      else                 setMemoryMultiplier(1.0);
+    });
+  }, []);
+  const effectiveMountedWindowSize = mountedWindowSize * memoryMultiplier;
+
   // Stable renderItem wrapper for MemoizedCellContent.
   // Keeps the latest consumer function in a ref so memo's prop comparison
   // always sees the same function reference — even if the consumer passes a
@@ -834,6 +867,10 @@ export function CollectionView<T = unknown>({
   const stride    = effectiveItemHeight + itemSpacing;
   const itemWidth = Math.max(0, viewportWidth - sectionInsetLeft - sectionInsetRight);
 
+  // In variable-height mode, use actual average measured height for budget
+  // calculations once measurements are available. `stride` uses the estimate
+  // which can be significantly off — budget would over/under-count items.
+
   // M4.1 — per-key measured heights (filled by cell onLayout, survives re-renders).
   // In sectioned mode, supplementary views with declared heights are pre-seeded.
   const measuredHeightsRef  = useRef(new Map<string, number>());
@@ -842,7 +879,9 @@ export function CollectionView<T = unknown>({
       if (!measuredHeightsRef.current.has(k)) measuredHeightsRef.current.set(k, h);
     }
   }
-  // JS-side top-Y for each item, recomputed after every layout pass.
+  // JS-side top-Y for each item. Updated synchronously during render (useMemo)
+  // so that stickyConfigMap and the layout effect both see fresh positions
+  // in the same render cycle when measuredVersion changes.
   const itemPositionsRef    = useRef<number[]>([]);
   // Bumping this triggers a new layout pass so measured heights are applied.
   const [measuredVersion, setMeasuredVersion] = useState(0);
@@ -863,6 +902,103 @@ export function CollectionView<T = unknown>({
 
   // TS layout instances — created once per component instance (stable refs).
 
+  // ── Layout protocol bridge ──────────────────────────────────────────────────
+  // When `layout` prop is provided, use it instead of the internal layout engine.
+  // Build LayoutContext from current state and call prepare() when deps change.
+  // The layout writes to the shared LayoutCache (C++ layouts) or maintains its
+  // own position state (TS layouts), and provides spatial queries.
+
+  const useLayoutProtocol = !!layoutProp;
+
+  const layoutContext: LayoutContext | null = useMemo(() => {
+    if (!layoutProp || viewportWidth === 0) return null;
+    return {
+      containerWidth: viewportWidth,
+      containerHeight: viewportHeight,
+      scrollOffset: { x: 0, y: prevScrollYRef.current },
+      sections: propSections
+        ? propSections.map(s => ({
+            itemCount: s.data.length,
+            insets: undefined,
+            supplementaryItems: [
+              ...(s.header ? [{
+                kind: 'header' as const,
+                size: { width: viewportWidth, height: s.header.height },
+                alignment: 'top' as const,
+                pinToVisibleBounds: s.header.sticky ?? false,
+                pinBehavior: 'push' as const,
+              }] : []),
+              ...(s.footer ? [{
+                kind: 'footer' as const,
+                size: { width: viewportWidth, height: s.footer.height },
+                alignment: 'bottom' as const,
+                pinToVisibleBounds: s.footer.sticky ?? false,
+                pinBehavior: 'push' as const,
+              }] : []),
+            ],
+          }))
+        : [{ itemCount: data.length, supplementaryItems: [] }],
+    };
+  }, [layoutProp, viewportWidth, viewportHeight, propSections, data.length]);
+
+  // Prepare the layout when context changes (data, container size).
+  // This replaces the C++ layoutCache.clear() + computeListLayout() calls
+  // for layouts that conform to the protocol.
+  const layoutContentSize = useMemo(() => {
+    if (!layoutProp || !layoutContext) return null;
+    layoutProp.prepare(layoutContext);
+    return layoutProp.contentSize();
+  }, [layoutProp, layoutContext, measuredVersion]);
+
+  // When using layout protocol, the layout provides content height.
+  // This is consumed in the layout effect below.
+  const layoutProtocolContentHeight = layoutContentSize?.height ?? 0;
+
+  // Query function: get attributes for items in a rect.
+  // Used by the scroll handler and layout effect when layout protocol is active.
+  const queryLayoutRect = useCallback((rect: { x: number; y: number; width: number; height: number }) => {
+    if (!layoutProp) return [];
+    return layoutProp.attributesForElements(rect);
+  }, [layoutProp]);
+
+  // ── Positions computation (synchronous, during render) ─────────────────────
+  // Must run BEFORE stickyConfigMap and the layout effect so both see fresh
+  // positions in the same render cycle when measuredVersion changes.
+  // Previously this lived inside useLayoutEffect — that meant stickyConfigMap
+  // (a useMemo) always read stale positions from the previous render.
+  const computedPositions = useMemo(() => {
+    if (!isVariableHeight) return null; // fixed mode: positions = index * stride
+    const itemKeys = data.map((item, i) =>
+      keyExtractor ? keyExtractor(item, i) : String(i),
+    );
+    let avgH = estimatedItemHeight ?? 44;
+    if (measuredHeightsRef.current.size > 0) {
+      let sum = 0;
+      for (const h of measuredHeightsRef.current.values()) sum += h;
+      avgH = sum / measuredHeightsRef.current.size;
+    }
+    let y = sectionInsetTop;
+    const positions = new Array<number>(data.length);
+    for (let i = 0; i < data.length; i++) {
+      positions[i] = y;
+      const h = measuredHeightsRef.current.get(itemKeys[i]!) ?? avgH;
+      y += h + itemSpacing;
+    }
+    if (data.length > 0) y -= itemSpacing;
+    y += sectionInsetBottom;
+    // Update the ref synchronously so downstream useMemos see fresh data.
+    itemPositionsRef.current = positions;
+    return { positions, contentHeight: y, avgHeight: avgH };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVariableHeight, data, keyExtractor, estimatedItemHeight,
+      sectionInsetTop, sectionInsetBottom, itemSpacing, measuredVersion]);
+
+  // Budget stride: in variable-height mode, use actual average measured height
+  // once available. Falls back to the estimated stride before any measurements.
+  const budgetStride = (isVariableHeight && computedPositions)
+    ? computedPositions.avgHeight + itemSpacing
+    : stride;
+
   // ── Layout pass + initial window state ───────────────────────────────────────
   // useLayoutEffect so the accurate range (with real layout data) is committed
   // before the frame is painted — avoids a visible flash of stale positions.
@@ -871,6 +1007,69 @@ export function CollectionView<T = unknown>({
     if (viewportWidth === 0 || viewportHeight === 0) return;
     nativeMod.signpost.begin(1);
     try {
+
+    // ── Layout Protocol path ──────────────────────────────────────────────────
+    // When a layout prop is provided, it has already been prepared (in the
+    // layoutContentSize useMemo). Use its spatial query to determine the
+    // render range instead of index-arithmetic.
+    if (useLayoutProtocol && layoutProp && layoutContentSize) {
+      setContentHeight(layoutProtocolContentHeight);
+
+      if (itemCount === 0) {
+        setRenderRange({ first: 0, last: -1 });
+        return;
+      }
+
+      // Query the layout for items in the render window
+      const scrollY = prevScrollYRef.current;
+      const speed = Math.abs(velocityRef.current);
+      const leadBoost = Math.min(4, speed) * renderMultiplier;
+      const leadMult = renderMultiplier + leadBoost;
+      const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
+      const goingDown = velocityRef.current >= 0;
+      const abovePad = (goingDown ? trailMult : leadMult) * viewportHeight;
+      const belowPad = (goingDown ? leadMult : trailMult) * viewportHeight;
+
+      const attrs = layoutProp.attributesForElements({
+        x: 0,
+        y: scrollY - abovePad,
+        width: viewportWidth,
+        height: viewportHeight + abovePad + belowPad,
+      });
+
+      if (attrs.length === 0) {
+        setRenderRange({ first: 0, last: -1 });
+      } else {
+        // Convert attributes to index range
+        let minIdx = Infinity, maxIdx = -Infinity;
+        for (const attr of attrs) {
+          if (attr.index < minIdx) minIdx = attr.index;
+          if (attr.index > maxIdx) maxIdx = attr.index;
+        }
+        const render = { first: minIdx, last: maxIdx };
+
+        // Apply budget
+        const visAttrs = layoutProp.attributesForElements({
+          x: 0, y: scrollY, width: viewportWidth, height: viewportHeight,
+        });
+        let visFirst = Infinity, visLast = -Infinity;
+        for (const a of visAttrs) {
+          if (a.index < visFirst) visFirst = a.index;
+          if (a.index > visLast) visLast = a.index;
+        }
+        const visible = { first: visFirst === Infinity ? 0 : visFirst, last: visLast === -Infinity ? -1 : visLast };
+
+        const budgeted = useCppWindow
+          ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride)
+          : applyBudget(render, visible, effectiveMountedWindowSize, viewportHeight, budgetStride);
+        prevRenderRef.current = budgeted;
+        setRenderRange(budgeted);
+      }
+
+      return; // finally block fires
+    }
+
+    // ── Legacy path (no layout prop) ──────────────────────────────────────────
 
     const itemKeys = data.map((item, i) =>
       keyExtractor ? keyExtractor(item, i) : String(i),
@@ -915,21 +1114,13 @@ export function CollectionView<T = unknown>({
 
     if (isVariableHeight) {
       // ── Variable-height path ────────────────────────────────────────────────
-      // Build JS-side positions from measured heights (or estimate for unmeasured).
-      // Also compute contentHeight directly here — avoids relying on C++ cache
-      // which doesn't include sectionInsetBottom in its maxY computation.
-      let y = sectionInsetTop;
-      const positions = new Array<number>(itemCount);
-      for (let i = 0; i < itemCount; i++) {
-        positions[i] = y;
-        y += (itemHeightsArr![i] ?? avgMeasuredHeight) + itemSpacing;
+      // Positions already computed in the computedPositions useMemo (runs during
+      // render, before this effect). itemPositionsRef.current is already fresh.
+      const positions = itemPositionsRef.current;
+      if (computedPositions) {
+        onItemPositionsChange?.(positions);
+        setContentHeight(computedPositions.contentHeight);
       }
-      // Remove trailing itemSpacing (it's between items, not after the last).
-      if (itemCount > 0) y -= itemSpacing;
-      y += sectionInsetBottom;
-      itemPositionsRef.current = positions;
-      onItemPositionsChange?.(positions);
-      setContentHeight(y);
 
       // Use JS-tracked scroll position (prevScrollYRef) so the range is accurate
       // even immediately after a programmatic scrollTo correction.
@@ -949,8 +1140,8 @@ export function CollectionView<T = unknown>({
         render = ws.render; visible = ws.visible;
       }
       const budgeted = useCppWindow
-        ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, mountedWindowSize, viewportHeight, stride)
-        : applyBudget(render, visible, mountedWindowSize, viewportHeight, stride);
+        ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride)
+        : applyBudget(render, visible, effectiveMountedWindowSize, viewportHeight, budgetStride);
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
 
@@ -989,8 +1180,8 @@ export function CollectionView<T = unknown>({
         render = ws.render; visible = ws.visible;
       }
       const budgeted = useCppWindow
-        ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, mountedWindowSize, viewportHeight, stride)
-        : applyBudget(render, visible, mountedWindowSize, viewportHeight, stride);
+        ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride)
+        : applyBudget(render, visible, effectiveMountedWindowSize, viewportHeight, budgetStride);
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
     }
@@ -1008,12 +1199,19 @@ export function CollectionView<T = unknown>({
     sectionInsetLeft,
     sectionInsetRight,
     renderMultiplier,
-    mountedWindowSize,
+    effectiveMountedWindowSize,
     measureAhead,
     stride,
     estimatedItemHeight,
     measuredVersion,
     isVariableHeight,
+    computedPositions,
+    // keyExtractor intentionally omitted — keys derive from `data` (already a dep).
+    // Including it would cause infinite re-fires when consumers pass inline arrows.
+    useLayoutProtocol,
+    layoutProp,
+    layoutContentSize,
+    layoutProtocolContentHeight,
   ]);
 
   // ── M2.2b: attach UI-thread scroll observer ──────────────────────────────────
@@ -1113,8 +1311,8 @@ export function CollectionView<T = unknown>({
         initRender = ws.render; initVisible = ws.visible;
       }
       const budgeted = wc.applyBudget
-        ? wc.applyBudget(initRender.first, initRender.last, initVisible.first, initVisible.last, mountedWindowSize, h, stride)
-        : applyBudget(initRender, initVisible, mountedWindowSize, h, stride);
+        ? wc.applyBudget(initRender.first, initRender.last, initVisible.first, initVisible.last, effectiveMountedWindowSize, h, budgetStride)
+        : applyBudget(initRender, initVisible, effectiveMountedWindowSize, h, budgetStride);
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
 
@@ -1133,7 +1331,7 @@ export function CollectionView<T = unknown>({
         itemPositionsRef.current = positions;
       }
     }
-  }, [itemCount, stride, renderMultiplier, sectionInsetTop, sectionInsetBottom, itemSpacing, mountedWindowSize, isVariableHeight]);
+  }, [itemCount, stride, budgetStride, renderMultiplier, sectionInsetTop, sectionInsetBottom, itemSpacing, effectiveMountedWindowSize, isVariableHeight]);
 
   // ── M4.1 — Cell size measurement ─────────────────────────────────────────────
 
@@ -1233,6 +1431,52 @@ export function CollectionView<T = unknown>({
       prevScrollYRef.current  = scrollY;
       prevScrollTimeRef.current = now;
 
+      // ── Layout Protocol scroll path ──────────────────────────────────────────
+      if (useLayoutProtocol && layoutProp) {
+        // Check if layout needs recomputation (container resize during scroll)
+        // Note: full resize invalidation is handled by the layout effect, not here.
+
+        const speed = Math.abs(velocityRef.current);
+        const leadBoost = Math.min(4, speed) * renderMultiplier;
+        const leadMult = renderMultiplier + leadBoost;
+        const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
+        const goingDown = velocityRef.current >= 0;
+        const abovePad = (goingDown ? trailMult : leadMult) * vpH;
+        const belowPad = (goingDown ? leadMult : trailMult) * vpH;
+
+        const attrs = layoutProp.attributesForElements({
+          x: 0, y: scrollY - abovePad, width: viewportWidth, height: vpH + abovePad + belowPad,
+        });
+
+        let rFirst = Infinity, rLast = -Infinity;
+        for (const a of attrs) {
+          if (a.index < rFirst) rFirst = a.index;
+          if (a.index > rLast) rLast = a.index;
+        }
+        const newR = { first: rFirst === Infinity ? 0 : rFirst, last: rLast === -Infinity ? -1 : rLast };
+
+        const visAttrs = layoutProp.attributesForElements({
+          x: 0, y: scrollY, width: viewportWidth, height: vpH,
+        });
+        let vFirst = Infinity, vLast = -Infinity;
+        for (const a of visAttrs) {
+          if (a.index < vFirst) vFirst = a.index;
+          if (a.index > vLast) vLast = a.index;
+        }
+        const newV = { first: vFirst === Infinity ? 0 : vFirst, last: vLast === -Infinity ? -1 : vLast };
+
+        const budgetedR = applyBudget(newR, newV, effectiveMountedWindowSize, vpH, budgetStride);
+        const renderChanged = rangeChanged(prevRenderRef.current, budgetedR);
+        if (renderChanged) {
+          prevRenderRef.current = budgetedR;
+          setRenderRange(budgetedR);
+        }
+
+        nativeMod.signpost.end(0);
+        scrollViewProps?.onScroll?.(e);
+        return; // skip legacy path
+      }
+
       // P1.1 — Range computation via C++ JSI (cpp engine) or JS fallback (ts engine).
       // C++ path: sub-microsecond native arithmetic, no Hermes interpreter overhead.
       const positions = itemPositionsRef.current;
@@ -1260,8 +1504,8 @@ export function CollectionView<T = unknown>({
       }
 
       const budgetedR = useCppWindow
-        ? wc.applyBudget(newR.first, newR.last, newV.first, newV.last, mountedWindowSize, vpH, stride)
-        : applyBudget(newR, newV, mountedWindowSize, vpH, stride);
+        ? wc.applyBudget(newR.first, newR.last, newV.first, newV.last, effectiveMountedWindowSize, vpH, budgetStride)
+        : applyBudget(newR, newV, effectiveMountedWindowSize, vpH, budgetStride);
       const renderChanged = rangeChanged(prevRenderRef.current, budgetedR);
 
       if (renderChanged) {
@@ -1404,26 +1648,44 @@ export function CollectionView<T = unknown>({
     //   Without Activity the cell would be fully visible and overlap content.
     const useRealPosition = !!Activity; // true on RN 0.83+
 
-    const estimatedTop = isVariableHeight
-      ? (itemPositionsRef.current[index] ?? sectionInsetTop + index * stride)
-      : sectionInsetTop + index * stride;
+    // When using layout protocol, get position from the layout engine.
+    let estimatedTop: number;
+    let cellLeft = sectionInsetLeft;
+    let cellWidth = itemWidth;
+    let cellHeight: number | undefined = !isVariableHeight && !measureOnly ? effectiveItemHeight : undefined;
+
+    if (useLayoutProtocol && layoutProp) {
+      const attr = layoutProp.attributesForItem(index, 0);
+      if (attr) {
+        estimatedTop = attr.frame.y;
+        cellLeft = attr.frame.x;
+        cellWidth = attr.frame.width;
+        if (attr.frame.height > 0) cellHeight = attr.frame.height;
+      } else {
+        estimatedTop = sectionInsetTop + index * stride;
+      }
+    } else {
+      estimatedTop = isVariableHeight
+        ? (itemPositionsRef.current[index] ?? sectionInsetTop + index * stride)
+        : sectionInsetTop + index * stride;
+    }
 
     const top  = (measureOnly && !useRealPosition) ? -9999 : estimatedTop;
-    const left = (measureOnly && !useRealPosition) ? -9999 : sectionInsetLeft;
+    const left = (measureOnly && !useRealPosition) ? -9999 : cellLeft;
 
     const containerStyle = [
       {
         position: 'absolute' as const,
         left,
-        right: sectionInsetRight,
+        right: useLayoutProtocol ? undefined : sectionInsetRight,
         top,
         // Use explicit width once viewport is known; before that, left+right
         // insets make the cell stretch to fill (works for initialNumToRender).
-        ...(viewportWidth > 0 ? { width: itemWidth, right: undefined } : {}),
+        ...(viewportWidth > 0 ? { width: cellWidth, right: undefined } : {}),
       },
-      // Fixed mode: constrain height so cells can't overflow into neighbours.
+      // Fixed mode / layout protocol: constrain height.
       // Variable / measure-only: height is self-determined.
-      !isVariableHeight && !measureOnly && { height: effectiveItemHeight },
+      cellHeight != null && !measureOnly && { height: cellHeight },
     ];
 
     const content = (
