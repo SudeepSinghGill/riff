@@ -1260,6 +1260,15 @@ export function Riff<T = unknown>({
   const renderCell = (item: T, index: number, measureOnly = false) => {
     const key  = keyExtractor ? keyExtractor(item, index) : String(index);
 
+    const fiDesc = isSectioned ? flattenResult?.flatData[index] : null;
+    const sk = fiDesc ? fiDesc.sectionIndex : 0;
+    const ik = fiDesc && fiDesc._kind === 'item' ? fiDesc.itemIndex : index;
+    
+    let cacheKey = `item-${sk}-${ik}`;
+    if (fiDesc?._kind === 'header') cacheKey = `item-${sk}-header`;
+    if (fiDesc?._kind === 'footer') cacheKey = `item-${sk}-footer`;
+    if (effectiveLayout.type !== 'list') cacheKey = `${effectiveLayout.type}-${index}`;
+
     // Render-range cells are Activity=visible. Measure-range cells use
     // Activity=hidden so Fabric computes their Yoga layout without painting.
     // ShadowNode measures all children via Yoga and writes heights to LayoutCache.
@@ -1321,6 +1330,7 @@ export function Riff<T = unknown>({
           type="supplementary"
           kind="header"
           index={index}
+          cacheKey={cacheKey}
           isMeasureOnly={measureOnly}
         >
           {content}
@@ -1334,6 +1344,7 @@ export function Riff<T = unknown>({
         style={containerStyle}
         type="cell"
         index={index}
+        cacheKey={cacheKey}
         isMeasureOnly={measureOnly}
       >
         {content}

@@ -24,6 +24,7 @@ interface NativeProps extends ViewProps {
   type?: string;
   kind?: string;
   index?: Int32;
+  cacheKey?: string;
   isMeasureOnly?: boolean;
 }
 

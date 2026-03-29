@@ -145,6 +145,7 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
   std::vector<rncv::MeasurementDelta> deltas;
 
   for (size_t i = 0; i < children.size(); ++i) {
+    std::string key;
     std::string type;
     std::string kind;
     int32_t dataIndex = -1;
@@ -154,21 +155,22 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
       type = p.type;
       kind = p.kind;
       dataIndex = p.index;
+      key = p.cacheKey.empty() ? (keyPrefix + std::to_string(dataIndex)) : p.cacheKey;
     } else if (auto scrollNode = std::dynamic_pointer_cast<const RNScrollCoordinatedViewShadowNode>(children[i])) {
       const auto& p = scrollNode->getConcreteProps();
       type = p.type;
       kind = p.kind;
       dataIndex = p.index;
+      key = p.cacheKey.empty() ? (keyPrefix + std::to_string(dataIndex)) : p.cacheKey;
     } else {
       RNCV_SN_LOG("child[%zu] is neither RNMeasuredCell nor RNScrollCoordinatedView, skipping", i);
       continue;
     }
     
-    std::string key = keyPrefix + std::to_string(dataIndex);
-    if (type == "supplementary") {
-       key = kind + "-" + std::to_string(dataIndex);
-    } else if (type == "decoration") {
-       key = "deco-" + kind + "-" + std::to_string(dataIndex);
+    // Fallback logic for old apps parsing by type/kind
+    if (key.empty() || (!type.empty() && key.find(keyPrefix) == 0)) {
+       if (type == "supplementary") key = kind + "-" + std::to_string(dataIndex);
+       else if (type == "decoration") key = "deco-" + kind + "-" + std::to_string(dataIndex);
     }
 
     const auto& childMetrics = children[i]->getLayoutMetrics();
@@ -205,6 +207,7 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
     if (handled) {
       // Re-read all positions from cache (engine may have cascaded changes).
       for (size_t i = 0; i < children.size(); ++i) {
+        std::string key;
         std::string type;
         std::string kind;
         int32_t dataIndex = -1;
@@ -214,20 +217,20 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
           type = p.type;
           kind = p.kind;
           dataIndex = p.index;
+          key = p.cacheKey.empty() ? (keyPrefix + std::to_string(dataIndex)) : p.cacheKey;
         } else if (auto scrollNode = std::dynamic_pointer_cast<const RNScrollCoordinatedViewShadowNode>(children[i])) {
           const auto& p = scrollNode->getConcreteProps();
           type = p.type;
           kind = p.kind;
           dataIndex = p.index;
+          key = p.cacheKey.empty() ? (keyPrefix + std::to_string(dataIndex)) : p.cacheKey;
         } else {
           continue;
         }
         
-        std::string key = keyPrefix + std::to_string(dataIndex);
-        if (type == "supplementary") {
-           key = kind + "-" + std::to_string(dataIndex);
-        } else if (type == "decoration") {
-           key = "deco-" + kind + "-" + std::to_string(dataIndex);
+        if (key.empty() || (!type.empty() && key.find(keyPrefix) == 0)) {
+           if (type == "supplementary") key = kind + "-" + std::to_string(dataIndex);
+           else if (type == "decoration") key = "deco-" + kind + "-" + std::to_string(dataIndex);
         }
 
         auto cached = cache->getAttributes(key);
