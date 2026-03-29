@@ -180,8 +180,9 @@ function ListDemo() {
       scrollViewProps={{ style: { backgroundColor: '#2a2a3e' }, indicatorStyle: 'white' }}
       keyExtractor={useCallback((item: ListItem) => item.id, [])}
       renderItem={useCallback(({ item }: { item: ListItem }) => (
-        <View style={{ height: 72, backgroundColor: '#1a1a2e', borderLeftWidth: 4, borderLeftColor: item.color, justifyContent: 'center', paddingHorizontal: 16 }}>
+        <View style={{ backgroundColor: '#1a1a2e', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
           <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>Item {item.num}</Text>
+          <Text style={{ color: '#aaa', fontSize: 13, marginTop: 4 }}>{item.subtitle}</Text>
         </View>
       ), [])}
     />
