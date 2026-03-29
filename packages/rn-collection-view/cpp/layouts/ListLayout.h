@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../LayoutCache.h"
+#include "../LayoutEngine.h"
 #include <jsi/jsi.h>
 #include <memory>
 #include <string>
@@ -59,7 +60,7 @@ struct ListLayoutParams {
  * M1.3: estimated variable heights + invalidateFrom
  * M1.5: multi-section with headers/footers + invalidateSectionsFrom
  */
-class ListLayout {
+class ListLayout : public LayoutEngine {
 public:
   explicit ListLayout(std::shared_ptr<LayoutCache> cache);
 
@@ -92,6 +93,16 @@ public:
    */
   void invalidateSectionsFrom(int fromSection,
                                const std::vector<ListLayoutParams>& sections);
+
+  // ── LayoutEngine protocol ──────────────────────────────────────────────
+
+  bool applyMeasurements(
+      const std::vector<MeasurementDelta>& deltas,
+      LayoutCache& cache) override;
+
+  ContentDimension contentDeterminedDimension() const override {
+    return ContentDimension::Height;
+  }
 
   // ── JSI ─────────────────────────────────────────────────────────────────
 

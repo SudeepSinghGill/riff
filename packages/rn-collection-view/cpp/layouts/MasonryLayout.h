@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../LayoutCache.h"
+#include "../LayoutEngine.h"
 #include <jsi/jsi.h>
 #include <memory>
 #include <string>
@@ -23,7 +24,7 @@ struct MasonryLayoutParams {
   std::string keyPrefix;           // fallback key prefix: "masonry-"
 };
 
-class MasonryLayout {
+class MasonryLayout : public LayoutEngine {
 public:
   explicit MasonryLayout(std::shared_ptr<LayoutCache> cache);
 
@@ -32,6 +33,16 @@ public:
    * Writes LayoutAttributes to the shared LayoutCache.
    */
   void compute(const MasonryLayoutParams& params);
+
+  // ── LayoutEngine protocol ──────────────────────────────────────────────
+
+  bool applyMeasurements(
+      const std::vector<MeasurementDelta>& deltas,
+      LayoutCache& cache) override;
+
+  ContentDimension contentDeterminedDimension() const override {
+    return ContentDimension::Height;
+  }
 
   void installJSIBindings(facebook::jsi::Runtime& rt, facebook::jsi::Object& target);
 

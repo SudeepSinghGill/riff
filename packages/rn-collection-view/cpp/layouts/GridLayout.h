@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../LayoutCache.h"
+#include "../LayoutEngine.h"
 #include <jsi/jsi.h>
 #include <memory>
 #include <string>
@@ -24,7 +25,7 @@ struct GridLayoutParams {
   std::string keyPrefix;                 // fallback key prefix: "grid-"
 };
 
-class GridLayout {
+class GridLayout : public LayoutEngine {
 public:
   explicit GridLayout(std::shared_ptr<LayoutCache> cache);
 
@@ -34,6 +35,16 @@ public:
    * Writes LayoutAttributes to the shared LayoutCache.
    */
   void compute(const GridLayoutParams& params);
+
+  // ── LayoutEngine protocol ──────────────────────────────────────────────
+
+  bool applyMeasurements(
+      const std::vector<MeasurementDelta>& deltas,
+      LayoutCache& cache) override;
+
+  ContentDimension contentDeterminedDimension() const override {
+    return ContentDimension::Height;
+  }
 
   void installJSIBindings(facebook::jsi::Runtime& rt, facebook::jsi::Object& target);
 

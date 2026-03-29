@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../LayoutCache.h"
+#include "../LayoutEngine.h"
 #include <jsi/jsi.h>
 #include <memory>
 #include <string>
@@ -23,7 +24,7 @@ struct FlowLayoutParams {
   std::string keyPrefix;                 // fallback key prefix: "flow-"
 };
 
-class FlowLayout {
+class FlowLayout : public LayoutEngine {
 public:
   explicit FlowLayout(std::shared_ptr<LayoutCache> cache);
 
@@ -33,6 +34,16 @@ public:
    * Writes LayoutAttributes to the shared LayoutCache.
    */
   void compute(const FlowLayoutParams& params);
+
+  // ── LayoutEngine protocol ──────────────────────────────────────────────
+
+  bool applyMeasurements(
+      const std::vector<MeasurementDelta>& deltas,
+      LayoutCache& cache) override;
+
+  ContentDimension contentDeterminedDimension() const override {
+    return ContentDimension::Both;
+  }
 
   void installJSIBindings(facebook::jsi::Runtime& rt, facebook::jsi::Object& target);
 

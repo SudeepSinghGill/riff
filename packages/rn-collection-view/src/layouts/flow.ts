@@ -63,14 +63,17 @@ class FlowLayoutEngine implements CollectionViewLayout {
       return;
     }
 
-    // Build widths and heights arrays via per-index callback
+    // Build widths and heights arrays.
+    // Height priority: measured (actual) → delegate sizeForItem (estimate).
+    // Width always from delegate (no width measurement feedback yet).
     const widths: number[] = new Array(sec.itemCount);
     const heights: number[] = new Array(sec.itemCount);
     const w = context.containerWidth;
     for (let i = 0; i < sec.itemCount; i++) {
       const size = d.sizeForItem(i, 0, w);
       widths[i] = size.width;
-      heights[i] = size.height;
+      const measured = context.measuredHeightForItem?.(i, 0);
+      heights[i] = measured ?? size.height;
     }
 
     // Build keys array

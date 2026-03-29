@@ -9,6 +9,7 @@
 #include <functional>
 
 #include "LayoutCache.h"
+#include "LayoutEngine.h"
 #include "layouts/ListLayout.h"
 #include "layouts/MasonryLayout.h"
 #include "layouts/GridLayout.h"
@@ -90,7 +91,24 @@ public:
 
   static constexpr const char* kModuleName = "RNCollectionViewModule";
 
+  // ── Static LayoutCache registry ──────────────────────────────────────────
+  // ShadowNodes (cloned by Fabric, value semantics) can't hold shared_ptr.
+  // Instead, this module registers its LayoutCache in a static map keyed by
+  // integer ID. JS passes the ID as a prop on <RNCollectionViewContainer>.
+  // The ShadowNode looks up the cache during layout().
+  static std::shared_ptr<rncv::LayoutCache> getLayoutCacheForId(int32_t id);
+  static std::shared_ptr<rncv::LayoutEngine> getLayoutEngineForId(
+      int32_t id, const std::string& layoutType);
+  static int32_t registerLayoutCache(std::shared_ptr<rncv::LayoutCache> cache);
+  static void registerLayoutEngine(
+      int32_t id, const std::string& layoutType,
+      std::shared_ptr<rncv::LayoutEngine> engine);
+  static void unregisterLayoutCache(int32_t id);
+
+  int32_t layoutCacheId() const { return _layoutCacheId; }
+
 private:
+  int32_t _layoutCacheId = 0;
   std::shared_ptr<rncv::LayoutCache>   _layoutCache;
   std::shared_ptr<rncv::ListLayout>    _listLayout;
   std::shared_ptr<rncv::MasonryLayout> _masonryLayout;

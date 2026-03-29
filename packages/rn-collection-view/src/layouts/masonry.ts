@@ -70,10 +70,11 @@ class MasonryLayoutEngine implements CollectionViewLayout {
     const w = context.containerWidth;
     const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
 
-    // Build heights array via per-index callback
+    // Build heights array. Priority: measured (actual) → delegate heightForItem (estimate).
     const heights: number[] = new Array(sec.itemCount);
     for (let i = 0; i < sec.itemCount; i++) {
-      heights[i] = d.heightForItem(i, 0, w);
+      const measured = context.measuredHeightForItem?.(i, 0);
+      heights[i] = measured ?? d.heightForItem(i, 0, w);
     }
 
     // Build keys array

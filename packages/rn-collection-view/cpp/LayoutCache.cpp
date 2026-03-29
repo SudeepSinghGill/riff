@@ -85,6 +85,21 @@ std::vector<LayoutAttributes> LayoutCache::getAttributesInRect(
   return result;
 }
 
+// ─── Item heights (bulk read) ────────────────────────────────────────────────
+
+std::vector<double> LayoutCache::getItemHeights(int section, int count) const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  std::vector<double> heights(count, 0.0);
+  for (int i = 0; i < count; ++i) {
+    auto key = "item-" + std::to_string(section) + "-" + std::to_string(i);
+    auto it = _map.find(key);
+    if (it != _map.end()) {
+      heights[i] = it->second.frame.height;
+    }
+  }
+  return heights;
+}
+
 // ─── Aggregate queries ────────────────────────────────────────────────────────
 
 Size LayoutCache::getTotalContentSize() const {
@@ -124,6 +139,16 @@ std::vector<double> LayoutCache::getSectionOffsets() const {
 uint64_t LayoutCache::version() const {
   std::lock_guard<std::mutex> lock(_mutex);
   return _version;
+}
+
+void LayoutCache::setScrollOffset(double x, double y) {
+  std::lock_guard<std::mutex> lock(_mutex);
+  _scrollOffset = {x, y};
+}
+
+Point LayoutCache::getScrollOffset() const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  return _scrollOffset;
 }
 
 // ─── JSI conversion helpers ───────────────────────────────────────────────────
@@ -203,14 +228,42 @@ LayoutAttributes LayoutCache::attrsFromJSI(Runtime& rt, const Object& obj) {
   }
 
   a.zIndex          = static_cast<int>(doubleFromObj(rt, obj, "zIndex"));
+  a.alpha           = doubleFromObj(rt, obj, "alpha", 1.0);
+  a.isHidden        = boolFromObj(rt, obj, "isHidden");
+
+  // transform3D: 16-element array (column-major 4x4 matrix), optional
+  Value t3dVal = obj.getProperty(rt, "transform3D");
+  if (t3dVal.isObject()) {
+    auto t3dArr = t3dVal.getObject(rt).getArray(rt);
+    size_t len = std::min(static_cast<size_t>(t3dArr.size(rt)), size_t(16));
+    for (size_t i = 0; i < len; ++i) {
+      a.transform3D[i] = t3dArr.getValueAtIndex(rt, i).getNumber();
+    }
+  }
+
   a.isSupplementary = boolFromObj(rt, obj, "isSupplementary");
   a.supplementaryKind = stringFromObj(rt, obj, "supplementaryKind");
   a.sizingState     = sizingStateFromString(stringFromObj(rt, obj, "sizingState", "placeholder"));
   a.isDirty         = boolFromObj(rt, obj, "isDirty");
   a.tier            = tierFromString(stringFromObj(rt, obj, "tier", "outside"));
   a.isSticky        = boolFromObj(rt, obj, "isSticky");
-  a.alpha           = doubleFromObj(rt, obj, "alpha", 1.0);
   a.isAnimating     = boolFromObj(rt, obj, "isAnimating");
+
+  // extras: arbitrary key-value pairs
+  Value extrasVal = obj.getProperty(rt, "extras");
+  if (extrasVal.isObject()) {
+    auto extrasObj = extrasVal.getObject(rt);
+    auto names = extrasObj.getPropertyNames(rt);
+    size_t count = names.size(rt);
+    for (size_t i = 0; i < count; ++i) {
+      auto name = names.getValueAtIndex(rt, i).getString(rt).utf8(rt);
+      Value v = extrasObj.getProperty(rt, name.c_str());
+      if (v.isNumber()) {
+        a.extras[name] = v.getNumber();
+      }
+    }
+  }
+
   return a;
 }
 
@@ -229,6 +282,18 @@ Object LayoutCache::attrsToJSI(Runtime& rt, const LayoutAttributes& a) {
   obj.setProperty(rt, "frame", std::move(frame));
 
   obj.setProperty(rt, "zIndex",           Value(a.zIndex));
+  obj.setProperty(rt, "alpha",            Value(a.alpha));
+  obj.setProperty(rt, "isHidden",         Value(a.isHidden));
+
+  // Only serialize transform3D if non-identity (avoid overhead for common case).
+  if (a.transform3D != kIdentityTransform3D) {
+    auto t3dArr = Array(rt, 16);
+    for (size_t i = 0; i < 16; ++i) {
+      t3dArr.setValueAtIndex(rt, i, Value(a.transform3D[i]));
+    }
+    obj.setProperty(rt, "transform3D", std::move(t3dArr));
+  }
+
   obj.setProperty(rt, "isSupplementary",  Value(a.isSupplementary));
   obj.setProperty(rt, "supplementaryKind",
       String::createFromUtf8(rt, a.supplementaryKind));
@@ -238,8 +303,16 @@ Object LayoutCache::attrsToJSI(Runtime& rt, const LayoutAttributes& a) {
   obj.setProperty(rt, "tier",
       String::createFromAscii(rt, tierToString(a.tier)));
   obj.setProperty(rt, "isSticky",     Value(a.isSticky));
-  obj.setProperty(rt, "alpha",        Value(a.alpha));
   obj.setProperty(rt, "isAnimating",  Value(a.isAnimating));
+
+  // Only serialize extras if non-empty.
+  if (!a.extras.empty()) {
+    Object extrasObj(rt);
+    for (const auto& [k, v] : a.extras) {
+      extrasObj.setProperty(rt, k.c_str(), Value(v));
+    }
+    obj.setProperty(rt, "extras", std::move(extrasObj));
+  }
 
   return obj;
 }
@@ -328,6 +401,21 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
         auto arr = Array(rt, offsets.size());
         for (size_t i = 0; i < offsets.size(); ++i) {
           arr.setValueAtIndex(rt, i, Value(offsets[i]));
+        }
+        return Value(rt, arr);
+      }));
+
+  // getItemHeights(section, count) → number[]
+  target.setProperty(rt, "getItemHeights",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "getItemHeights"), 2,
+      [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        int section = count >= 1 ? static_cast<int>(args[0].getNumber()) : 0;
+        int itemCount = count >= 2 ? static_cast<int>(args[1].getNumber()) : 0;
+        auto heights = getItemHeights(section, itemCount);
+        auto arr = Array(rt, heights.size());
+        for (size_t i = 0; i < heights.size(); ++i) {
+          arr.setValueAtIndex(rt, i, Value(heights[i]));
         }
         return Value(rt, arr);
       }));

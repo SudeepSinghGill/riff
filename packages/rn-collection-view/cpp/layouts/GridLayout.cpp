@@ -1,5 +1,6 @@
 #include "GridLayout.h"
 #include <algorithm>
+#include <limits>
 
 namespace rncv {
 
@@ -87,6 +88,77 @@ void GridLayout::compute(const GridLayoutParams& params) {
     attrs.sizingState = SizingState::Measured;
     _cache->setAttributes(attrs);
   }
+}
+
+// ── LayoutEngine protocol ────────────────────────────────────────────────────
+
+bool GridLayout::applyMeasurements(
+    const std::vector<MeasurementDelta>& deltas,
+    LayoutCache& cache) {
+  if (deltas.empty()) return true;
+
+  // For grid layout, heights are row-aligned. When one item's height changes,
+  // the entire row's height changes, and all subsequent rows shift.
+  // Strategy: update heights, then re-sort by index and recompute row Y positions.
+
+  // Update heights in cache first.
+  for (const auto& d : deltas) {
+    auto attrs = cache.getAttributes(d.key);
+    if (attrs) {
+      auto updated = *attrs;
+      updated.frame.height = d.newValue;
+      updated.sizingState = SizingState::Measured;
+      cache.setAttributes(updated);
+    }
+  }
+
+  // Get all items sorted by index.
+  auto all = cache.getAll();
+  std::sort(all.begin(), all.end(), [](const LayoutAttributes& a, const LayoutAttributes& b) {
+    return a.index < b.index;
+  });
+
+  if (all.empty()) return true;
+
+  // Determine columns from the x positions of the first few items.
+  // Items in the same row have different x but same y.
+  double firstY = all[0].frame.y;
+  int cols = 0;
+  for (const auto& a : all) {
+    if (std::abs(a.frame.y - firstY) < 0.5) cols++;
+    else break;
+  }
+  if (cols <= 0) cols = 1;
+
+  // Determine row spacing from gap between rows.
+  double rowSpacing = 0;
+  if (all.size() > static_cast<size_t>(cols)) {
+    double row0Bottom = all[0].frame.y + all[0].frame.height;
+    rowSpacing = all[cols].frame.y - row0Bottom;
+    if (rowSpacing < 0) rowSpacing = 0;
+  }
+
+  // Recompute row Y positions.
+  double y = all[0].frame.y; // preserve the starting Y (inset)
+  for (size_t i = 0; i < all.size(); i += cols) {
+    // Find row max height.
+    double rowMax = 0;
+    for (size_t j = i; j < i + cols && j < all.size(); ++j) {
+      if (all[j].frame.height > rowMax) rowMax = all[j].frame.height;
+    }
+    // Apply to all items in this row.
+    for (size_t j = i; j < i + cols && j < all.size(); ++j) {
+      if (all[j].frame.y != y || all[j].frame.height != rowMax) {
+        auto updated = all[j];
+        updated.frame.y = y;
+        updated.frame.height = rowMax;
+        cache.setAttributes(updated);
+      }
+    }
+    y += rowMax + rowSpacing;
+  }
+
+  return true;
 }
 
 // ── JSI parameter extraction ──────────────────────────────────────────────────

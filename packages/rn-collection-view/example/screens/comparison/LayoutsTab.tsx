@@ -1,79 +1,92 @@
 /**
- * Tab 4 — Layout Showcase
+ * Tab 4 — Layout Showcase (ShadowNode-powered)
  *
- * Demonstrates all built-in layout engines with FlashList comparison callouts.
+ * Demonstrates all built-in layout engines using CollectionView with the
+ * ShadowNode path. Each layout type is backed by a C++ engine that writes
+ * complete LayoutAttributes to the shared LayoutCache. The ShadowNode reads
+ * the cache and applies positions — it has no layout-type-specific logic.
  *
  * Sub-tabs:
+ *   List      — C++ ListLayout, vertical list. FlashList: core use case.
  *   Grid      — C++ GridLayout, fixed columns, row-aligned. FlashList: numColumns (similar).
  *   Masonry   — C++ MasonryLayout, shortest-column. FlashList: MasonryFlashList (available).
  *   Flow      — C++ FlowLayout, variable-width wrapping. FlashList: not possible.
+ *              Shows the two-pass effect: estimated sizes → Yoga measurement → reflow.
  *   Radial Arc — TS custom layout, circular. FlashList: not possible.
  *   3D Carousel — TS custom layout, perspective. FlashList: not possible.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { MasonryList } from '../../components/MasonryList';
-import { GridList } from '../../components/GridList';
+import { Riff as CollectionView } from '../../components/CollectionView';
+import { list } from 'riff/src/layouts/list';
+import { grid } from 'riff/src/layouts/grid';
+import { masonry } from 'riff/src/layouts/masonry';
+import { flow } from 'riff/src/layouts/flow';
 import { CircularList } from '../../components/CircularList';
 import { Carousel3D } from '../../components/Carousel3D';
-import NativeCollectionViewModule from 'riff/src/specs/NativeCollectionViewModule';
-
-const nativeMod = NativeCollectionViewModule as unknown as {
-  flowLayout: {
-    computeFlowLayout(params: {
-      itemCount: number;
-      itemSpacing: number;
-      lineSpacing: number;
-      viewportWidth: number;
-      sectionInsetTop?: number;
-      sectionInsetBottom?: number;
-      sectionInsetLeft?: number;
-      sectionInsetRight?: number;
-      itemWidths: number[];
-      itemHeights: number[];
-      keys: string[];
-    }): { positions: number[]; contentHeight: number };
-  };
-};
 
 // ── Shared colors ────────────────────────────────────────────────────────────
 
 const COLORS = ['#e63946', '#2a9d8f', '#e9c46a', '#f4a261', '#264653', '#457b9d', '#6a4c93', '#1982c4'];
 
+// ── List data ────────────────────────────────────────────────────────────────
+
+const LIST_COUNT = 500;
+type ListItem = { id: string; color: string; num: number; subtitle: string };
+const LIST_DATA: ListItem[] = Array.from({ length: LIST_COUNT }, (_, i) => ({
+  id: `list-${i}`,
+  color: COLORS[i % COLORS.length]!,
+  num: i,
+  subtitle: `Item ${i} — ${['Short', 'A bit longer text', 'This is a much longer subtitle to show variable content'][i % 3]}`,
+}));
+
 // ── Grid data ────────────────────────────────────────────────────────────────
 
 const GRID_COUNT = 200;
-type GridItem = { id: number; color: string };
+type GridItem = { id: string; color: string; num: number };
 const GRID_DATA: GridItem[] = Array.from({ length: GRID_COUNT }, (_, i) => ({
-  id: i,
+  id: `grid-${i}`,
   color: COLORS[i % COLORS.length]!,
+  num: i,
 }));
 
 // ── Masonry data ─────────────────────────────────────────────────────────────
 
 const MASONRY_COUNT = 200;
-type MasonryItem = { id: number; height: number; color: string };
+type MasonryItem = { id: string; height: number; color: string; num: number };
+const MASONRY_HEIGHTS = Array.from({ length: MASONRY_COUNT }, () => 80 + Math.floor(Math.random() * 120));
 const MASONRY_DATA: MasonryItem[] = Array.from({ length: MASONRY_COUNT }, (_, i) => ({
-  id: i,
-  height: 80 + Math.floor(Math.random() * 120),
+  id: `masonry-${i}`,
+  height: MASONRY_HEIGHTS[i]!,
   color: COLORS[i % COLORS.length]!,
+  num: i,
 }));
 
-// ── Flow data (tag cloud) ────────────────────────────────────────────────────
+// ── Flow data (tag cloud) — Two-pass demo ────────────────────────────────────
+// The two-pass effect: initial render uses estimated sizes from sizeForItem().
+// Yoga then measures actual text widths. The layout engine receives the deltas
+// and reflows items into different row positions. Items visibly rearrange from
+// estimated to measured positions.
 
 const TAG_LABELS = [
-  'React Native', 'C++', 'JSI', 'TypeScript', 'Layout', 'Masonry', 'Grid',
+  'React Native', 'C++', 'JSI', 'TypeScript', 'Layout Engine', 'Masonry', 'Grid',
   'Flow', 'Custom', 'Carousel', 'Performance', 'Virtualization', 'Windowing',
   'Sticky', 'Headers', 'Prefetch', 'Diff', 'Snapshot', 'Animation', 'Fabric',
   'Hermes', 'iOS', 'Android', 'Yoga', 'Riff', 'FlashList', 'FlatList',
-  'ScrollView', 'Reanimated', 'Gesture', 'UIKit', 'SwiftUI', 'Compose', 'Kotlin',
-  'Bridge', 'TurboModule', 'Codegen', 'Metro', 'Babel', 'SWC',
+  'ScrollView', 'Reanimated', 'Gesture Handler', 'UIKit', 'SwiftUI', 'Compose',
+  'Kotlin', 'Bridge', 'TurboModule', 'Codegen', 'Metro', 'Babel', 'SWC',
+  // Longer labels to make two-pass effect more visible
+  'Layout Cache Architecture', 'Shadow Node Measurement', 'Content Determined Dimensions',
+  'Shortest Column Algorithm', 'Row Height Alignment', 'Viewport Windowing',
+  'Cell Identity Preservation', 'Scroll Offset Correction', 'Progressive Layout',
+  'Three-Tier Height Resolution',
 ];
-type FlowTag = { id: number; label: string; width: number; color: string };
+type FlowTag = { id: string; label: string; estimatedWidth: number; color: string };
 const FLOW_DATA: FlowTag[] = TAG_LABELS.map((label, i) => ({
-  id: i,
+  id: `flow-${i}`,
   label,
-  width: 24 + label.length * 8.5, // approximate text width + padding
+  // Intentionally imprecise estimate — the two-pass effect corrects this.
+  estimatedWidth: 20 + label.length * 7,
   color: COLORS[i % COLORS.length]!,
 }));
 
@@ -95,106 +108,178 @@ const CAROUSEL_DATA: CarouselItem[] = Array.from({ length: CAROUSEL_COUNT }, (_,
   color: COLORS[i % COLORS.length]!,
 }));
 
-// ── Flow layout component (lightweight, inline) ──────────────────────────────
+// ── List layout config ──────────────────────────────────────────────────────
 
-function FlowList({ data }: { data: FlowTag[] }) {
-  const [vpWidth, setVpWidth] = useState(0);
-  const [vpHeight, setVpHeight] = useState(0);
-  const [scrollY, setScrollY] = useState(0);
-
-  const layout = React.useMemo(() => {
-    if (vpWidth <= 0 || data.length === 0) return null;
-    return nativeMod.flowLayout.computeFlowLayout({
-      itemCount: data.length,
-      itemSpacing: 8,
-      lineSpacing: 8,
-      viewportWidth: vpWidth,
-      sectionInsetTop: 8,
-      sectionInsetBottom: 8,
-      sectionInsetLeft: 8,
-      sectionInsetRight: 8,
-      itemWidths: data.map(d => d.width),
-      itemHeights: data.map(() => 34),
-      keys: data.map(d => `flow-${d.id}`),
-    });
-  }, [data, vpWidth]);
-
-  const cells = React.useMemo(() => {
-    if (!layout || vpHeight <= 0) return null;
-    const pad = 2 * vpHeight;
-    const topEdge = scrollY - pad;
-    const bottomEdge = scrollY + vpHeight + pad;
-    const pos = layout.positions;
-    const elements: React.ReactElement[] = [];
-
-    for (let i = 0; i < data.length; i++) {
-      const x = pos[i * 4]!;
-      const y = pos[i * 4 + 1]!;
-      const w = pos[i * 4 + 2]!;
-      const h = pos[i * 4 + 3]!;
-      if (y + h < topEdge || y > bottomEdge) continue;
-      elements.push(
-        <View key={data[i]!.id} style={{
-          position: 'absolute', left: x, top: y, width: w, height: h,
-          backgroundColor: data[i]!.color, borderRadius: 17,
-          alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Text style={S.flowTagText}>{data[i]!.label}</Text>
-        </View>
-      );
-    }
-    return elements;
-  }, [layout, scrollY, vpHeight, data]);
+function ListDemo() {
+  const listLayout = useMemo(() => list({
+    itemHeight: 72,
+    itemSpacing: 0,
+  }), []);
 
   return (
-    <ScrollView
-      style={S.flex}
-      onLayout={(e: any) => { setVpWidth(e.nativeEvent.layout.width); setVpHeight(e.nativeEvent.layout.height); }}
-      onScroll={(e: any) => setScrollY(e.nativeEvent.contentOffset.y)}
-      scrollEventThrottle={16}
-    >
-      <View style={{ height: layout?.contentHeight ?? 0 }}>
-        {cells}
-      </View>
-    </ScrollView>
+    <CollectionView
+      data={LIST_DATA}
+      layout={listLayout}
+      estimatedItemHeight={72}
+      sectionInsetTop={0}
+      sectionInsetBottom={0}
+      sectionInsetLeft={0}
+      sectionInsetRight={0}
+      keyExtractor={useCallback((item: ListItem) => item.id, [])}
+      renderItem={useCallback(({ item }: { item: ListItem }) => (
+        <View style={[S.listCell, { borderLeftColor: item.color }]}>
+          <Text style={S.listCellNum}>{item.num}</Text>
+          <View style={S.listCellContent}>
+            <Text style={S.listCellTitle}>Item {item.num}</Text>
+            <Text style={S.listCellSub} numberOfLines={1}>{item.subtitle}</Text>
+          </View>
+        </View>
+      ), [])}
+    />
   );
 }
 
-type SubTab = 'grid' | 'masonry' | 'flow' | 'circular' | 'carousel';
+// ── Grid layout config ──────────────────────────────────────────────────────
+
+function GridDemo() {
+  const gridLayout = useMemo(() => grid({
+    columns: 3,
+    rowHeight: 100,
+    columnSpacing: 8,
+    rowSpacing: 8,
+  }), []);
+
+  return (
+    <CollectionView
+      data={GRID_DATA}
+      layout={gridLayout}
+      estimatedItemHeight={100}
+      sectionInsetTop={8}
+      sectionInsetBottom={8}
+      sectionInsetLeft={8}
+      sectionInsetRight={8}
+      keyExtractor={useCallback((item: GridItem) => item.id, [])}
+      renderItem={useCallback(({ item }: { item: GridItem }) => (
+        <View style={[S.gridCell, { backgroundColor: item.color }]}>
+          <Text style={S.gridCellText}>{item.num}</Text>
+        </View>
+      ), [])}
+    />
+  );
+}
+
+// ── Masonry layout config ───────────────────────────────────────────────────
+
+function MasonryDemo() {
+  const masonryLayout = useMemo(() => masonry({
+    columns: 2,
+    columnSpacing: 8,
+    rowSpacing: 8,
+    heightForItem: (index: number) => MASONRY_HEIGHTS[index] ?? 100,
+  }), []);
+
+  return (
+    <CollectionView
+      data={MASONRY_DATA}
+      layout={masonryLayout}
+      estimatedItemHeight={140}
+      sectionInsetTop={8}
+      sectionInsetBottom={8}
+      sectionInsetLeft={8}
+      sectionInsetRight={8}
+      keyExtractor={useCallback((item: MasonryItem) => item.id, [])}
+      renderItem={useCallback(({ item }: { item: MasonryItem }) => (
+        <View style={[S.masonryCell, { backgroundColor: item.color }]}>
+          <Text style={S.masonryCellText}>{item.num}</Text>
+          <Text style={S.masonryCellSub}>{item.height}px</Text>
+        </View>
+      ), [])}
+    />
+  );
+}
+
+// ── Flow layout config (two-pass demo) ──────────────────────────────────────
+
+function FlowDemo() {
+  const [pass, setPass] = useState(0);
+
+  const flowLayout = useMemo(() => flow({
+    itemSpacing: 8,
+    lineSpacing: 8,
+    sizeForItem: (index: number) => ({
+      width: FLOW_DATA[index]?.estimatedWidth ?? 80,
+      height: 34,
+    }),
+  }), []);
+
+  return (
+    <View style={S.flex}>
+      <View style={S.flowInfoBar}>
+        <Text style={S.flowInfoText}>
+          Two-pass demo: tags use estimated widths initially.{'\n'}
+          Yoga measures actual text width → layout reflows.{'\n'}
+          Watch items rearrange from estimated to measured positions.
+        </Text>
+      </View>
+      <CollectionView
+        data={FLOW_DATA}
+        layout={flowLayout}
+        estimatedItemHeight={34}
+        sectionInsetTop={8}
+        sectionInsetBottom={8}
+        sectionInsetLeft={8}
+        sectionInsetRight={8}
+        keyExtractor={useCallback((item: FlowTag) => item.id, [])}
+        renderItem={useCallback(({ item }: { item: FlowTag }) => (
+          <View style={[S.flowTag, { backgroundColor: item.color }]}>
+            <Text style={S.flowTagText}>{item.label}</Text>
+          </View>
+        ), [])}
+      />
+    </View>
+  );
+}
+
+type SubTab = 'list' | 'grid' | 'masonry' | 'flow' | 'circular' | 'carousel';
 
 // ── Callout bullets per layout ───────────────────────────────────────────────
-// type: 'green' = built-in/easy, 'amber' = possible but manual, 'red' = impossible, 'blue' = info
-
 type Bullet = { type: 'green' | 'amber' | 'red' | 'blue'; text: string };
 
 const CALLOUTS: Record<SubTab, Bullet[]> = {
+  list: [
+    { type: 'green', text: 'FlashList: Core use case. FlatList replacement with recycling.' },
+    { type: 'blue', text: 'Engine: C++ ListLayout via JSI → ShadowNode applies positions from LayoutCache.' },
+    { type: 'blue', text: 'Default layout: when no layout prop is given, Riff auto-creates a ListLayout.' },
+  ],
   grid: [
     { type: 'green', text: 'FlashList: numColumns prop provides similar fixed-column grid layout.' },
-    { type: 'blue', text: 'Engine: C++ GridLayout via JSI. Layout computed on UI thread.' },
+    { type: 'blue', text: 'Engine: C++ GridLayout via JSI → ShadowNode applies positions from LayoutCache.' },
   ],
   masonry: [
     { type: 'green', text: 'FlashList: MasonryFlashList available as a separate import. Similar capability.' },
-    { type: 'blue', text: 'Engine: C++ MasonryLayout via JSI. Shortest-column placement.' },
+    { type: 'blue', text: 'Engine: C++ MasonryLayout via JSI. Shortest-column placement, Yoga height refinement.' },
   ],
   flow: [
-    { type: 'amber', text: 'FlashList: Possible via custom LayoutProvider, like in RLV. Requires manual width tracking and row-break logic — not built-in.' },
-    { type: 'blue', text: 'Engine: C++ FlowLayout via JSI. Variable-width items packed left-to-right, auto line-wrap.' },
+    { type: 'amber', text: 'FlashList: Possible via custom LayoutProvider, but requires manual row-break logic.' },
+    { type: 'blue', text: 'Two-pass: estimated sizes → Yoga measures → layout engine reflows. Watch items shift.' },
+    { type: 'blue', text: 'Engine: C++ FlowLayout via JSI. ContentDimension=Both (width + height are cell-intrinsic).' },
   ],
   circular: [
-    { type: 'red', text: 'FlashList: Not possible. Items must be in linear order. Radial/arc positioning requires arbitrary (x, y) placement.' },
+    { type: 'red', text: 'FlashList: Not possible. Radial positioning requires arbitrary (x, y) placement.' },
     { type: 'blue', text: 'Scroll vertically to rotate the arc.' },
-    { type: 'blue', text: 'Engine: TS custom layout. Can be rewritten in C++ for better perf, or in future codegen will generate C++ layout from JS.' },
+    { type: 'blue', text: 'Engine: TS custom layout. ContentDimension=None — layout governs everything.' },
   ],
   carousel: [
-    { type: 'red', text: 'FlashList: Not possible. Requires per-item perspective transforms, scale by depth, and z-ordering — all driven by scroll position.' },
+    { type: 'red', text: 'FlashList: Not possible. Requires per-item perspective transforms and z-ordering.' },
     { type: 'blue', text: 'Scroll horizontally to rotate the carousel.' },
-    { type: 'blue', text: 'Engine: TS custom layout. Can be rewritten in C++ for better perf, or in future codegen will generate C++ layout from JS.' },
+    { type: 'blue', text: 'Engine: TS custom layout. ContentDimension=None — layout governs everything.' },
   ],
 };
 
 // ── Sub-tab picker ───────────────────────────────────────────────────────────
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
+  { key: 'list', label: 'List' },
   { key: 'grid', label: 'Grid' },
   { key: 'masonry', label: 'Masonry' },
   { key: 'flow', label: 'Flow' },
@@ -203,11 +288,8 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
 ];
 
 export default function LayoutsTab() {
-  const [subTab, setSubTab] = useState<SubTab>('grid');
+  const [subTab, setSubTab] = useState<SubTab>('list');
 
-  const getHeight = useCallback((item: MasonryItem) => item.height, []);
-  const masonryKey = useCallback((item: MasonryItem) => String(item.id), []);
-  const gridKey = useCallback((item: GridItem) => String(item.id), []);
   const circularKey = useCallback((item: CircularItem) => String(item.id), []);
   const carouselKey = useCallback((item: CarouselItem) => String(item.id), []);
 
@@ -243,44 +325,10 @@ export default function LayoutsTab() {
       </View>
 
       <View style={S.content}>
-        {subTab === 'grid' && (
-          <GridList
-            data={GRID_DATA}
-            columns={3}
-            columnSpacing={8}
-            rowSpacing={8}
-            rowHeight={100}
-            keyExtractor={gridKey}
-            insets={{ top: 8, left: 8, right: 8, bottom: 8 }}
-            renderItem={({ item }) => (
-              <View style={[S.gridCell, { backgroundColor: item.color }]}>
-                <Text style={S.gridCellText}>{item.id}</Text>
-              </View>
-            )}
-          />
-        )}
-
-        {subTab === 'masonry' && (
-          <MasonryList
-            data={MASONRY_DATA}
-            columns={2}
-            columnSpacing={8}
-            rowSpacing={8}
-            getItemHeight={getHeight}
-            keyExtractor={masonryKey}
-            insets={{ top: 8, left: 8, right: 8, bottom: 8 }}
-            renderItem={({ item }) => (
-              <View style={[S.masonryCell, { backgroundColor: item.color }]}>
-                <Text style={S.masonryCellText}>{item.id}</Text>
-                <Text style={S.masonryCellSub}>{item.height}px</Text>
-              </View>
-            )}
-          />
-        )}
-
-        {subTab === 'flow' && (
-          <FlowList data={FLOW_DATA} />
-        )}
+        {subTab === 'list' && <ListDemo />}
+        {subTab === 'grid' && <GridDemo />}
+        {subTab === 'masonry' && <MasonryDemo />}
+        {subTab === 'flow' && <FlowDemo />}
 
         {subTab === 'circular' && (
           <CircularList
@@ -338,6 +386,14 @@ const S = StyleSheet.create({
 
   content: { flex: 1 },
 
+  listCell: { height: 72, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16,
+              borderLeftWidth: 4, borderBottomWidth: StyleSheet.hairlineWidth,
+              borderBottomColor: 'rgba(255,255,255,0.08)' },
+  listCellNum: { fontSize: 14, fontWeight: '700', color: '#888', width: 36 },
+  listCellContent: { flex: 1 },
+  listCellTitle: { fontSize: 15, fontWeight: '600', color: '#fff' },
+  listCellSub: { fontSize: 12, color: '#888', marginTop: 2 },
+
   gridCell: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   gridCellText: { fontSize: 18, fontWeight: '700', color: '#fff' },
 
@@ -345,7 +401,12 @@ const S = StyleSheet.create({
   masonryCellText: { fontSize: 18, fontWeight: '700', color: '#fff' },
   masonryCellSub: { fontSize: 10, color: 'rgba(255,255,255,0.6)', marginTop: 2 },
 
-  flowTagText: { fontSize: 12, fontWeight: '600', color: '#fff' },
+  flowInfoBar: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#1a1a2a',
+                 marginHorizontal: 8, borderRadius: 8, marginBottom: 6 },
+  flowInfoText: { fontSize: 11, lineHeight: 16, color: '#93c5fd' },
+  flowTag: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6,
+             alignItems: 'center', justifyContent: 'center' },
+  flowTagText: { fontSize: 13, fontWeight: '600', color: '#fff' },
 
   circularCell: { flex: 1, borderRadius: 35, alignItems: 'center', justifyContent: 'center' },
   circularText: { fontSize: 20, fontWeight: '700', color: '#fff' },

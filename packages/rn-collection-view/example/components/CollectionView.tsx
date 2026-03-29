@@ -14,9 +14,8 @@
  *   Items in the measure range (beyond render range, parked at top:-9999) use
  *   Activity=hidden so Fabric computes their Yoga layout for height measurement
  *   without painting them or firing their user-cell effects.
- *   Heights are reported via RNMeasuredCell (M4.2): a Fabric view that fires
- *   onMeasured from layoutSubviews — before the frame reaches the screen —
- *   eliminating the JS ref.measure() roundtrip entirely.
+ *   Heights are measured by the ShadowNode via Yoga and written back to the
+ *   C++ LayoutCache — no JS measurement roundtrip needed.
  *
  * Scroll path optimisations:
  *   - Window range computed with O(1) arithmetic (no JSI on scroll tick).
@@ -27,10 +26,8 @@
  *   - updateScrollPosition removed: C++ already receives scroll position on the
  *     UI thread via UIScrollViewDelegate (M2.2b), one frame before JS sees it.
  *
- * Scroll container is fully pluggable via three layers (§4.2):
- *   1. scrollViewProps      — forward extra props to the default ScrollView
- *   2. ScrollViewComponent  — swap the component class entirely
- *   3. renderScrollView     — full render control (render prop)
+ * Scroll container: native RNCollectionViewContainer (ShadowNode-managed).
+ * ScrollViewComponent / renderScrollView are legacy — warn if provided.
  */
 import React, {
   useCallback,
@@ -42,7 +39,7 @@ import React, {
   useState,
 } from 'react';
 import {
-  findNodeHandle,
+  Dimensions,
   LayoutAnimation,
   ScrollView,
   ScrollViewProps,
@@ -62,10 +59,10 @@ const Activity = (React as any).Activity as
 
 import NativeCollectionViewModule from 'riff/src/specs/NativeCollectionViewModule';
 import { RiffSnapshot } from './CollectionSnapshot';
-import RNMeasuredCell from './RNMeasuredCellNativeComponent';
 import RNScrollCoordinatedView from './RNScrollCoordinatedViewNativeComponent';
-import { layoutCache } from 'riff/src/LayoutCache';
+import RNCollectionViewContainer from './RNCollectionViewContainerNativeComponent';
 import type { CollectionViewLayout, LayoutContext } from 'riff/src/types/protocol';
+import { list as listLayout } from 'riff/src/layouts/list';
 
 // ─── JSI module types ─────────────────────────────────────────────────────────
 
@@ -73,7 +70,16 @@ type NativeRange = { first: number; last: number };
 type NativeWindowState = { render: NativeRange; visible: NativeRange };
 
 const nativeMod = NativeCollectionViewModule as unknown as {
-  listLayout: { computeListLayout(params: object): void };
+  layoutCacheId: number;
+  layoutCache: {
+    clear(): void;
+    setAttributes(attrs: object): void;
+    getAttributes(key: string): any;
+    removeAttributes(key: string): void;
+    getItemHeights(section: number, count: number): number[];
+    getTotalContentSize(): { width: number; height: number };
+    version(): number;
+  };
   metrics: {
     startFrameTimer(): void;
     stopFrameTimer(): void;
@@ -104,7 +110,6 @@ const nativeMod = NativeCollectionViewModule as unknown as {
   };
   windowController: {
     getScrollPosition(): { y: number; x: number };
-    attachScrollView(reactTag: number): void;
     // P1.1 — C++ window controller
     computeRanges(
       scrollY: number, vpHeight: number, itemCount: number,
@@ -126,7 +131,6 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     ): NativeRange;
   };
 };
-const nativeListLayout       = nativeMod.listLayout;
 const nativeWindowController = nativeMod.windowController;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -372,6 +376,21 @@ export interface RiffProps<T = unknown> {
    * Uses CADisplayLink for accurate frame time — more precise than RAF-based FPS.
    */
   showHUD?: boolean;
+
+  /**
+   * Seed container width for the first render, before onLayout fires.
+   * When the layout protocol is active, this lets prepare() run immediately
+   * so cells are positioned from heightForItem/sizeForItem on frame 1
+   * instead of falling back to uniform stride estimates.
+   * Defaults to Dimensions.get('window').width. Set to 0 to disable seeding.
+   */
+  initialWidth?: number;
+
+  /**
+   * Seed container height for the first render, before onLayout fires.
+   * Defaults to Dimensions.get('window').height.
+   */
+  initialHeight?: number;
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -390,125 +409,9 @@ type HUDSnapshot = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Computes render and visible index ranges from scroll position.
- * O(1) — pure arithmetic, no cache or JSI access.
- *
- * Item i has:  top = sectionInsetTop + i * stride
- *              bottom = top + itemHeight
- *
- * Velocity-adaptive (M3.4): the render window is asymmetric.
- * The leading edge expands as scroll speed increases so cells mount
- * before the viewport reaches them. The trailing edge contracts to
- * evict cells behind the user sooner and free memory faster.
- *
- * velocity: px/ms, positive = scrolling down. 0 = symmetric.
- * Each 1 px/ms of speed adds 1 additional viewport on the leading edge
- * (capped at +4 viewports). Trailing edge shrinks to a minimum of 0.25×.
- *
- * We add ±1 to both ends as an off-by-one safety margin.
- */
-function computeRanges(
-  scrollY: number,
-  vpHeight: number,
-  itemCount: number,
-  stride: number,
-  renderMult: number,
-  sectionInsetTop: number,
-  velocity: number = 0,
-): { render: Range; visible: Range } {
-  if (itemCount === 0 || stride <= 0) {
-    return { render: { first: 0, last: -1 }, visible: { first: 0, last: -1 } };
-  }
-
-  const speed      = Math.abs(velocity);
-  const leadBoost  = Math.min(4, speed) * renderMult;
-  const leadMult   = renderMult + leadBoost;
-  const trailMult  = Math.max(0.25, renderMult - leadBoost * 0.5);
-  const goingDown  = velocity >= 0;
-
-  const abovePad = (goingDown ? trailMult : leadMult) * vpHeight;
-  const belowPad = (goingDown ? leadMult  : trailMult) * vpHeight;
-
-  const adj = scrollY - sectionInsetTop;
-  return {
-    render: {
-      first: Math.max(0,             Math.floor((adj - abovePad) / stride) - 1),
-      last:  Math.min(itemCount - 1, Math.ceil((adj + vpHeight + belowPad) / stride) + 1),
-    },
-    visible: {
-      first: Math.max(0,             Math.floor(adj / stride) - 1),
-      last:  Math.min(itemCount - 1, Math.ceil((adj + vpHeight) / stride) + 1),
-    },
-  };
-}
-
 function rangeChanged(a: Range | null, b: Range): boolean {
   if (a === null) return true;
   return a.first !== b.first || a.last !== b.last;
-}
-
-/**
- * Binary-search helpers for variable-height range computation.
- * `positions[i]` = top-Y of item i (from itemPositionsRef).
- */
-function posFirst(positions: number[], bound: number): number {
-  // Last index where positions[i] < bound (i.e. item top is above bound).
-  let lo = 0, hi = positions.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (positions[mid]! < bound) lo = mid + 1;
-    else hi = mid;
-  }
-  return Math.max(0, lo - 1);
-}
-
-function posLast(positions: number[], bound: number): number {
-  // Last index where positions[i] <= bound (item top at or above bound).
-  let lo = 0, hi = positions.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (positions[mid]! <= bound) lo = mid;
-    else hi = mid - 1;
-  }
-  return positions[lo]! <= bound ? lo : -1;
-}
-
-/**
- * Variable-height variant of computeRanges.
- * Uses actual item positions from the JS-side positions array
- * so the range is accurate regardless of height variance.
- */
-function computeVariableRanges(
-  scrollY:   number,
-  vpHeight:  number,
-  positions: number[],
-  itemCount: number,
-  renderMult: number,
-  velocity:  number = 0,
-): { render: Range; visible: Range } {
-  if (itemCount === 0 || positions.length === 0) {
-    return { render: { first: 0, last: -1 }, visible: { first: 0, last: -1 } };
-  }
-
-  const speed     = Math.abs(velocity);
-  const leadBoost = Math.min(4, speed) * renderMult;
-  const leadMult  = renderMult + leadBoost;
-  const trailMult = Math.max(0.25, renderMult - leadBoost * 0.5);
-  const goingDown = velocity >= 0;
-
-  const abovePad = (goingDown ? trailMult : leadMult) * vpHeight;
-  const belowPad = (goingDown ? leadMult  : trailMult) * vpHeight;
-
-  const rFirst = posFirst(positions, scrollY - abovePad);
-  const rLast  = Math.min(itemCount - 1, posLast(positions, scrollY + vpHeight + belowPad) + 1);
-  const vFirst = posFirst(positions, scrollY);
-  const vLast  = Math.min(itemCount - 1, posLast(positions, scrollY + vpHeight) + 1);
-
-  return {
-    render:  { first: rFirst, last: rLast },
-    visible: { first: vFirst, last: vLast },
-  };
 }
 
 /**
@@ -769,6 +672,8 @@ export function Riff<T = unknown>({
   style,
   showHUD = false,
   onContainerSizeChange,
+  initialWidth,
+  initialHeight,
 }: RiffProps<T>) {
 
   // ── Section flattening ──────────────────────────────────────────────────────
@@ -809,10 +714,15 @@ export function Riff<T = unknown>({
   const hasStickyHeaders = stickyHeaderFlatIndices.length > 0;
 
   // ── Core state ──────────────────────────────────────────────────────────────
-  const viewportWidthRef  = useRef(0);
-  const viewportHeightRef = useRef(0);
-  const [viewportWidth,  setViewportWidth]  = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
+  // Seed viewport dimensions so the layout protocol can run on frame 1.
+  // Consumer can override via initialWidth/initialHeight for non-full-width containers.
+  // Seeded values are corrected by onContainerLayout once the real dimensions are known.
+  const seedW = initialWidth ?? Dimensions.get('window').width;
+  const seedH = initialHeight ?? Dimensions.get('window').height;
+  const viewportWidthRef  = useRef(seedW);
+  const viewportHeightRef = useRef(seedH);
+  const [viewportWidth,  setViewportWidth]  = useState(seedW);
+  const [viewportHeight, setViewportHeight] = useState(seedH);
   const [contentHeight,  setContentHeight]  = useState(0);
 
   // null = not yet initialized. onContainerLayout computes an eager initial
@@ -851,6 +761,14 @@ export function Riff<T = unknown>({
   }, []);
   const effectiveMountedWindowSize = mountedWindowSize * memoryMultiplier;
 
+  // ── Phase 5: ShadowNode ↔ LayoutCache bridge ──────────────────────────────
+  // layoutCacheId: opaque ID registered in CollectionViewModule's static registry.
+  // ShadowNode looks up the shared LayoutCache during layout() via this ID.
+  // layoutCacheVersion: bumped to trigger Fabric re-commit when cache content
+  // changes (e.g. after heightForItem seeding or batch measurement updates).
+  const layoutCacheId = nativeMod.layoutCacheId;
+  const [layoutCacheVersion, setLayoutCacheVersion] = useState(0);
+
   // Stable renderItem wrapper for MemoizedCellContent.
   // Keeps the latest consumer function in a ref so memo's prop comparison
   // always sees the same function reference — even if the consumer passes a
@@ -860,47 +778,18 @@ export function Riff<T = unknown>({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableRenderItem = useCallback((info: RenderItemInfo<T>) => renderItemRef.current(info), []);
 
-  const scrollRef = useRef<ScrollView>(null);
   const itemCount = data.length;
 
-  // (Pre-populated heights are seeded into measuredHeightsRef below.)
-
   // Variable-height mode (M4.1) — active when estimatedItemHeight is set.
-  // P1.1: C++ window controller — always active, independent of layout engine.
-  const useCppWindow = !!nativeWindowController.computeRanges;
+  // Still used to choose fixed vs variable window controller path.
   const isVariableHeight  = estimatedItemHeight !== undefined;
-  // Effective height used for stride/window computations. In variable mode this
-  // is the estimate; actual heights come in asynchronously via onLayout.
   const effectiveItemHeight = estimatedItemHeight ?? itemHeight ?? 44;
   const stride    = effectiveItemHeight + itemSpacing;
   const itemWidth = Math.max(0, viewportWidth - sectionInsetLeft - sectionInsetRight);
 
-  // In variable-height mode, use actual average measured height for budget
-  // calculations once measurements are available. `stride` uses the estimate
-  // which can be significantly off — budget would over/under-count items.
-
-  // M4.1 — per-key measured heights (filled by cell onLayout, survives re-renders).
-  // In sectioned mode, supplementary views with declared heights are pre-seeded.
-  const measuredHeightsRef  = useRef(new Map<string, number>());
-  if (flattenResult) {
-    for (const [k, h] of flattenResult.declaredHeights) {
-      if (!measuredHeightsRef.current.has(k)) measuredHeightsRef.current.set(k, h);
-    }
-  }
-  // JS-side top-Y for each item. Updated synchronously during render (useMemo)
-  // so that stickyConfigMap and the layout effect both see fresh positions
-  // in the same render cycle when measuredVersion changes.
-  const itemPositionsRef    = useRef<number[]>([]);
-  // Bumping this triggers a new layout pass so measured heights are applied.
-  const [measuredVersion, setMeasuredVersion] = useState(0);
-  // RAF-based batch accumulator — all onLayout callbacks within a single frame
-  // are collected here and flushed together so we trigger at most one re-layout
-  // and one scroll correction per frame instead of one per cell.
-  const pendingMeasurementsRef = useRef(new Map<string, { index: number; height: number }>());
-  const flushScheduledRef      = useRef(false);
-  // Separate microtask flush for measure-only (off-screen) cells.
-  // They don't need scroll correction and don't need to wait a full RAF frame.
-  const microFlushScheduledRef = useRef(false);
+  // Track C++ LayoutCache version to detect when ShadowNode writes heights.
+  const lastCacheVersionRef = useRef(0);
+  const nativeLayoutCache = nativeMod.layoutCache;
 
   // M4.1 measure-range — computed inside the layout effect (same batch as
   // renderRange) to prevent a render cascade. Extends the render range by
@@ -911,15 +800,34 @@ export function Riff<T = unknown>({
   // TS layout instances — created once per component instance (stable refs).
 
   // ── Layout protocol bridge ──────────────────────────────────────────────────
-  // When `layout` prop is provided, use it instead of the internal layout engine.
-  // Build LayoutContext from current state and call prepare() when deps change.
-  // The layout writes to the shared LayoutCache (C++ layouts) or maintains its
-  // own position state (TS layouts), and provides spatial queries.
+  // All layout types go through the protocol. When no `layout` prop is given,
+  // a default ListLayout is created from the component's sizing props.
 
-  const useLayoutProtocol = !!layoutProp;
+  // Default list layout — created when consumer doesn't provide a layout prop.
+  const defaultLayout = useMemo(() => {
+    if (layoutProp) return null;
+    return listLayout({
+      itemHeight: isVariableHeight ? undefined : effectiveItemHeight,
+      estimatedItemHeight: isVariableHeight ? effectiveItemHeight : undefined,
+      itemSpacing,
+    });
+  }, [layoutProp, isVariableHeight, effectiveItemHeight, itemSpacing]);
+
+  const effectiveLayout = layoutProp ?? defaultLayout!;
+
+  // Stable callback that resolves measured height for an item by index.
+  // Reads from LayoutCache (ShadowNode writes Yoga-measured heights there).
+  const measuredHeightForItemRef = useRef((index: number, section: number): number | undefined => {
+    const attr = nativeLayoutCache.getAttributes(`item-${section}-${index}`);
+    return attr ? attr.frame.height : undefined;
+  });
+  measuredHeightForItemRef.current = (index: number, section: number): number | undefined => {
+    const attr = nativeLayoutCache.getAttributes(`item-${section}-${index}`);
+    return attr ? attr.frame.height : undefined;
+  };
 
   const layoutContext: LayoutContext | null = useMemo(() => {
-    if (!layoutProp || viewportWidth === 0) return null;
+    if (viewportWidth === 0) return null;
     return {
       containerWidth: viewportWidth,
       containerHeight: viewportHeight,
@@ -945,67 +853,47 @@ export function Riff<T = unknown>({
               }] : []),
             ],
           }))
-        : [{ itemCount: data.length, supplementaryItems: [] }],
+        : [{
+            itemCount: data.length,
+            insets: {
+              top: sectionInsetTop,
+              bottom: sectionInsetBottom,
+              left: sectionInsetLeft,
+              right: sectionInsetRight,
+            },
+            supplementaryItems: [],
+          }],
+      measuredHeightForItem: (index: number, section: number) =>
+        measuredHeightForItemRef.current(index, section),
     };
-  }, [layoutProp, viewportWidth, viewportHeight, propSections, data.length]);
+  }, [viewportWidth, viewportHeight, propSections, data.length,
+      sectionInsetTop, sectionInsetBottom, sectionInsetLeft, sectionInsetRight]);
 
   // Prepare the layout when context changes (data, container size).
-  // This replaces the C++ layoutCache.clear() + computeListLayout() calls
-  // for layouts that conform to the protocol.
+  // Seeds the layout cache with positions for all items.
+  // IMPORTANT: after prepare(), sync lastCacheVersionRef with the cache version.
+  // prepare() clears and repopulates the cache, incrementing version by N.
+  // Without this sync, the scroll handler would detect a version change on the
+  // next tick, bump layoutCacheVersion, and trigger another prepare() — creating
+  // an infinite cascade of cache clears that races with the ShadowNode.
   const layoutContentSize = useMemo(() => {
-    if (!layoutProp || !layoutContext) return null;
-    layoutProp.prepare(layoutContext);
-    return layoutProp.contentSize();
-  }, [layoutProp, layoutContext, measuredVersion]);
+    if (!layoutContext) return null;
+    effectiveLayout.prepare(layoutContext);
+    // Sync version ref so scroll handler doesn't re-trigger prepare.
+    lastCacheVersionRef.current = nativeLayoutCache.version();
+    return effectiveLayout.contentSize();
+  }, [effectiveLayout, layoutContext, layoutCacheVersion]);
 
-  // When using layout protocol, the layout provides content height.
-  // This is consumed in the layout effect below.
-  const layoutProtocolContentHeight = layoutContentSize?.height ?? 0;
+  const layoutContentHeight = layoutContentSize?.height ?? 0;
 
   // Query function: get attributes for items in a rect.
-  // Used by the scroll handler and layout effect when layout protocol is active.
+  // Used by the scroll handler and layout effect for range computation.
   const queryLayoutRect = useCallback((rect: { x: number; y: number; width: number; height: number }) => {
-    if (!layoutProp) return [];
-    return layoutProp.attributesForElements(rect);
-  }, [layoutProp]);
+    return effectiveLayout.attributesForElements(rect);
+  }, [effectiveLayout]);
 
-  // ── Positions computation (synchronous, during render) ─────────────────────
-  // Must run BEFORE stickyConfigMap and the layout effect so both see fresh
-  // positions in the same render cycle when measuredVersion changes.
-  // Previously this lived inside useLayoutEffect — that meant stickyConfigMap
-  // (a useMemo) always read stale positions from the previous render.
-  const computedPositions = useMemo(() => {
-    if (!isVariableHeight) return null; // fixed mode: positions = index * stride
-    const itemKeys = data.map((item, i) =>
-      keyExtractor ? keyExtractor(item, i) : String(i),
-    );
-    let avgH = estimatedItemHeight ?? 44;
-    if (measuredHeightsRef.current.size > 0) {
-      let sum = 0;
-      for (const h of measuredHeightsRef.current.values()) sum += h;
-      avgH = sum / measuredHeightsRef.current.size;
-    }
-    let y = sectionInsetTop;
-    const positions = new Array<number>(data.length);
-    for (let i = 0; i < data.length; i++) {
-      positions[i] = y;
-      const h = measuredHeightsRef.current.get(itemKeys[i]!) ?? avgH;
-      y += h + itemSpacing;
-    }
-    if (data.length > 0) y -= itemSpacing;
-    y += sectionInsetBottom;
-    // Update the ref synchronously so downstream useMemos see fresh data.
-    itemPositionsRef.current = positions;
-    return { positions, contentHeight: y, avgHeight: avgH };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVariableHeight, data, keyExtractor, estimatedItemHeight,
-      sectionInsetTop, sectionInsetBottom, itemSpacing, measuredVersion]);
-
-  // Budget stride: in variable-height mode, use actual average measured height
-  // once available. Falls back to the estimated stride before any measurements.
-  const budgetStride = (isVariableHeight && computedPositions)
-    ? computedPositions.avgHeight + itemSpacing
-    : stride;
+  // Budget stride for applyBudget: estimated stride for budget calculation.
+  const budgetStride = stride;
 
   // ── Layout pass + initial window state ───────────────────────────────────────
   // useLayoutEffect so the accurate range (with real layout data) is committed
@@ -1013,223 +901,84 @@ export function Riff<T = unknown>({
 
   useLayoutEffect(() => {
     if (viewportWidth === 0 || viewportHeight === 0) return;
+    if (!layoutContentSize) return;
     nativeMod.signpost.begin(1);
     try {
 
-    // ── Layout Protocol path ──────────────────────────────────────────────────
-    // When a layout prop is provided, it has already been prepared (in the
-    // layoutContentSize useMemo). Use its spatial query to determine the
-    // render range instead of index-arithmetic.
-    if (useLayoutProtocol && layoutProp && layoutContentSize) {
-      setContentHeight(layoutProtocolContentHeight);
-
-      if (itemCount === 0) {
-        setRenderRange({ first: 0, last: -1 });
-        return;
-      }
-
-      // Query the layout for items in the render window
-      const scrollY = prevScrollYRef.current;
-      const speed = Math.abs(velocityRef.current);
-      const leadBoost = Math.min(4, speed) * renderMultiplier;
-      const leadMult = renderMultiplier + leadBoost;
-      const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
-      const goingDown = velocityRef.current >= 0;
-      const abovePad = (goingDown ? trailMult : leadMult) * viewportHeight;
-      const belowPad = (goingDown ? leadMult : trailMult) * viewportHeight;
-
-      const attrs = layoutProp.attributesForElements({
-        x: 0,
-        y: scrollY - abovePad,
-        width: viewportWidth,
-        height: viewportHeight + abovePad + belowPad,
-      });
-
-      if (attrs.length === 0) {
-        setRenderRange({ first: 0, last: -1 });
-      } else {
-        // Convert attributes to index range
-        let minIdx = Infinity, maxIdx = -Infinity;
-        for (const attr of attrs) {
-          if (attr.index < minIdx) minIdx = attr.index;
-          if (attr.index > maxIdx) maxIdx = attr.index;
-        }
-        const render = { first: minIdx, last: maxIdx };
-
-        // Apply budget
-        const visAttrs = layoutProp.attributesForElements({
-          x: 0, y: scrollY, width: viewportWidth, height: viewportHeight,
-        });
-        let visFirst = Infinity, visLast = -Infinity;
-        for (const a of visAttrs) {
-          if (a.index < visFirst) visFirst = a.index;
-          if (a.index > visLast) visLast = a.index;
-        }
-        const visible = { first: visFirst === Infinity ? 0 : visFirst, last: visLast === -Infinity ? -1 : visLast };
-
-        const budgeted = useCppWindow
-          ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride)
-          : applyBudget(render, visible, effectiveMountedWindowSize, viewportHeight, budgetStride);
-        prevRenderRef.current = budgeted;
-        setRenderRange(budgeted);
-      }
-
-      return; // finally block fires
-    }
-
-    // ── Legacy path (no layout prop) ──────────────────────────────────────────
-
-    const itemKeys = data.map((item, i) =>
-      keyExtractor ? keyExtractor(item, i) : String(i),
-    );
-
-    // In variable-height mode, pass per-item heights (measured if known, else
-    // the running average of already-measured cells). As more cells are measured
-    // the average converges toward the true mean, so position estimates for
-    // unmeasured items become progressively more accurate. This directly fixes
-    // the forward-scroll render-range drift where binary search on underestimated
-    // positions returns the wrong first/last index.
-    let avgMeasuredHeight = estimatedItemHeight ?? 44;
-    if (isVariableHeight && measuredHeightsRef.current.size > 0) {
-      let sum = 0;
-      for (const h of measuredHeightsRef.current.values()) sum += h;
-      avgMeasuredHeight = sum / measuredHeightsRef.current.size;
-    }
-
-    const itemHeightsArr = isVariableHeight
-      ? data.map((_, i) => measuredHeightsRef.current.get(itemKeys[i]!) ?? avgMeasuredHeight)
-      : undefined;
-
-    const layoutParams = {
-      itemCount,
-      itemHeight: effectiveItemHeight,
-      viewportWidth,
-      sectionInsetTop,
-      sectionInsetBottom,
-      sectionInsetLeft,
-      sectionInsetRight,
-      itemSpacing,
-      section: 0,
-      keys: itemKeys,
-      ...(itemHeightsArr ? { itemHeights: itemHeightsArr } : {}),
-    };
+    setContentHeight(layoutContentHeight);
 
     if (itemCount === 0) {
-      setContentHeight(sectionInsetTop + sectionInsetBottom);
       setRenderRange({ first: 0, last: -1 });
-      return; // finally block fires here
+      return;
     }
 
-    if (isVariableHeight) {
-      // ── Variable-height path ────────────────────────────────────────────────
-      // Positions already computed in the computedPositions useMemo (runs during
-      // render, before this effect). itemPositionsRef.current is already fresh.
-      const positions = itemPositionsRef.current;
-      if (computedPositions) {
-        onItemPositionsChange?.(positions);
-        setContentHeight(computedPositions.contentHeight);
-      }
+    // Query the layout for items in the render window (spatial query).
+    const scrollY = prevScrollYRef.current;
+    const speed = Math.abs(velocityRef.current);
+    const leadBoost = Math.min(4, speed) * renderMultiplier;
+    const leadMult = renderMultiplier + leadBoost;
+    const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
+    const goingDown = velocityRef.current >= 0;
+    const abovePad = (goingDown ? trailMult : leadMult) * viewportHeight;
+    const belowPad = (goingDown ? leadMult : trailMult) * viewportHeight;
 
-      // Use JS-tracked scroll position (prevScrollYRef) so the range is accurate
-      // even immediately after a programmatic scrollTo correction.
-      const scrollY = prevScrollYRef.current;
+    const attrs = effectiveLayout.attributesForElements({
+      x: 0,
+      y: scrollY - abovePad,
+      width: viewportWidth,
+      height: viewportHeight + abovePad + belowPad,
+    });
 
-      // P1.1: use C++ window controller for variable-height range computation.
-      let render: Range, visible: Range;
-      if (useCppWindow) {
-        const ws = nativeWindowController.computeVariableRanges(
-          scrollY, viewportHeight, positions, itemCount, renderMultiplier,
-          velocityRef.current);
-        render = ws.render; visible = ws.visible;
-      } else {
-        const ws = computeVariableRanges(
-          scrollY, viewportHeight, positions, itemCount, renderMultiplier,
-          velocityRef.current);
-        render = ws.render; visible = ws.visible;
+    if (attrs.length === 0) {
+      setRenderRange({ first: 0, last: -1 });
+    } else {
+      let minIdx = Infinity, maxIdx = -Infinity;
+      for (const attr of attrs) {
+        if (attr.index < minIdx) minIdx = attr.index;
+        if (attr.index > maxIdx) maxIdx = attr.index;
       }
-      const budgeted = useCppWindow
-        ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride)
-        : applyBudget(render, visible, effectiveMountedWindowSize, viewportHeight, budgetStride);
+      const render = { first: minIdx, last: maxIdx };
+
+      const visAttrs = effectiveLayout.attributesForElements({
+        x: 0, y: scrollY, width: viewportWidth, height: viewportHeight,
+      });
+      let visFirst = Infinity, visLast = -Infinity;
+      for (const a of visAttrs) {
+        if (a.index < visFirst) visFirst = a.index;
+        if (a.index > visLast) visLast = a.index;
+      }
+      const visible = { first: visFirst === Infinity ? 0 : visFirst, last: visLast === -Infinity ? -1 : visLast };
+
+      const budgeted = nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride);
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
 
-      // Measure range: computed here (same effect, same batch as setRenderRange)
-      // to avoid a separate useEffect that would create a render cascade.
+      // Measure range: extend render range for pre-measurement of variable-height cells.
       if (isVariableHeight && measureAhead > 0) {
         const ahead = Math.ceil(measureAhead * viewportHeight / stride);
-        const newMR = useCppWindow
-          ? nativeWindowController.computeMeasureRange(budgeted.first, budgeted.last, ahead, itemCount)
-          : { first: Math.max(0, budgeted.first - ahead), last: Math.min(itemCount - 1, budgeted.last + ahead) };
+        const newMR = nativeWindowController.computeMeasureRange(budgeted.first, budgeted.last, ahead, itemCount);
         if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
           prevMeasureRef.current = newMR;
           setMeasureRange(newMR);
         }
       }
-
-    } else {
-      // ── Fixed-height path ─────────────────────────────────────────────────────
-      layoutCache.clear();
-      nativeListLayout.computeListLayout(layoutParams);
-      setContentHeight(layoutCache.getTotalContentSize().height);
-
-      // Read current scroll position from native atomics (UI thread is 1 frame ahead).
-      // Independent of layout engine — RNCVScrollObserver writes these always.
-      const scrollY = nativeWindowController.getScrollPosition().y;
-
-      // P1.1: use C++ window controller for range computation when available.
-      let render: Range, visible: Range;
-      if (useCppWindow) {
-        const ws = nativeWindowController.computeRanges(
-          scrollY, viewportHeight, itemCount, stride, renderMultiplier, sectionInsetTop, 0);
-        render = ws.render; visible = ws.visible;
-      } else {
-        const ws = computeRanges(
-          scrollY, viewportHeight, itemCount, stride, renderMultiplier, sectionInsetTop);
-        render = ws.render; visible = ws.visible;
-      }
-      const budgeted = useCppWindow
-        ? nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride)
-        : applyBudget(render, visible, effectiveMountedWindowSize, viewportHeight, budgetStride);
-      prevRenderRef.current = budgeted;
-      setRenderRange(budgeted);
     }
 
     } finally { nativeMod.signpost.end(1); }
   }, [
     viewportWidth,
     viewportHeight,
-    data,
     itemCount,
-    itemHeight,
-    itemSpacing,
-    sectionInsetTop,
-    sectionInsetBottom,
-    sectionInsetLeft,
-    sectionInsetRight,
     renderMultiplier,
     effectiveMountedWindowSize,
     measureAhead,
     stride,
-    estimatedItemHeight,
-    measuredVersion,
     isVariableHeight,
-    computedPositions,
-    // keyExtractor intentionally omitted — keys derive from `data` (already a dep).
-    // Including it would cause infinite re-fires when consumers pass inline arrows.
-    useLayoutProtocol,
-    layoutProp,
+    layoutCacheVersion,
+    effectiveLayout,
     layoutContentSize,
-    layoutProtocolContentHeight,
+    layoutContentHeight,
   ]);
-
-  // ── M2.2b: attach UI-thread scroll observer ──────────────────────────────────
-
-  useEffect(() => {
-    const tag = findNodeHandle(scrollRef.current);
-    if (tag != null) {
-      nativeWindowController.attachScrollView(tag);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // P5.1 — start CADisplayLink when HUD is active, stop on unmount or HUD off.
   useEffect(() => {
@@ -1237,6 +986,19 @@ export function Riff<T = unknown>({
     nativeMod.metrics.startFrameTimer();
     return () => { nativeMod.metrics.stopFrameTimer(); };
   }, [showHUD]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // After initial mount, ShadowNode may have measured children via Yoga.
+  // Check LayoutCache version to pick up any height updates.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const cacheVer = nativeLayoutCache.version();
+      if (cacheVer !== lastCacheVersionRef.current) {
+        lastCacheVersionRef.current = cacheVer;
+        setLayoutCacheVersion(v => v + 1);
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── F1.2: Imperative handle ───────────────────────────────────────────────────
 
@@ -1246,16 +1008,16 @@ export function Riff<T = unknown>({
     apply: (snap: RiffSnapshot<T>, animated = true) => {
       const { data: newData, reloadedKeys } = snap.apply();
 
-      // Evict cached heights for removed items (diff against current data)
+      // Diff for LayoutAnimation — LayoutCache heights are managed by ShadowNode.
       const oldKeys = data.map((item, i) =>
         keyExtractor ? keyExtractor(item, i) : String(i));
       const newKeys = newData.map((item, i) =>
         keyExtractor ? keyExtractor(item, i) : String(i));
       const diff = nativeMod.diffEngine.diff(oldKeys, newKeys);
-      for (const k of diff.removed) measuredHeightsRef.current.delete(k);
 
-      // Evict reloaded items so they re-measure
-      for (const k of reloadedKeys) measuredHeightsRef.current.delete(k);
+      // Evict removed/reloaded items from LayoutCache so they re-measure.
+      for (const k of diff.removed) nativeLayoutCache.removeAttributes(k);
+      for (const k of reloadedKeys) nativeLayoutCache.removeAttributes(k);
 
       // LayoutAnimation for position changes (moves, shifts after insert/delete).
       // 350ms spring gives a clearly visible animation on absolute-positioned cells.
@@ -1275,8 +1037,8 @@ export function Riff<T = unknown>({
     },
 
     invalidateKeys: (keys: Iterable<string>) => {
-      for (const k of keys) measuredHeightsRef.current.delete(k);
-      setMeasuredVersion(v => v + 1);
+      for (const k of keys) nativeLayoutCache.removeAttributes(k);
+      setLayoutCacheVersion(v => v + 1);
     },
   }), [data, keyExtractor, onDataChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1309,115 +1071,22 @@ export function Riff<T = unknown>({
     // mount the first screenful of cells in the SAME commit as the viewport
     // measurement, before any frame is painted.
     if (prevRenderRef.current === null && w > 0 && h > 0) {
-      // P1.1: C++ window controller for initial range (always, independent of layout engine).
+      // Use stride-based arithmetic for the very first range (before layout cache is seeded).
       const wc = nativeWindowController;
-      let initRender: Range, initVisible: Range;
-      if (wc.computeRanges) {
-        const ws = wc.computeRanges(0, h, itemCount, stride, renderMultiplier, sectionInsetTop, 0);
-        initRender = ws.render; initVisible = ws.visible;
-      } else {
-        const ws = computeRanges(0, h, itemCount, stride, renderMultiplier, sectionInsetTop, 0);
-        initRender = ws.render; initVisible = ws.visible;
-      }
-      const budgeted = wc.applyBudget
-        ? wc.applyBudget(initRender.first, initRender.last, initVisible.first, initVisible.last, effectiveMountedWindowSize, h, budgetStride)
-        : applyBudget(initRender, initVisible, effectiveMountedWindowSize, h, budgetStride);
+      const ws = wc.computeRanges(0, h, itemCount, stride, renderMultiplier, sectionInsetTop, 0);
+      const budgeted = wc.applyBudget(ws.render.first, ws.render.last, ws.visible.first, ws.visible.last, effectiveMountedWindowSize, h, budgetStride);
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
 
-      // Also seed content height from estimates so scroll view has a size.
+      // Seed content height from estimates so scroll view has a size.
       const estContent = sectionInsetTop + itemCount * stride - itemSpacing + sectionInsetBottom;
       setContentHeight(estContent);
-
-      // Seed itemPositions for variable-height mode so cells get estimated positions.
-      if (isVariableHeight) {
-        const positions = new Array<number>(itemCount);
-        let y = sectionInsetTop;
-        for (let i = 0; i < itemCount; i++) {
-          positions[i] = y;
-          y += stride;
-        }
-        itemPositionsRef.current = positions;
-      }
     }
-  }, [itemCount, stride, budgetStride, renderMultiplier, sectionInsetTop, sectionInsetBottom, itemSpacing, effectiveMountedWindowSize, isVariableHeight]);
-
-  // ── M4.1 — Cell size measurement ─────────────────────────────────────────────
-
-  const onCellLayout = useCallback((key: string, index: number, actualHeight: number) => {
-    const prev  = measuredHeightsRef.current.get(key) ?? estimatedItemHeight!;
-    const delta = actualHeight - prev;
-    if (Math.abs(delta) < 1) return; // sub-pixel — skip
-
-    // ── Measure-only cells (parked at top:-9999) ─────────────────────────────
-    // They cannot cause viewport jumps so they don't need scroll correction and
-    // don't need to wait a full RAF frame. Store the height immediately and
-    // schedule a microtask flush so heights are available as early as possible
-    // — often before the next scroll event fires.
-    const rr = prevRenderRef.current;
-    const isMeasureOnly = rr !== null && (index < rr.first || index > rr.last);
-
-    if (isMeasureOnly) {
-      // Remove any stale RAF-batch entry — this cell left the render range so
-      // the pending correction it accumulated is no longer valid.
-      pendingMeasurementsRef.current.delete(key);
-      measuredHeightsRef.current.set(key, actualHeight);
-      if (!microFlushScheduledRef.current) {
-        microFlushScheduledRef.current = true;
-        Promise.resolve().then(() => {
-          microFlushScheduledRef.current = false;
-          setMeasuredVersion(v => v + 1);
-        });
-      }
-      return;
-    }
-
-    // ── Render-range cells ────────────────────────────────────────────────────
-    // Accumulate into the pending batch for this animation frame.
-    // All callbacks within one frame are processed together: one scroll
-    // correction, one setMeasuredVersion bump, one layout pass.
-    pendingMeasurementsRef.current.set(key, { index, height: actualHeight });
-
-    if (!flushScheduledRef.current) {
-      flushScheduledRef.current = true;
-      requestAnimationFrame(() => {
-        flushScheduledRef.current = false;
-        const pending = pendingMeasurementsRef.current;
-        if (pending.size === 0) return;
-        nativeMod.signpost.begin(2);
-        pendingMeasurementsRef.current = new Map();
-
-        let scrollCorrection = 0;
-        const currentScrollY = prevScrollYRef.current;
-
-        for (const [k, { index: idx, height }] of pending) {
-          const p = measuredHeightsRef.current.get(k) ?? estimatedItemHeight!;
-          const d = height - p;
-          if (Math.abs(d) < 1) continue;
-          measuredHeightsRef.current.set(k, height);
-
-          // Correct scroll offset for cells that shifted above the viewport.
-          const cellTop = itemPositionsRef.current[idx]
-            ?? (sectionInsetTop + idx * stride);
-          if (cellTop < currentScrollY) {
-            scrollCorrection += d;
-          }
-        }
-
-        if (Math.abs(scrollCorrection) >= 1) {
-          const correctedY = Math.max(0, currentScrollY + scrollCorrection);
-          scrollRef.current?.scrollTo({ y: correctedY, animated: false });
-          prevScrollYRef.current = correctedY;
-          scrollCorrectionCountRef.current += 1; // P5.1
-        }
-
-        setMeasuredVersion(v => v + 1);
-        nativeMod.signpost.end(2);
-      });
-    }
-  }, [estimatedItemHeight, sectionInsetTop, stride]);
+  }, [itemCount, stride, budgetStride, renderMultiplier, sectionInsetTop, sectionInsetBottom, itemSpacing, effectiveMountedWindowSize]);
 
   // ── Scroll props ─────────────────────────────────────────────────────────────
+  // ShadowNode handles measurement (Yoga) and scroll corrections natively.
+  // No JS-side onCellLayout or batching needed.
 
   const contractProps: ScrollViewProps = {
     scrollEventThrottle: 16,
@@ -1440,96 +1109,55 @@ export function Riff<T = unknown>({
       prevScrollYRef.current  = scrollY;
       prevScrollTimeRef.current = now;
 
-      // ── Layout Protocol scroll path ──────────────────────────────────────────
-      if (useLayoutProtocol && layoutProp) {
-        // Check if layout needs recomputation (container resize during scroll)
-        // Note: full resize invalidation is handled by the layout effect, not here.
-
-        const speed = Math.abs(velocityRef.current);
-        const leadBoost = Math.min(4, speed) * renderMultiplier;
-        const leadMult = renderMultiplier + leadBoost;
-        const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
-        const goingDown = velocityRef.current >= 0;
-        const abovePad = (goingDown ? trailMult : leadMult) * vpH;
-        const belowPad = (goingDown ? leadMult : trailMult) * vpH;
-
-        const attrs = layoutProp.attributesForElements({
-          x: 0, y: scrollY - abovePad, width: viewportWidth, height: vpH + abovePad + belowPad,
-        });
-
-        let rFirst = Infinity, rLast = -Infinity;
-        for (const a of attrs) {
-          if (a.index < rFirst) rFirst = a.index;
-          if (a.index > rLast) rLast = a.index;
-        }
-        const newR = { first: rFirst === Infinity ? 0 : rFirst, last: rLast === -Infinity ? -1 : rLast };
-
-        const visAttrs = layoutProp.attributesForElements({
-          x: 0, y: scrollY, width: viewportWidth, height: vpH,
-        });
-        let vFirst = Infinity, vLast = -Infinity;
-        for (const a of visAttrs) {
-          if (a.index < vFirst) vFirst = a.index;
-          if (a.index > vLast) vLast = a.index;
-        }
-        const newV = { first: vFirst === Infinity ? 0 : vFirst, last: vLast === -Infinity ? -1 : vLast };
-
-        const budgetedR = applyBudget(newR, newV, effectiveMountedWindowSize, vpH, budgetStride);
-        const renderChanged = rangeChanged(prevRenderRef.current, budgetedR);
-        if (renderChanged) {
-          prevRenderRef.current = budgetedR;
-          setRenderRange(budgetedR);
-        }
-
-        nativeMod.signpost.end(0);
-        scrollViewProps?.onScroll?.(e);
-        return; // skip legacy path
+      // Check if ShadowNode wrote new measurements to LayoutCache.
+      // If so, bump layoutCacheVersion to trigger position recomputation.
+      const cacheVer = nativeLayoutCache.version();
+      if (cacheVer !== lastCacheVersionRef.current) {
+        lastCacheVersionRef.current = cacheVer;
+        setLayoutCacheVersion(v => v + 1);
       }
 
-      // P1.1 — Range computation via C++ JSI (cpp engine) or JS fallback (ts engine).
-      // C++ path: sub-microsecond native arithmetic, no Hermes interpreter overhead.
-      const positions = itemPositionsRef.current;
-      const wc = nativeWindowController;
-      let newR: Range, newV: Range;
+      // Spatial query for render range — works for all layout types.
+      const speed = Math.abs(velocityRef.current);
+      const leadBoost = Math.min(4, speed) * renderMultiplier;
+      const leadMult = renderMultiplier + leadBoost;
+      const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
+      const goingDown = velocityRef.current >= 0;
+      const abovePad = (goingDown ? trailMult : leadMult) * vpH;
+      const belowPad = (goingDown ? leadMult : trailMult) * vpH;
 
-      if (useCppWindow) {
-        // C++ window controller — all arithmetic runs in native code
-        if (isVariableHeight && positions.length > 0) {
-          const ws = wc.computeVariableRanges(scrollY, vpH, positions, itemCount, renderMultiplier, velocityRef.current);
-          newR = ws.render; newV = ws.visible;
-        } else {
-          const ws = wc.computeRanges(scrollY, vpH, itemCount, stride, renderMultiplier, sectionInsetTop, velocityRef.current);
-          newR = ws.render; newV = ws.visible;
-        }
-      } else {
-        // JS fallback (ts layout engine)
-        if (isVariableHeight && positions.length > 0) {
-          const ws = computeVariableRanges(scrollY, vpH, positions, itemCount, renderMultiplier, velocityRef.current);
-          newR = ws.render; newV = ws.visible;
-        } else {
-          const ws = computeRanges(scrollY, vpH, itemCount, stride, renderMultiplier, sectionInsetTop, velocityRef.current);
-          newR = ws.render; newV = ws.visible;
-        }
+      const attrs = effectiveLayout.attributesForElements({
+        x: 0, y: scrollY - abovePad, width: viewportWidth, height: vpH + abovePad + belowPad,
+      });
+
+      let rFirst = Infinity, rLast = -Infinity;
+      for (const a of attrs) {
+        if (a.index < rFirst) rFirst = a.index;
+        if (a.index > rLast) rLast = a.index;
       }
+      const newR = { first: rFirst === Infinity ? 0 : rFirst, last: rLast === -Infinity ? -1 : rLast };
 
-      const budgetedR = useCppWindow
-        ? wc.applyBudget(newR.first, newR.last, newV.first, newV.last, effectiveMountedWindowSize, vpH, budgetStride)
-        : applyBudget(newR, newV, effectiveMountedWindowSize, vpH, budgetStride);
+      const visAttrs = effectiveLayout.attributesForElements({
+        x: 0, y: scrollY, width: viewportWidth, height: vpH,
+      });
+      let vFirst = Infinity, vLast = -Infinity;
+      for (const a of visAttrs) {
+        if (a.index < vFirst) vFirst = a.index;
+        if (a.index > vLast) vLast = a.index;
+      }
+      const newV = { first: vFirst === Infinity ? 0 : vFirst, last: vLast === -Infinity ? -1 : vLast };
+
+      const budgetedR = applyBudget(newR, newV, effectiveMountedWindowSize, vpH, budgetStride);
       const renderChanged = rangeChanged(prevRenderRef.current, budgetedR);
-
       if (renderChanged) {
         prevRenderRef.current = budgetedR;
         setRenderRange(budgetedR);
       }
 
-      // Update measure range in the scroll handler (same frame as render range)
-      // so new cells are pre-mounted for measurement without waiting for the
-      // next layout-effect cycle.
+      // Update measure range (same frame as render range).
       if (isVariableHeight && measureAhead > 0) {
         const ahead = Math.ceil(measureAhead * vpH / stride);
-        const newMR = useCppWindow
-          ? wc.computeMeasureRange(budgetedR.first, budgetedR.last, ahead, itemCount)
-          : { first: Math.max(0, budgetedR.first - ahead), last: Math.min(itemCount - 1, budgetedR.last + ahead) };
+        const newMR = nativeWindowController.computeMeasureRange(budgetedR.first, budgetedR.last, ahead, itemCount);
         if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
           prevMeasureRef.current = newMR;
           setMeasureRange(newMR);
@@ -1537,14 +1165,12 @@ export function Riff<T = unknown>({
       }
 
       // P5.3 / onBlankArea — compute blank px at top and bottom of viewport.
-      // offsetStart: gap between viewport top and first render-range cell's top.
-      // offsetEnd:   gap between last render-range cell's bottom and viewport bottom.
-      // Both are 0 when the render window fully covers the visible area.
       if (budgetedR.last >= budgetedR.first) {
-        const firstTop = positions[budgetedR.first] ?? (sectionInsetTop + budgetedR.first * stride);
-        const lastTop  = positions[budgetedR.last]  ?? (sectionInsetTop + budgetedR.last  * stride);
-        const lastKey  = keyExtractor ? keyExtractor(data[budgetedR.last]!, budgetedR.last) : String(budgetedR.last);
-        const lastH    = measuredHeightsRef.current.get(lastKey) ?? effectiveItemHeight;
+        const firstAttr = effectiveLayout.attributesForItem(budgetedR.first, 0);
+        const lastAttr  = effectiveLayout.attributesForItem(budgetedR.last, 0);
+        const firstTop  = firstAttr ? firstAttr.frame.y : sectionInsetTop + budgetedR.first * stride;
+        const lastTop   = lastAttr ? lastAttr.frame.y : sectionInsetTop + budgetedR.last * stride;
+        const lastH     = lastAttr ? lastAttr.frame.height : effectiveItemHeight;
         const offsetStart = Math.max(0, firstTop - scrollY);
         const offsetEnd   = Math.max(0, scrollY + vpH - (lastTop + lastH));
         lastBlankAreaRef.current = { offsetStart, offsetEnd };
@@ -1552,8 +1178,6 @@ export function Riff<T = unknown>({
       }
 
       // F1.3 — Prefetch/evict callbacks.
-      // Extend the render range by prefetchAhead viewports to form the prefetch
-      // window. Fire onPrefetch for newly entering keys, onEvict for leaving keys.
       if ((onPrefetch || onEvict) && itemCount > 0 && prefetchAhead > 0) {
         const aheadItems = Math.ceil(prefetchAhead * vpH / stride);
         const newPR: Range = {
@@ -1599,28 +1223,28 @@ export function Riff<T = unknown>({
 
   const stickyConfigMap = useMemo(() => {
     if (!hasStickyHeaders) return null;
-    const positions = itemPositionsRef.current;
     const map = new Map<number, { naturalY: number; boundaryY: number; headerHeight: number }>();
 
     for (let i = 0; i < stickyHeaderFlatIndices.length; i++) {
       const fi = stickyHeaderFlatIndices[i]!;
-      const naturalY = positions[fi] ?? sectionInsetTop + fi * stride;
-      const key = keyExtractor ? keyExtractor(data[fi], fi) : String(fi);
-      const headerHeight = measuredHeightsRef.current.get(key) ?? effectiveItemHeight;
+      const attr = effectiveLayout.attributesForItem(fi, 0);
+      const naturalY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
+      const headerHeight = attr ? attr.frame.height : effectiveItemHeight;
 
-      // boundaryY = next sticky header's naturalY (or Infinity if last).
       const nextFi = stickyHeaderFlatIndices[i + 1];
-      const boundaryY = nextFi !== undefined
-        ? (positions[nextFi] ?? sectionInsetTop + nextFi * stride)
-        : 999999; // Large number — native side uses CGFloat, Infinity not available as prop.
+      let boundaryY = 999999;
+      if (nextFi !== undefined) {
+        const nextAttr = effectiveLayout.attributesForItem(nextFi, 0);
+        boundaryY = nextAttr ? nextAttr.frame.y : sectionInsetTop + nextFi * stride;
+      }
 
       map.set(fi, { naturalY, boundaryY, headerHeight });
     }
     return map;
-  }, [hasStickyHeaders, stickyHeaderFlatIndices, data, keyExtractor,
+  }, [hasStickyHeaders, stickyHeaderFlatIndices, effectiveLayout,
       effectiveItemHeight, sectionInsetTop, stride,
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      measuredVersion]);
+      layoutCacheVersion]);
 
   // ── Content ──────────────────────────────────────────────────────────────────
 
@@ -1635,48 +1259,28 @@ export function Riff<T = unknown>({
   const renderCell = (item: T, index: number, measureOnly = false) => {
     const key  = keyExtractor ? keyExtractor(item, index) : String(index);
 
-    // P5.1 — cold mount: render-range cell whose height has never been measured.
-    // (Only meaningful in variable-height mode — fixed-height cells are always "warm".)
-    if (!measureOnly && isVariableHeight && !measuredHeightsRef.current.has(key)) {
-      coldMountCountRef.current += 1;
-    }
-
-    // Render-range cells are always Activity=visible — they form the visual buffer.
-    // Only measure-range cells use Activity=hidden to suppress user effects while
-    // Fabric computes their Yoga layout (height measurement).
+    // Render-range cells are Activity=visible. Measure-range cells use
+    // Activity=hidden so Fabric computes their Yoga layout without painting.
+    // ShadowNode measures all children via Yoga and writes heights to LayoutCache.
     const mode: 'visible' | 'hidden' = measureOnly ? 'hidden' : 'visible';
 
-    // P3.1 — Offscreen Pre-rendering:
-    //   When Activity is available (RN 0.83+), measure-only cells mount at their
-    //   real estimated position with Activity=hidden. The cell is invisible to the
-    //   user but Fabric lays it out at the correct location. When the viewport
-    //   reaches the cell, only the Activity mode flips (hidden→visible) — a single
-    //   atomic Fabric commit with no position change, no re-render.
-    //
-    //   Degraded path (Activity=null, RN < 0.83): park at top:-9999 as before.
-    //   Without Activity the cell would be fully visible and overlap content.
     const useRealPosition = !!Activity; // true on RN 0.83+
 
-    // When using layout protocol, get position from the layout engine.
     let estimatedTop: number;
     let cellLeft = sectionInsetLeft;
     let cellWidth = itemWidth;
     let cellHeight: number | undefined = !isVariableHeight && !measureOnly ? effectiveItemHeight : undefined;
 
-    if (useLayoutProtocol && layoutProp) {
-      const attr = layoutProp.attributesForItem(index, 0);
-      if (attr) {
-        estimatedTop = attr.frame.y;
-        cellLeft = attr.frame.x;
-        cellWidth = attr.frame.width;
-        if (attr.frame.height > 0) cellHeight = attr.frame.height;
-      } else {
-        estimatedTop = sectionInsetTop + index * stride;
+    const attr = effectiveLayout.attributesForItem(index, 0);
+    if (attr) {
+      estimatedTop = attr.frame.y;
+      cellLeft = attr.frame.x;
+      cellWidth = attr.frame.width;
+      if (attr.frame.height > 0) {
+        cellHeight = attr.frame.height;
       }
     } else {
-      estimatedTop = isVariableHeight
-        ? (itemPositionsRef.current[index] ?? sectionInsetTop + index * stride)
-        : sectionInsetTop + index * stride;
+      estimatedTop = sectionInsetTop + index * stride;
     }
 
     const top  = (measureOnly && !useRealPosition) ? -9999 : estimatedTop;
@@ -1686,35 +1290,20 @@ export function Riff<T = unknown>({
       {
         position: 'absolute' as const,
         left,
-        right: useLayoutProtocol ? undefined : sectionInsetRight,
         top,
-        // Use explicit width once viewport is known; before that, left+right
-        // insets make the cell stretch to fill (works for initialNumToRender).
-        ...(viewportWidth > 0 ? { width: cellWidth, right: undefined } : {}),
+        ...(viewportWidth > 0 ? { width: cellWidth } : {}),
       },
-      // Fixed mode / layout protocol: constrain height.
-      // Variable / measure-only: height is self-determined.
       cellHeight != null && !measureOnly && { height: cellHeight },
     ];
 
+    // ShadowNode measures via Yoga — no RNMeasuredCell wrapping needed.
     const content = (
       <CellWrapper mode={mode}>
         <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} />
       </CellWrapper>
     );
 
-    // Wrap in RNScrollCoordinatedView if this cell is sticky.
-    // The native component applies a transform on the UI thread — single view
-    // instance, no overlay, no JS per-frame updates.
     const stickyConfig = stickyConfigMap?.get(index);
-
-    const innerContent = (isVariableHeight || measureOnly)
-      ? <RNMeasuredCell
-          onMeasured={(e: any) => onCellLayout(key, index, (e.nativeEvent as { height: number }).height)}
-        >
-          {content}
-        </RNMeasuredCell>
-      : content;
 
     if (stickyConfig && !measureOnly) {
       // RNScrollCoordinatedView IS the cell container — its transform must be
@@ -1731,14 +1320,14 @@ export function Riff<T = unknown>({
           headerHeight={stickyConfig.headerHeight}
           enabled={true}
         >
-          {innerContent}
+          {content}
         </RNScrollCoordinatedView>
       );
     }
 
     return (
-      <View key={key} style={containerStyle}>
-        {innerContent}
+      <View key={key} collapsable={false} style={containerStyle}>
+        {content}
       </View>
     );
   };
@@ -1767,12 +1356,12 @@ export function Riff<T = unknown>({
 
   if (stickyConfigMap && stickyIndexSet && stickyHeaderFlatIndices.length > 0) {
     // Find the active sticky: last one whose position ≤ scroll top.
-    const positions = itemPositionsRef.current;
     const scrollY = prevScrollYRef.current;
-    let activeSlot = 0; // index into stickyHeaderFlatIndices array
+    let activeSlot = 0;
     for (let i = stickyHeaderFlatIndices.length - 1; i >= 0; i--) {
       const fi = stickyHeaderFlatIndices[i]!;
-      const posY = positions[fi] ?? sectionInsetTop + fi * stride;
+      const attr = effectiveLayout.attributesForItem(fi, 0);
+      const posY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
       if (posY <= scrollY) {
         activeSlot = i;
         break;
@@ -1793,15 +1382,21 @@ export function Riff<T = unknown>({
   }
 
   const scrollContent = (() => {
-    if (!viewportWidth && rr !== null) return <View style={{ height: contentHeight }} />;
+    // Cells are rendered as direct children of RNCollectionViewContainer
+    // (no wrapper View). The ShadowNode needs to see each cell as a direct
+    // child so it can match them to LayoutCache entries and apply Yoga
+    // measurement deltas. Content height comes from state.contentSize
+    // (computed by ShadowNode from the cache), not from a wrapper View.
+
+    if (!viewportWidth && rr !== null) return null;
 
     let cells: React.ReactElement[];
 
     if (rr === null) {
-      // Before viewport is measured: render initialNumToRender items at
-      // stride-estimated positions so the very first paint has content.
-      // Items use width:undefined (fills parent) since viewportWidth is
-      // unknown. Once onContainerLayout fires the real range takes over.
+      // Before the layout effect fires: render initialNumToRender items.
+      // With seeded viewport dimensions, prepare() has already run so
+      // renderCell reads real positions from attributesForItem().
+      // useLayoutEffect fires before paint and sets the real range.
       const n = Math.min(initialNumToRender, itemCount);
       cells = [];
       for (let i = 0; i < n; i++) {
@@ -1809,9 +1404,6 @@ export function Riff<T = unknown>({
         if (mountedStickySet?.has(i)) continue;
         cells.push(renderCell(data[i]!, i, false));
       }
-      // Estimate content height so scroll view has a size.
-      const estH = sectionInsetTop + itemCount * stride - itemSpacing + sectionInsetBottom;
-      return <View style={{ height: estH }}>{stickyHeaderCells}{cells}</View>;
     } else if (!isVariableHeight || measureRange.last < measureRange.first) {
       // Fixed height or measure range not yet set: render range only.
       cells = [];
@@ -1834,7 +1426,7 @@ export function Riff<T = unknown>({
       }
     }
 
-    return <View style={{ height: contentHeight }}>{stickyHeaderCells}{cells}</View>;
+    return <>{stickyHeaderCells}{cells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────
@@ -1861,17 +1453,21 @@ export function Riff<T = unknown>({
   const sectionHeights = useMemo(() => {
     if (!propSections || !flattenResult) return [];
     const startIndices = flattenResult.sectionStartFlatIndices;
-    const positions = itemPositionsRef.current;
     return propSections.map((_, i) => {
-      const startY = positions[startIndices[i]!] ?? 0;
-      const endY   = i + 1 < propSections.length
-        ? (positions[startIndices[i + 1]!] ?? startY)
-        : Math.max(contentHeight, startY);
+      const startAttr = effectiveLayout.attributesForItem(startIndices[i]!, 0);
+      const startY = startAttr ? startAttr.frame.y : 0;
+      let endY: number;
+      if (i + 1 < propSections.length) {
+        const endAttr = effectiveLayout.attributesForItem(startIndices[i + 1]!, 0);
+        endY = endAttr ? endAttr.frame.y : startY;
+      } else {
+        endY = Math.max(contentHeight, startY);
+      }
       return Math.max(0, endY - startY);
     });
-  }, [propSections, flattenResult, contentHeight,
+  }, [propSections, flattenResult, contentHeight, effectiveLayout,
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      measuredVersion]);
+      layoutCacheVersion]);
 
   // Inject decoration backgrounds into scroll content via renderScrollView.
   const renderScrollView = useMemo(() => {
@@ -1879,17 +1475,17 @@ export function Riff<T = unknown>({
     const startIndices = flattenResult.sectionStartFlatIndices;
     return (props: any) => {
       const { children: cvContent, ...scrollProps } = props;
-      const positions = itemPositionsRef.current;
       const decorations = propSections.map((s, i) => {
         const bg = renderSectionBackground(i);
         if (!bg) return null;
+        const startAttr = effectiveLayout.attributesForItem(startIndices[i]!, 0);
         return (
           <View
             key={s.key + '_bg'}
             pointerEvents="none"
             style={{
               position: 'absolute',
-              top:    positions[startIndices[i]!] ?? 0,
+              top:    startAttr ? startAttr.frame.y : 0,
               left:   0,
               right:  0,
               height: sectionHeights[i] ?? 0,
@@ -1918,33 +1514,39 @@ export function Riff<T = unknown>({
     : null;
 
 
-  if (renderScrollView) {
-    return (
-      <View style={[{ flex: 1 }, style]} onLayout={onContainerLayout}>
-        {renderScrollView({ ...contractProps, children: scrollContent })}
-
-        {hud}
-      </View>
+  if (renderScrollView || ScrollViewComponent) {
+    console.warn(
+      'CollectionView: ScrollViewComponent and renderScrollView are not supported ' +
+      'in ShadowNode mode. The native RNCollectionViewContainer owns the scroll view.',
     );
   }
 
-  if (ScrollViewComponent) {
-    return (
-      <View style={[{ flex: 1 }, style]} onLayout={onContainerLayout}>
-        <ScrollViewComponent style={{ flex: 1 }} {...contractProps}>
-          {scrollContent}
-        </ScrollViewComponent>
-
-        {hud}
-      </View>
-    );
-  }
+  const renderRangeStart = rr?.first ?? 0;
+  const renderRangeEnd   = rr?.last ?? -1;
 
   return (
     <View style={[{ flex: 1 }, style]} onLayout={onContainerLayout}>
-      <ScrollView ref={scrollRef} style={{ flex: 1 }} {...contractProps}>
+      <RNCollectionViewContainer
+        style={{ flex: 1 }}
+        layoutCacheId={layoutCacheId}
+        layoutCacheVersion={layoutCacheVersion}
+        layoutType={effectiveLayout.type as any}
+        estimatedItemHeight={effectiveItemHeight}
+        renderRangeStart={renderRangeStart}
+        renderRangeEnd={renderRangeEnd}
+        rowSpacing={itemSpacing}
+        sectionInsetTop={sectionInsetTop}
+        sectionInsetBottom={sectionInsetBottom}
+        sectionInsetLeft={sectionInsetLeft}
+        sectionInsetRight={sectionInsetRight}
+        scrollEnabled={scrollViewProps?.scrollEnabled ?? true}
+        bounces={scrollViewProps?.bounces ?? true}
+        showsVerticalScrollIndicator={scrollViewProps?.showsVerticalScrollIndicator ?? true}
+        scrollEventThrottle={16}
+        onScroll={contractProps.onScroll}
+      >
         {scrollContent}
-      </ScrollView>
+      </RNCollectionViewContainer>
       {hud}
     </View>
   );

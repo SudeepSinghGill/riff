@@ -1,8 +1,76 @@
 #include "CollectionViewModule.h"
 
+#include <unordered_map>
+
 namespace facebook::react {
 
 using namespace facebook::jsi;
+
+// ── Static LayoutCache registry ──────────────────────────────────────────────
+
+static std::mutex& registryMutex() {
+  static std::mutex m;
+  return m;
+}
+
+static std::unordered_map<int32_t, std::weak_ptr<rncv::LayoutCache>>& registry() {
+  static std::unordered_map<int32_t, std::weak_ptr<rncv::LayoutCache>> r;
+  return r;
+}
+
+// Layout engine registry: cacheId → (layoutType → engine).
+static std::unordered_map<int32_t,
+    std::unordered_map<std::string, std::shared_ptr<rncv::LayoutEngine>>>& engineRegistry() {
+  static std::unordered_map<int32_t,
+      std::unordered_map<std::string, std::shared_ptr<rncv::LayoutEngine>>> r;
+  return r;
+}
+
+static int32_t nextRegistryId() {
+  static std::atomic<int32_t> counter{1};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+int32_t CollectionViewModule::registerLayoutCache(
+    std::shared_ptr<rncv::LayoutCache> cache) {
+  std::lock_guard<std::mutex> lock(registryMutex());
+  auto id = nextRegistryId();
+  registry()[id] = cache;
+  return id;
+}
+
+void CollectionViewModule::registerLayoutEngine(
+    int32_t id, const std::string& layoutType,
+    std::shared_ptr<rncv::LayoutEngine> engine) {
+  std::lock_guard<std::mutex> lock(registryMutex());
+  engineRegistry()[id][layoutType] = std::move(engine);
+}
+
+std::shared_ptr<rncv::LayoutEngine> CollectionViewModule::getLayoutEngineForId(
+    int32_t id, const std::string& layoutType) {
+  std::lock_guard<std::mutex> lock(registryMutex());
+  auto it = engineRegistry().find(id);
+  if (it == engineRegistry().end()) return nullptr;
+  auto it2 = it->second.find(layoutType);
+  if (it2 == it->second.end()) return nullptr;
+  return it2->second;
+}
+
+void CollectionViewModule::unregisterLayoutCache(int32_t id) {
+  std::lock_guard<std::mutex> lock(registryMutex());
+  registry().erase(id);
+  engineRegistry().erase(id);
+}
+
+std::shared_ptr<rncv::LayoutCache> CollectionViewModule::getLayoutCacheForId(
+    int32_t id) {
+  std::lock_guard<std::mutex> lock(registryMutex());
+  auto it = registry().find(id);
+  if (it == registry().end()) return nullptr;
+  return it->second.lock(); // returns nullptr if expired
+}
+
+// ── Constructor ──────────────────────────────────────────────────────────────
 
 CollectionViewModule::CollectionViewModule(
     std::shared_ptr<CallInvoker> jsInvoker)
@@ -11,7 +79,14 @@ CollectionViewModule::CollectionViewModule(
     , _listLayout(std::make_shared<rncv::ListLayout>(_layoutCache))
     , _masonryLayout(std::make_shared<rncv::MasonryLayout>(_layoutCache))
     , _gridLayout(std::make_shared<rncv::GridLayout>(_layoutCache))
-    , _flowLayout(std::make_shared<rncv::FlowLayout>(_layoutCache)) {}
+    , _flowLayout(std::make_shared<rncv::FlowLayout>(_layoutCache))
+{
+  _layoutCacheId = registerLayoutCache(_layoutCache);
+  registerLayoutEngine(_layoutCacheId, "list", _listLayout);
+  registerLayoutEngine(_layoutCacheId, "grid", _gridLayout);
+  registerLayoutEngine(_layoutCacheId, "masonry", _masonryLayout);
+  registerLayoutEngine(_layoutCacheId, "flow", _flowLayout);
+}
 
 std::string CollectionViewModule::ping() {
   return "pong";
@@ -299,6 +374,7 @@ Value CollectionViewModule::get(Runtime& rt, const PropNameID& name) {
         });
   }
 
+  if (prop == "layoutCacheId")     return Value(_layoutCacheId);
   if (prop == "layoutCache")      return getLayoutCacheObject(rt);
   if (prop == "listLayout")       return getListLayoutObject(rt);
   if (prop == "windowController") return getWindowControllerObject(rt);

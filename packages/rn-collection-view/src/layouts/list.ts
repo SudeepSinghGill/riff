@@ -46,14 +46,21 @@ class ListLayout implements CollectionViewLayout {
 
     // Build section params for C++ layout engine
     const sectionParams = context.sections.map((sec, sIdx) => {
-      // Determine item heights for this section
+      // Determine item heights for this section.
+      // Priority: measured (actual) → delegate heightForItem (estimate) → itemHeight → estimatedItemHeight.
       const w = context.containerWidth;
       let itemHeights: number[] | undefined;
-      if (d.heightForItem) {
-        // Per-item callback — only compute for items in this section
+      if (d.heightForItem || context.measuredHeightForItem) {
         itemHeights = [];
         for (let i = 0; i < sec.itemCount; i++) {
-          itemHeights.push(d.heightForItem(i, sIdx, w));
+          const measured = context.measuredHeightForItem?.(i, sIdx);
+          if (measured !== undefined) {
+            itemHeights.push(measured);
+          } else if (d.heightForItem) {
+            itemHeights.push(d.heightForItem(i, sIdx, w));
+          } else {
+            itemHeights.push((typeof d.itemHeight === 'function' ? d.itemHeight(w) : d.itemHeight) ?? d.estimatedItemHeight ?? 44);
+          }
         }
       }
 

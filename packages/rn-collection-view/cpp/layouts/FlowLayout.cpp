@@ -89,6 +89,127 @@ void FlowLayout::compute(const FlowLayoutParams& params) {
   }
 }
 
+// ── LayoutEngine protocol ────────────────────────────────────────────────────
+
+bool FlowLayout::applyMeasurements(
+    const std::vector<MeasurementDelta>& deltas,
+    LayoutCache& cache) {
+  if (deltas.empty()) return true;
+
+  // Flow layout: when any item's width or height changes, the entire row-breaking
+  // changes — a width change can cause items to wrap to a different row, and a
+  // height change changes the row height (max of items in row).
+  // Full re-layout from the beginning is the only correct approach.
+
+  // Update dimensions in cache first.
+  for (const auto& d : deltas) {
+    auto attrs = cache.getAttributes(d.key);
+    if (attrs) {
+      auto updated = *attrs;
+      // For flow, deltas can be width or height. We store the height delta
+      // as newValue but also need to handle width. For now, treat as height
+      // since ShadowNode sends content-determined dimension.
+      updated.frame.height = d.newValue;
+      updated.sizingState = SizingState::Measured;
+      cache.setAttributes(updated);
+    }
+  }
+
+  // Get all items sorted by index.
+  auto all = cache.getAll();
+  std::sort(all.begin(), all.end(), [](const LayoutAttributes& a, const LayoutAttributes& b) {
+    return a.index < b.index;
+  });
+
+  if (all.empty()) return true;
+
+  // Estimate layout parameters from existing items.
+  double insetLeft = all[0].frame.x;
+  double insetTop = all[0].frame.y;
+
+  // Estimate available width: find rightmost edge of any item in first row.
+  double firstRowY = all[0].frame.y;
+  double maxRight = 0;
+  double itemSpacing = 0;
+  double prevRight = 0;
+  for (const auto& a : all) {
+    if (std::abs(a.frame.y - firstRowY) > 0.5) break;
+    if (prevRight > 0) {
+      double gap = a.frame.x - prevRight;
+      if (gap > 0 && (itemSpacing == 0 || gap < itemSpacing)) {
+        itemSpacing = gap;
+      }
+    }
+    prevRight = a.frame.x + a.frame.width;
+    if (prevRight > maxRight) maxRight = prevRight;
+  }
+
+  // Estimate lineSpacing.
+  double lineSpacing = 0;
+  double firstRowBottom = 0;
+  for (const auto& a : all) {
+    if (std::abs(a.frame.y - firstRowY) < 0.5) {
+      double bottom = a.frame.y + a.frame.height;
+      if (bottom > firstRowBottom) firstRowBottom = bottom;
+    } else {
+      lineSpacing = a.frame.y - firstRowBottom;
+      if (lineSpacing < 0) lineSpacing = 0;
+      break;
+    }
+  }
+
+  // Estimate viewportWidth from the rightmost possible edge + symmetric inset.
+  double viewportWidth = maxRight + insetLeft; // assume symmetric insets
+
+  double availWidth = viewportWidth - 2 * insetLeft;
+
+  // Re-run flow layout.
+  double x = insetLeft;
+  double y = insetTop;
+  double rowMaxHeight = 0;
+  size_t rowStart = 0;
+
+  for (size_t i = 0; i < all.size(); ++i) {
+    double itemWidth = all[i].frame.width;
+    double itemHeight = all[i].frame.height;
+
+    // Does this item fit in the current row?
+    double widthNeeded = (x > insetLeft) ? itemSpacing + itemWidth : itemWidth;
+    double usedWidth = x - insetLeft;
+
+    if (usedWidth + widthNeeded > availWidth && x > insetLeft) {
+      // Wrap: finalize row heights.
+      for (size_t j = rowStart; j < i; ++j) {
+        if (all[j].frame.height != rowMaxHeight || all[j].frame.y != y) {
+          all[j].frame.height = rowMaxHeight;
+          all[j].frame.y = y;
+          cache.setAttributes(all[j]);
+        }
+      }
+      y += rowMaxHeight + lineSpacing;
+      x = insetLeft;
+      rowMaxHeight = 0;
+      rowStart = i;
+    }
+
+    if (x > insetLeft) x += itemSpacing;
+
+    all[i].frame.x = x;
+    all[i].frame.y = y;
+    if (itemHeight > rowMaxHeight) rowMaxHeight = itemHeight;
+    x += itemWidth;
+  }
+
+  // Finalize last row.
+  for (size_t j = rowStart; j < all.size(); ++j) {
+    all[j].frame.height = rowMaxHeight;
+    all[j].frame.y = y;
+    cache.setAttributes(all[j]);
+  }
+
+  return true;
+}
+
 // ── JSI parameter extraction ──────────────────────────────────────────────────
 
 FlowLayoutParams FlowLayout::paramsFromJSI(Runtime& rt, const Object& obj) {

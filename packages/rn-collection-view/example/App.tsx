@@ -65,6 +65,13 @@ import F2_2_StickyHeaders      from './tests/F2_2_StickyHeaders';
 import F2_3_StickyPush         from './tests/F2_3_StickyPush';
 import F2_4_DecorationViews    from './tests/F2_4_DecorationViews';
 
+// ── ShadowNode ──────────────────────────────────────────────────────────────
+import SN_Phase1_Skeleton      from './tests/SN_Phase1_Skeleton';
+import SN_Phase3_LayoutOverride from './tests/SN_Phase3_LayoutOverride';
+import SN_Phase3b_ContentMeasured from './tests/SN_Phase3b_ContentMeasured';
+import SN_Phase4_ScrollCorrection from './tests/SN_Phase4_ScrollCorrection';
+import SN_Phase5_LayoutCacheBridge from './tests/SN_Phase5_LayoutCacheBridge';
+
 // ─── Screen registry ──────────────────────────────────────────────────────────
 
 type ScreenEntry = {
@@ -82,8 +89,8 @@ type ComingSoonItem = { label: string; detail: string };
 const COMING_SOON: ComingSoonItem[] = [
   { label: 'P6.2 — Device Benchmarks',        detail: 'Instruments profiling · iPhone 15 Pro + 12 · release build · blank area / FPS / RSS' },
   { label: 'F1.2b — Cell Enter/Exit Animations', detail: 'Fade + collapse on delete · fade + expand on insert · interruptible spring physics' },
-  { label: 'F3.3 — CompositionalLayout',      detail: 'Mixed layouts per section — list + grid + masonry in a single scroll container' },
-  { label: 'F3.4 — Orthogonal Scrolling',     detail: 'App Store–style horizontal rows inside a vertical list · own window controller per row' },
+  // { label: 'F3.3 — CompositionalLayout',      detail: 'Mixed layouts per section — list + grid + masonry in a single scroll container' },
+  // { label: 'F3.4 — Orthogonal Scrolling',     detail: 'App Store–style horizontal rows inside a vertical list · own window controller per row' },
   { label: 'F4.x — State Persistence',        detail: 'FlatBuffers layout cache · MMKV scroll position · restore before first frame' },
   { label: 'F5.1 — Android',                  detail: 'CMakeLists wired to existing cpp/ · TurboModule in Kotlin · zero C++ duplication' },
   { label: 'F5.2 — React Native Web',         detail: 'JS-only layout fallbacks · IntersectionObserver windowing · same TS component API' },
@@ -191,6 +198,23 @@ const SCREENS: ScreenEntry[] = [
   { key: 'F2_4', label: 'F2.4 — Decoration views',
     detail: 'Per-section tinted backgrounds · behind cells · no touch interception',
     group: 'Tests — Phase F2: Supplementary Views', component: F2_4_DecorationViews },
+
+  // ── ShadowNode ──────────────────────────────────────────────────────────
+  { key: 'SN_P1', label: 'SN Phase 1 — Skeleton',
+    detail: 'Mount · children visible · scroll · onScroll events · state contentSize',
+    group: 'Tests — ShadowNode', component: SN_Phase1_Skeleton },
+  { key: 'SN_P3', label: 'SN Phase 3 — Layout Override',
+    detail: 'Variable heights · ShadowNode positions · no gaps/overlaps · frame-1 correct',
+    group: 'Tests — ShadowNode', component: SN_Phase3_LayoutOverride },
+  { key: 'SN_P3b', label: 'SN Phase 3b — Content Measured',
+    detail: 'No explicit height · Yoga measures from text · ShadowNode reads measured heights',
+    group: 'Tests — ShadowNode', component: SN_Phase3b_ContentMeasured },
+  { key: 'SN_P4', label: 'SN Phase 4 — Scroll Correction',
+    detail: 'Insert/remove/resize at top · scroll offset corrected · visible content stable',
+    group: 'Tests — ShadowNode', component: SN_Phase4_ScrollCorrection },
+  { key: 'SN_P5a', label: 'SN Phase 5a — LayoutCache Bridge',
+    detail: 'ShadowNode reads estimated heights from cache · writes Yoga-measured heights back',
+    group: 'Tests — ShadowNode', component: SN_Phase5_LayoutCacheBridge },
 ];
 
 // ─── Menu ─────────────────────────────────────────────────────────────────────

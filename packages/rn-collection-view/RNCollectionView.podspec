@@ -19,15 +19,19 @@ Pod::Spec.new do |s|
 
   s.pod_target_xcconfig = {
     "CLANG_CXX_LANGUAGE_STANDARD" => "c++20",
-    "HEADER_SEARCH_PATHS" => "\"$(PODS_ROOT)/boost\" \"$(PODS_ROOT)/RCT-Folly\" \"$(PODS_ROOT)/Headers/Private/React-Core\" \"$(PODS_ROOT)/Headers/Private/Yoga\" \"$(PODS_ROOT)/Headers/Public/ReactCodegen\"",
+    "HEADER_SEARCH_PATHS" => "\"$(PODS_ROOT)/boost\" \"$(PODS_ROOT)/RCT-Folly\" \"$(PODS_ROOT)/Headers/Private/React-Core\" \"$(PODS_ROOT)/Headers/Private/Yoga\" \"$(PODS_ROOT)/Headers/Public/ReactCodegen\" \"$(PODS_ROOT)/Headers/Public/React-Fabric\" \"$(PODS_ROOT)/Headers/Public/React-graphics\" \"$(PODS_ROOT)/Headers/Public/React-rendererdebug\" \"$(PODS_ROOT)/Headers/Public/React-jsi\"",
     "GCC_PREPROCESSOR_DEFINITIONS" => "$(inherited) FOLLY_NO_CONFIG FOLLY_MOBILE=1 FOLLY_USE_LIBCPP=1 FOLLY_CFG_NO_COROUTINES=1"
   }
 
   s.dependency "React-Core"
   s.dependency "React-RCTFabric"
+  s.dependency "React-Fabric"
+  s.dependency "React-graphics"
+  s.dependency "React-rendererdebug"
   s.dependency "React-Codegen"
   s.dependency "RCT-Folly"
   s.dependency "RCTRequired"
   s.dependency "RCTTypeSafety"
   s.dependency "ReactCommon/turbomodule/core"
+  s.dependency "React-jsi"
 end

@@ -98,6 +98,74 @@ void ListLayout::computeEstimated(const ListLayoutParams& p) {
   }
 }
 
+// ─── applyMeasurements (LayoutEngine protocol) ──────────────────────────────
+
+bool ListLayout::applyMeasurements(
+    const std::vector<MeasurementDelta>& deltas,
+    LayoutCache& cache) {
+  if (deltas.empty()) return true;
+
+  // For list layout, when heights change, all subsequent items shift by the delta.
+  // Find the earliest affected index, update its height, then shift everything after.
+  int earliestIndex = std::numeric_limits<int>::max();
+  for (const auto& d : deltas) {
+    // Update the height in cache.
+    auto attrs = cache.getAttributes(d.key);
+    if (attrs) {
+      auto updated = *attrs;
+      updated.frame.height = d.newValue;
+      updated.sizingState = SizingState::Measured;
+      cache.setAttributes(updated);
+      if (d.index < earliestIndex) earliestIndex = d.index;
+    }
+  }
+
+  if (earliestIndex == std::numeric_limits<int>::max()) return true;
+
+  // Reflow from earliest affected index: read all items in order, recompute Y.
+  auto all = cache.getAll();
+
+  // Sort by current Y to get layout order (cache getAll returns insertion order).
+  std::sort(all.begin(), all.end(), [](const LayoutAttributes& a, const LayoutAttributes& b) {
+    return a.frame.y < b.frame.y;
+  });
+
+  // Find the item spacing by looking at gaps between consecutive items.
+  double spacing = 0;
+  if (all.size() >= 2) {
+    // Spacing = gap between item 0 bottom and item 1 top.
+    spacing = all[1].frame.y - (all[0].frame.y + all[0].frame.height);
+    if (spacing < 0) spacing = 0;
+  }
+
+  // Find the earliest item in sorted order and reflow from there.
+  double y = -1;
+  for (size_t i = 0; i < all.size(); ++i) {
+    if (all[i].index >= earliestIndex && !all[i].isSupplementary) {
+      if (i == 0) {
+        y = all[i].frame.y; // keep its current Y, it's the first item
+      } else {
+        // Y = previous item's bottom + spacing
+        y = all[i - 1].frame.y + all[i - 1].frame.height + spacing;
+      }
+      // Reflow from here
+      for (size_t j = i; j < all.size(); ++j) {
+        if (all[j].isSupplementary) continue;
+        if (all[j].frame.y != y) {
+          auto updated = all[j];
+          updated.frame.y = y;
+          cache.setAttributes(updated);
+          all[j].frame.y = y; // keep local copy in sync
+        }
+        y = all[j].frame.y + all[j].frame.height + spacing;
+      }
+      break;
+    }
+  }
+
+  return true;
+}
+
 // ─── invalidateFrom ───────────────────────────────────────────────────────────
 
 void ListLayout::invalidateFrom(

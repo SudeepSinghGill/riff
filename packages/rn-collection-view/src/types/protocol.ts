@@ -95,6 +95,12 @@ export interface LayoutContext {
   readonly scrollOffset: Readonly<{ x: number; y: number }>;
   /** Section metadata — item counts, supplementary info, insets. */
   readonly sections: readonly SectionInfo[];
+  /**
+   * Actual measured height for an item, if available.
+   * Layout engines should prefer this over delegate estimates when present.
+   * Returns undefined for items that haven't been measured yet.
+   */
+  readonly measuredHeightForItem?: (index: number, section: number) => number | undefined;
 }
 
 /** Per-section metadata for the layout engine. */

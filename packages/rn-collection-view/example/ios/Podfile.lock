@@ -2543,7 +2543,11 @@ PODS:
     - RCTTypeSafety
     - React-Codegen
     - React-Core
+    - React-Fabric
+    - React-graphics
+    - React-jsi
     - React-RCTFabric
+    - React-rendererdebug
     - ReactCommon/turbomodule/core
   - SocketRocket (0.7.1)
   - Yoga (0.0.0)
@@ -2876,7 +2880,7 @@ SPEC CHECKSUMS:
   ReactAppDependencyProvider: 2b19d66e5ddfe8dc7afb6338a4626156cbf2bab1
   ReactCodegen: 53a01767e04b3a23f128b5a3c6542b4ab24fb921
   ReactCommon: 5901ef412ae35cc727b9584d4f7e3e1f7f17c251
-  RNCollectionView: 20add44823250fd4d2096680e5244bf15162fdcd
+  RNCollectionView: e73292f44fd52a7b9fe217392b56c890a1dc7ab5
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: b669e79fa0f8d3f6f5e35372345f54b99e06b13c
 

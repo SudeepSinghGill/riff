@@ -920,6 +920,96 @@ Alternatively, skip caching and recreate JSI objects on each `get()` call (safe,
 
 ---
 
+### R1.6 — Keyboard handling via `adopt()`
+
+Investigate using `ComponentDescriptor::adopt()` to inject keyboard height into the Yoga tree before layout, enabling automatic keyboard avoidance without JS roundtrips. The native side observes keyboard show/hide notifications, then in `adopt()` adjusts padding or content inset on the collection view's Yoga node so Yoga produces a layout that accounts for the keyboard — all synchronous, no async JS bridge calls.
+
+See `docs/ARCHITECTURE.md` Section 9 (RN New Architecture Learnings) for `adopt()` documentation.
+
+**Deps:** R1.1
+
+---
+
+### R1.7 — Safe area handling via `adopt()`
+
+Follow SafeAreaView's pattern: native view detects safe area insets → updates state → `adopt()` calls `setPadding()` on the Yoga node before layout. This gives the collection view automatic safe-area-aware content insets without requiring JS measurement or manual padding props.
+
+See `docs/ARCHITECTURE.md` Section 9 (RN New Architecture Learnings) for `adopt()` documentation.
+
+**Deps:** R1.1
+
+---
+
+### R1.8 — Foldable device handling via `adopt()`
+
+Research using `adopt()` to inject fold position/hinge dimensions into layout calculations for dual-screen devices (e.g., Surface Duo, Galaxy Fold). The native side detects the fold geometry and passes it through `adopt()` so the layout engine can split or reflow content around the hinge — synchronous with the Yoga layout pass.
+
+See `docs/ARCHITECTURE.md` Section 9 (RN New Architecture Learnings) for `adopt()` documentation.
+
+**Deps:** R1.1, F5.1 (Android)
+
+---
+
+### R1.9 — Fabric view flattening behavior verification
+
+Verify exactly when and why Fabric flattens views inside a custom ShadowNode container. During Phase 3 testing, item Views with `backgroundColor` and `borderRadius` were unexpectedly flattened (90 subviews for 30 items), causing position mismatch. `collapsable={false}` fixed it.
+
+**Open questions:**
+1. Does Fabric's `isLayoutOnly()` behave differently for children of custom ShadowNode components vs standard View?
+2. Does `backgroundColor` alone prevent flattening in all cases, or are there edge cases?
+3. What is the exact performance cost of `collapsable={false}` per cell? (Extra UIView + CALayer overhead for the windowed cell count)
+4. Is there a native-side equivalent to `collapsable={false}` that our ShadowNode/ComponentDescriptor could enforce automatically?
+5. Can we use child ShadowNode tags in state as an alternative to preventing flattening?
+
+**Goal:** Understand flattening rules definitively so we can make an informed architectural choice between preventing flattening (wrapper View) vs handling it (tag-based matching).
+
+**Deps:** Phase 3 complete
+
+---
+
+### R1.10 — Horizontal variants of vertical layouts
+
+All built-in layouts (List, Grid, Masonry, Flow) are currently vertical-only. Each needs a horizontal variant where the primary scroll axis is X instead of Y.
+
+**Scope per layout:**
+- **ListLayout horizontal:** Items laid out left-to-right, fixed or variable width, scrolls horizontally. Most common use: carousel rows, horizontal pickers.
+- **GridLayout horizontal:** Rows × columns but scrolling horizontally — items fill top-to-bottom first, then wrap to the next column.
+- **MasonryLayout horizontal:** Columns become rows — items pack into the shortest row. Rare but completeness.
+- **FlowLayout horizontal:** Already partially horizontal (items flow left-to-right), but currently wraps to new rows vertically. Horizontal variant: items flow top-to-bottom, wrap to new columns when a column is full, scrolls horizontally.
+
+**Implementation approach:** Each layout takes a `scrollDirection: 'vertical' | 'horizontal'` config. Internally, swap width↔height, x↔y in computation. Scroll offset correction needs to diff X positions instead of Y when horizontal.
+
+**Also affects:**
+- ShadowNode `computeOffsetCorrection` — must respect scroll axis (currently hardcoded to Y)
+- F3.4 Orthogonal sections — these are inherently horizontal layouts embedded in vertical scroll
+
+**Deps:** F3.1, F3.2, F3.5
+
+---
+
+### R1.11 — Insertion/removal behavior across all layout types
+
+Test insertion, removal, and resize of items at various positions across all layout types to verify scroll offset correction and visual stability.
+
+**Test matrix:**
+- **Layouts:** List, Grid, Masonry, Flow, Carousel (custom), Radial Arc (custom)
+- **Operations:** Insert at index 0, remove at index 0, resize item at index 0, insert in middle, remove in middle
+- **Scroll positions:** At top (no correction needed), at middle (correction needed), near bottom
+- **Correction behavior:** With `maintainVisibleContentPosition` on (default) and off
+
+**Special considerations per layout:**
+- **List/Grid:** Items Y-sorted — `break` optimization works in `computeOffsetCorrection`
+- **Masonry:** Items interleave across columns, NOT strictly Y-sorted — `break` must be removed, iterate all items
+- **Flow:** Similar to masonry — items wrap, not strictly Y-sorted within a row
+- **Carousel (horizontal):** Correction on X axis, not Y
+- **Radial Arc:** Scroll correction may not apply — items are positioned on a circle, not in a scrollable linear axis. Need to define what "maintain position" means for radial layouts, if anything.
+
+**Goal:** Verify the correction algorithm is truly layout-agnostic, identify any layout-specific edge cases, and document which layouts need the `break` optimization removed.
+
+**Deps:** ShadowNode Phase 4 (scroll offset correction), F3.1, F3.2, F3.5
+
+---
+
 ## Phase DOC — Documentation
 
 ### DOC.1 — Solution document (HLD, LLD, optimizations)
@@ -951,6 +1041,28 @@ Comprehensive technical document covering the entire implementation.
 
 ---
 
+### DOC.2 — ShadowNode architecture writeup in ARCHITECTURE.md
+
+Update `docs/ARCHITECTURE.md` with comprehensive ShadowNode documentation covering the full implementation journey (Phases 1-6).
+
+**Deliverable:** New and updated sections in ARCHITECTURE.md:
+- **ShadowNode measurement architecture** — how layout() reads Yoga, computes positions, delivers via ConcreteState. The full data flow diagram.
+- **Progressive layout cache seeding** — estimatedItemHeight fallback → per-item estimates → Yoga actuals. Three-tier accuracy model. Incremental JSI writes. First-frame optimization.
+- **Scroll offset correction** — the algorithm (find first visible item, detect above-viewport mutations, compute delta). Timing: correction after position application in layoutSubviews. The `_applyingCorrection` guard against feedback loops. `_lastCorrectedRevision` to prevent double-application.
+- **Fabric view flattening** — why `collapsable={false}` is required on cell wrappers, what happens without it (subview count mismatch), why internal cell content still benefits from flattening.
+- **Fabric view recycling** — `prepareForRecycle` pattern, what state must be reset, why `_hasReceivedFirstState` belt-and-suspenders exists.
+- **Key problem-solving decisions** — why frame.origin over center/transform/multi-hook, why correction moved from updateState: to layoutSubviews, why measure range is still needed (ShadowNode only sees mounted children), the thread safety approach for shared layout cache.
+- **What became redundant** — RNMeasuredCell, measuredHeightsRef, microtask flush, isVariableHeight, maintainVisibleContentPosition hack. Why each was originally needed and why the ShadowNode eliminates it.
+
+**Acceptance:**
+- Someone reading ARCHITECTURE.md understands the ShadowNode design end-to-end without needing project memory files
+- All non-obvious decisions have rationale documented
+- Learnings from Section 9 are integrated into the main narrative (not just appendix items)
+
+**Deps:** ShadowNode Phase 6 (all phases complete)
+
+---
+
 ## Execution Order
 
 ```
@@ -976,12 +1088,162 @@ COMPARISON:   P6.1 ✅ (all 7 tabs: prefetch/sticky/deco/layouts/perf/resize/sta
                                                                     ↓
 RESEARCH:     R1.5 (JSI reload fix) → R1.1 (UICollectionView host) → R1.2 (virtual ShadowNode)
               R1.3 (layout protocol) ✅ → R1.4 (TS→C++ codegen)
+              R1.6 (keyboard via adopt) → R1.7 (safe area via adopt) → R1.8 (foldable via adopt)
+              R1.10 (horizontal layout variants) → R1.11 (insertion/removal across all layouts)
               R0.1–R0.5 (memory optimizations)
                                                                     ↓
-DOCS:         DOC.1 (solution document)
+DOCS:         DOC.1 (solution document) + DOC.2 (ShadowNode architecture writeup)
 ```
 
 ---
+
+## Research Backlog
+
+- [ ] **R1: Hexagonal architecture review** — Audit the current layout engine ↔ LayoutCache ↔ ShadowNode ↔ native view boundaries. Ensure we have clean ports/adapters: LayoutEngine protocol (contract-first), LayoutCache as the shared port, ShadowNode as a layout-agnostic consumer. Verify no layer reaches into another's internals. Document the contract boundaries.
+
+### R1 Deep Dive: Frame Application Architecture — Option 1 vs Current Approach
+
+#### Current Approach (State-Based Frame Override)
+
+**How it works:**
+1. Yoga runs layout on all children → computes child frames based on flexbox rules
+2. ShadowNode `layout()` runs AFTER Yoga → reads Yoga-computed heights, reads LayoutCache for positions
+3. ShadowNode computes corrected `[x,y,w,h,...]` positions using three-tier resolution
+4. Positions stored in `CollectionViewContainerState.positions`
+5. Fabric commits → native view receives state update
+6. Native view's `layoutSubviews` calls `applyPositionsFromState:` → sets `child.frame` directly on UIViews
+
+**The conflict:**
+Fabric also sets child frames from `LayoutMetrics` (computed by Yoga). On each commit cycle, Fabric calls `updateLayoutMetrics:` on each child view, setting frames from Yoga results. Then our `layoutSubviews` fires and overwrites those frames with state-based positions. This works because:
+- Our state update triggers `setNeedsLayout` → `layoutSubviews` runs after Fabric's frame application
+- On scroll, state updates re-trigger the cycle
+
+But it's fragile: Fabric "owns" the frame and we're fighting it every cycle.
+
+**Frame-by-frame timeline (current):**
+
+```
+Frame N: Scroll event fires
+  ├─ JS thread: scroll handler computes new render range
+  ├─ JS thread: React reconciles → new children added/removed
+  ├─ Fabric commit begins (background thread):
+  │   ├─ ShadowNode cloned with new children
+  │   ├─ Yoga runs layout → children get Yoga-computed frames
+  │   │   (these frames are WRONG for our use case: Yoga stacks children
+  │   │    vertically from 0, doesn't know about scroll offset or LayoutCache)
+  │   ├─ ShadowNode::layout() runs AFTER Yoga:
+  │   │   ├─ Reads Yoga heights (tier 1 measurement)
+  │   │   ├─ Reads LayoutCache for position/size (tier 2)
+  │   │   ├─ Falls back to estimatedItemHeight (tier 3)
+  │   │   ├─ Computes corrected [x,y,w,h,...] positions
+  │   │   ├─ Writes positions to state
+  │   │   └─ Writes Yoga measurements back to LayoutCache
+  │   └─ Fabric diff: detects state change → schedules mount
+  │
+  └─ Main thread (mount phase):
+      ├─ Fabric applies LayoutMetrics to child UIViews
+      │   → child.frame = Yoga-computed frame (WRONG positions)
+      ├─ State update delivered → updateState: called
+      ├─ setNeedsLayout → layoutSubviews fires
+      └─ applyPositionsFromState: overwrites child.frame with CORRECT positions
+         → For ONE frame, children may flash at Yoga positions before correction
+         → In practice, this is usually invisible (same runloop)
+```
+
+**Risks:**
+- Double frame set per commit (Yoga frame → our frame override)
+- If Fabric ever batches layout differently or defers `layoutSubviews`, children flash at wrong positions
+- Fabric's frame management is a black box we're working against, not with
+
+---
+
+#### Option 1: Pre-Yoga Position Injection (Ideal)
+
+**How it would work:**
+1. BEFORE Yoga runs, set position/size on each child's YGNode via `YGNodeStyleSetPosition()` and `YGNodeStyleSetWidth/Height()`
+2. Yoga runs → computes layout with our positions baked in → `LayoutMetrics` are CORRECT
+3. Fabric commits → native view receives correct frames automatically
+4. No `applyPositionsFromState:` needed. No frame override. No conflict.
+
+**The key insight:** Instead of correcting Yoga's output, we'd configure Yoga's input. The child YGNodes would have `position: absolute` with explicit `left`, `top`, `width`, `height` — Yoga respects these and produces the exact frames we want.
+
+**Where positions come from (unchanged):**
+- LayoutCache is still the source of truth
+- Layout engines still write to LayoutCache
+- Three-tier height resolution still applies
+- ShadowNode still reads LayoutCache during `layout()`
+
+**What changes:**
+- ShadowNode reads LayoutCache BEFORE calling `ConcreteViewShadowNode::layout()` (i.e., before Yoga)
+- For each child, sets YGNode style properties: `position: absolute`, `left: X`, `top: Y`, `width: W`, `height: H`
+- Then calls parent `layout()` → Yoga produces correct LayoutMetrics
+- No post-Yoga correction needed. No state-based positions. No native frame override.
+
+**Frame-by-frame timeline (Option 1):**
+
+```
+Frame N: Scroll event fires
+  ├─ JS thread: scroll handler computes new render range
+  ├─ JS thread: React reconciles → new children added/removed
+  ├─ Fabric commit begins (background thread):
+  │   ├─ ShadowNode cloned with new children
+  │   ├─ ShadowNode::layout() runs:
+  │   │   ├─ BEFORE Yoga: reads LayoutCache for each child
+  │   │   │   ├─ Gets frame (x, y, width, height) from cache
+  │   │   │   ├─ Sets child YGNode: position=absolute, left=x, top=y, width=w, height=h
+  │   │   │   └─ (Height uses three-tier: cache > estimate. Yoga measurement overrides later.)
+  │   │   ├─ Calls ConcreteViewShadowNode::layout() → Yoga runs
+  │   │   │   ├─ Yoga respects absolute positioning → LayoutMetrics are CORRECT
+  │   │   │   ├─ For cells with content, Yoga measures actual height
+  │   │   │   └─ LayoutMetrics.frame = exactly what we wanted
+  │   │   ├─ AFTER Yoga: reads Yoga-measured heights (tier 1)
+  │   │   │   ├─ Writes measurements back to LayoutCache
+  │   │   │   └─ If height changed: update YGNode height? Or accept for next frame.
+  │   │   └─ Computes contentSize, offset correction → updates state
+  │   └─ Fabric diff: detects LayoutMetrics changes → schedules mount
+  │
+  └─ Main thread (mount phase):
+      ├─ Fabric applies LayoutMetrics to child UIViews
+      │   → child.frame = CORRECT positions (set by Yoga from our inputs)
+      │   → No override needed. Fabric and us agree on the frame.
+      └─ State update delivered (contentSize, correction only — no positions array)
+         → Native view applies scroll offset correction if needed
+         → No applyPositionsFromState: — frames are already correct
+```
+
+**Advantages:**
+- Zero frame conflict — Fabric's frame management works FOR us, not against us
+- Single frame set per commit (no double-write)
+- No risk of flash at wrong position
+- `applyPositionsFromState:` removed entirely
+- `positions` vector removed from state (smaller state, fewer state updates)
+- Native view simplified — only handles scroll container + offset correction
+
+**Challenges / Open questions:**
+1. **YGNode access:** Can ShadowNode access children's YGNodes before Yoga runs? `YogaLayoutableShadowNode` provides access via `yogaNode_`. Need to verify children's YGNodes are accessible and mutable at this point.
+2. **Sealed children (again):** If children are shared/sealed on scroll, can we modify their YGNodes? This was the exact problem with `setLayoutMetrics()`. YGNode style setting may also require unsealed children.
+3. **Yoga measurement conflict:** If we set explicit height on YGNode but Yoga measures a different height (from cell content), which wins? We want Yoga measurement to win (tier 1). May need to set height as `max-height` or use a measure func.
+4. **Two-pass for measurement:** First mount: we set estimated height → Yoga measures actual → we write back to cache → NEXT frame uses correct height. This is the same as current approach but cleaner.
+5. **Performance:** Setting YGNode properties per child per layout pass — any overhead vs current approach?
+
+**Verdict:** Option 1 is architecturally cleaner but may hit the same sealed-children wall that killed adopt(). Worth a spike to verify YGNode mutability on shared children. If it works, it eliminates the frame-fighting entirely. If sealed children block it, the current state-based approach is the pragmatic fallback.
+
+---
+
+#### Comparison Table
+
+| Aspect | Current (State Override) | Option 1 (Pre-Yoga Injection) |
+|---|---|---|
+| Frame source of truth | State → native override | Yoga LayoutMetrics (correct from start) |
+| Frame sets per commit | 2 (Fabric + our override) | 1 (Fabric only) |
+| Flash risk | Minimal (same runloop) but possible | None |
+| State size | Large (positions array) | Small (contentSize + correction only) |
+| Native view complexity | applyPositionsFromState + layoutSubviews | Scroll container + correction only |
+| Sealed children risk | No (state-based, no child mutation) | Unknown — needs spike |
+| Fabric compatibility | Works against Fabric | Works with Fabric |
+| Implementation effort | Done (current) | Requires spike + potential refactor |
+- [ ] **R2: LayoutEngine protocol formalization** — Define the `LayoutEngine` contract: `compute(context)`, `governedDimensions()`, `invalidate()`. Ensure C++ built-in layouts and JS custom layouts both conform. Clarify which dimensions each layout type governs vs leaves to Yoga.
+- [ ] **R3: Visual attribute application path** — Decide how alpha, zIndex, transform3D, isHidden flow from LayoutCache → state → native view. Currently only frame is applied. Needed for animation, z-ordering, and fade effects.
 
 ## POC Checkpoints
 

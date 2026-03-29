@@ -3,6 +3,7 @@
 #include "Geometry.h"
 #include "SpatialIndex.h"
 #include <jsi/jsi.h>
+#include <array>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,25 +19,56 @@ enum class WindowTier   { Visible, Render, Layout, Data, Outside };
 
 // ─── LayoutAttributes ────────────────────────────────────────────────────────
 
+/// Identity transform constant (4x4 column-major, matches CATransform3D layout).
+inline constexpr std::array<double, 16> kIdentityTransform3D = {
+  1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+};
+
 /**
- * C++ equivalent of LayoutAttributes TypeScript type.
+ * Full layout attributes for a cell or supplementary view.
+ * Mirrors UICollectionViewLayoutAttributes — comprehensive attribute set
+ * covering geometry, visual properties, and layout metadata.
+ *
  * One instance per cell / supplementary view.
  * Immutable after insertion; replaced (never mutated) on update.
  */
 struct LayoutAttributes {
+  // ── Identity ─────────────────────────────────────────────────────────
   std::string key;
   int         section       = 0;
   int         index         = -1;
-  Rect        frame;
+
+  // ── Geometry (layout-computed) ───────────────────────────────────────
+  Rect        frame;                   // x, y, width, height
   int         zIndex        = 0;
+  double      alpha         = 1.0;
+  bool        isHidden      = false;
+
+  // 4x4 column-major transform matrix (identity = no transform).
+  // Covers rotation, scale, translation, perspective.
+  std::array<double, 16> transform3D = kIdentityTransform3D;
+
+  // ── Supplementary view metadata ──────────────────────────────────────
   bool        isSupplementary = false;
-  std::string supplementaryKind;   // empty for regular cells
+  std::string supplementaryKind;       // empty for regular cells
+
+  // ── Sizing state (three-tier tracking) ───────────────────────────────
   SizingState sizingState   = SizingState::Placeholder;
   bool        isDirty       = false;
+
+  // ── Window tier ──────────────────────────────────────────────────────
   WindowTier  tier          = WindowTier::Outside;
+
+  // ── Sticky behavior ──────────────────────────────────────────────────
   bool        isSticky      = false;
-  double      alpha         = 1.0;
+
+  // ── Animation state ──────────────────────────────────────────────────
   bool        isAnimating   = false;
+
+  // ── Escape hatch for layout-specific data ────────────────────────────
+  // Arbitrary key-value pairs. No native release needed to add new data.
+  // Use for layout-specific properties (parallax factor, snap alignment, etc.)
+  std::unordered_map<std::string, double> extras;
 };
 
 // ─── LayoutCache ─────────────────────────────────────────────────────────────
@@ -76,10 +108,24 @@ public:
   Size getTotalContentSize() const;
 
   /**
+   * Returns heights for items 0..count-1 in the given section.
+   * Items without cache entries get height 0.
+   * Single-call alternative to N getAttributes() calls.
+   */
+  std::vector<double> getItemHeights(int section, int count) const;
+
+  /**
    * Y offset of each section's first item.
    * Index i = section i's starting Y coordinate.
    */
   std::vector<double> getSectionOffsets() const;
+
+  // ── Scroll offset (shared between native view and ShadowNode) ───────────
+  // Stored here instead of component state to avoid triggering Fabric commits
+  // from the native scroll handler, which races with JS render updates.
+
+  void setScrollOffset(double x, double y);
+  Point getScrollOffset() const;
 
   // ── Versioning ────────────────────────────────────────────────────────────
 
@@ -113,6 +159,7 @@ private:
   uint64_t                                          _version = 0;
   mutable std::mutex                                _mutex;
   SpatialIndex                                      _index;   // M1.4
+  Point                                             _scrollOffset{0, 0};
 
   // Internal helpers (call with lock held)
   void _setAttributesLocked(const LayoutAttributes& attrs);

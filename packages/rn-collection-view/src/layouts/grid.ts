@@ -68,12 +68,14 @@ class GridLayoutEngine implements CollectionViewLayout {
     const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
     const effectiveRowHeight = typeof d.rowHeight === 'function' ? d.rowHeight(w) : d.rowHeight;
 
-    // Build per-item heights if dynamic
+    // Build per-item heights if dynamic.
+    // Priority: measured (actual) → delegate heightForItem (estimate).
     let itemHeights: number[] | undefined;
-    if (!effectiveRowHeight && d.heightForItem) {
+    if (!effectiveRowHeight && (d.heightForItem || context.measuredHeightForItem)) {
       itemHeights = new Array(sec.itemCount);
       for (let i = 0; i < sec.itemCount; i++) {
-        itemHeights[i] = d.heightForItem(i, 0, w);
+        const measured = context.measuredHeightForItem?.(i, 0);
+        itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, 0, w) : 0);
       }
     }
 

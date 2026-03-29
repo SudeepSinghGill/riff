@@ -8,6 +8,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Riff } from '../../components/CollectionView';
+import { list } from 'riff/src/layouts';
 import { useFPS } from '../../utils/useMetrics';
 
 // ── Scenarios ─────────────────────────────────────────────────────────────────
@@ -46,6 +47,13 @@ const TEXTS = [
 ];
 
 const COLORS = ['#e63946', '#2a9d8f', '#e9c46a', '#f4a261', '#264653', '#457b9d'];
+
+// Exact heights for each hetero item type. Values match the cell StyleSheet
+// below (imageCard=60, bannerCell=80, compactCell=32, textRowCell=44).
+// These are the same values passed to FlashList via overrideItemLayout.
+const HETERO_SIZES: Record<string, number> = { image: 60, banner: 80, compact: 32, text: 44 };
+
+
 
 function makeData1(): SimpleItem[] {
   return Array.from({ length: COUNT }, (_, i) => ({ id: i, type: 'simple' }));
@@ -291,15 +299,18 @@ function Scenario3({ mode, onRenderCount }: ScenarioProps) {
   const data = React.useMemo(() => makeData3(), []);
   const keyEx = React.useCallback((i: HeteroItem) => String(i.id), []);
   const renderHetero = React.useCallback(({ item }: { item: HeteroItem }) => <HeteroCell item={item} />, []);
+  // layout protocol: exact per-type heights → no measurement correction needed.
+  // Mirrors FlashList's overrideItemLayout which also provides exact per-type sizes.
+  const layout3 = React.useMemo(() => list({
+    heightForItem: (i: number) => HETERO_SIZES[(data[i] as HeteroItem).type] ?? 44,
+  }), [data]);
   // Declare 4 item types so FlashList creates typed recycling pools.
-  // This is FlashList's design target — pool per type, reuse within type.
-  const heteroSizes: Record<string, number> = { image: 60, banner: 80, compact: 32, text: 44 };
   const overrideLayout3 = React.useCallback((layout: { size?: number; type?: string | number }, item: HeteroItem) => {
     layout.type = item.type;
-    layout.size = heteroSizes[item.type] ?? 50;
+    layout.size = HETERO_SIZES[item.type] ?? 44;
   }, []);
   return mode === 'cv' ? (
-    <Riff data={data} keyExtractor={keyEx} estimatedItemHeight={50}
+    <Riff data={data} keyExtractor={keyEx} layout={layout3}
       renderItem={renderHetero} onRenderCountChange={onRenderCount} />
   ) : (
     <FlashList data={data} keyExtractor={keyEx} estimatedItemSize={50}
@@ -312,14 +323,18 @@ function Scenario4({ mode, onRenderCount }: ScenarioProps) {
   const data = React.useMemo(() => makeData4(), []);
   const keyEx = React.useCallback((i: UniqueItem) => String(i.id), []);
   const renderUnique = React.useCallback(({ item }: { item: UniqueItem }) => <UniqueCell item={item} />, []);
+  // layout protocol: exact per-item heights from item data → no measurement correction.
+  // Mirrors FlashList's overrideItemLayout which also provides exact per-item sizes.
+  const layout4 = React.useMemo(() => list({
+    heightForItem: (i: number) => (data[i] as UniqueItem).height,
+  }), [data]);
   // Every item gets a unique type — recycling pool never hits.
-  // FlashList creates a pool-of-1 per item, effectively no reuse.
   const overrideLayout4 = React.useCallback((layout: { size?: number; type?: string | number }, item: UniqueItem) => {
     layout.type = `unique-${item.id}`;
     layout.size = item.height;
   }, []);
   return mode === 'cv' ? (
-    <Riff data={data} keyExtractor={keyEx} estimatedItemHeight={120}
+    <Riff data={data} keyExtractor={keyEx} layout={layout4}
       renderItem={renderUnique} onRenderCountChange={onRenderCount} />
   ) : (
     <FlashList data={data} keyExtractor={keyEx} estimatedItemSize={120}
