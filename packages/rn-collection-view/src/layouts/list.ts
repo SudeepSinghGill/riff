@@ -35,6 +35,7 @@ class ListLayout implements CollectionViewLayout {
   readonly type = 'list';
   private readonly delegate: ListLayoutDelegate;
   private lastContext: LayoutContext | null = null;
+  private _lastFingerprint: string = '';
 
   constructor(delegate: ListLayoutDelegate) {
     this.delegate = delegate;
@@ -114,13 +115,20 @@ class ListLayout implements CollectionViewLayout {
 
     console.log(`[RNCVX-LIST] Sending to C++ nativeMod.listLayout.computeSections:`, sectionParams.map(s => ({ headerHeight: s.headerHeight, footerHeight: s.footerHeight, itemCount: s.itemCount })));
 
-    nativeMod.layoutCache.clear();
-
-    if (sectionParams.length === 1) {
-      nativeMod.listLayout.computeListLayout(sectionParams[0]!);
-    } else {
-      nativeMod.listLayout.computeSections(sectionParams);
+    // Build a fingerprint of the data shape. Only clear + recompute when it changes.
+    // This preserves Yoga-measured heights across measurement-triggered re-renders.
+    const fp = `${context.containerWidth}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight}`).join(';')}`;
+    if (fp !== this._lastFingerprint) {
+      nativeMod.layoutCache.clear();
+      this._lastFingerprint = fp;
     }
+
+    nativeMod.listLayout.computeSections(sectionParams);
+
+    // Verification: immediately check if header was stored
+    const headerCheck = nativeMod.layoutCache.getAttributes('item-0-header');
+    const totalSize = nativeMod.layoutCache.getTotalContentSize();
+    console.log(`[RNCVX-LIST-VERIFY] After computeSections: item-0-header=${!!headerCheck} y=${headerCheck?.frame?.y} h=${headerCheck?.frame?.height} totalContentH=${totalSize?.height}`);
   }
 
   attributesForElements(inRect: Rect): LayoutAttributes[] {

@@ -117,6 +117,9 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
       _parentScrollView = (UIScrollView *)v;
       break;
     }
+    if ([NSStringFromClass([v class]) containsString:@"ScrollView"]) {
+      NSLog(@"[RNCVX-NATIVE-STICKY] Found ScrollView wrapper class: %@", NSStringFromClass([v class]));
+    }
     v = v.superview;
   }
 
@@ -129,6 +132,9 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
 
     // Apply immediately so the view starts at the correct position.
     [self _applyTransform];
+    NSLog(@"[RNCVX-NATIVE-STICKY] Successfully tied to scroll view!");
+  } else {
+    NSLog(@"[RNCVX-NATIVE-STICKY] FAILED TO FIND UIScrollView IN ANCESTORS!");
   }
 }
 
@@ -190,6 +196,8 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   }
 
   self.layer.transform = CATransform3DMakeTranslation(0, translateY, 0);
+
+  NSLog(@"[RNCVX-NATIVE-STICKY] index:%d (%.1f -> %.1f) bound:%.1f scrollY:%.1f trans:%.1f", (int)_props->index, naturalY, self.center.y, _boundaryY, scrollY, translateY);
 
   // Elevate z when actively sticky (translated > 0) so it floats above siblings.
   self.layer.zPosition = translateY > 0 ? 100 : 0;

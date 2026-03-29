@@ -876,17 +876,19 @@ export function Riff<T = unknown>({
       sectionInsetTop, sectionInsetBottom, sectionInsetLeft, sectionInsetRight]);
 
   // Prepare the layout when context changes (data, container size).
-  // Seeds the layout cache with positions for all items.
-  // IMPORTANT: after prepare(), sync lastCacheVersionRef with the cache version.
-  // prepare() clears and repopulates the cache, incrementing version by N.
-  // Without this sync, the scroll handler would detect a version change on the
-  // next tick, bump layoutCacheVersion, and trigger another prepare() — creating
-  // an infinite cascade of cache clears that races with the ShadowNode.
+  // Cache clearing is handled internally by each layout engine (e.g. list.ts)
+  // using its own data-shape fingerprint — NOT here in the generic component.
+  useMemo(() => {
+    if (!layoutContext) return;
+    effectiveLayout.prepare(layoutContext);
+    // Sync version ref so scroll handler doesn't re-trigger.
+    lastCacheVersionRef.current = nativeLayoutCache.version();
+  }, [effectiveLayout, layoutContext]);
+
+  // Read content size — updates when layoutCacheVersion changes (measurements
+  // shift item positions) WITHOUT re-calling prepare().
   const layoutContentSize = useMemo(() => {
     if (!layoutContext) return null;
-    effectiveLayout.prepare(layoutContext);
-    // Sync version ref so scroll handler doesn't re-trigger prepare.
-    lastCacheVersionRef.current = nativeLayoutCache.version();
     return effectiveLayout.contentSize();
   }, [effectiveLayout, layoutContext, layoutCacheVersion]);
 
@@ -1252,7 +1254,7 @@ export function Riff<T = unknown>({
       
       let attr = null;
       if (isSectioned && fiDesc?._kind === 'header') {
-        attr = effectiveLayout.attributesForSupplementary?.('header', fiDesc.sectionIndex);
+        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
       } else {
         attr = effectiveLayout.attributesForItem(isSectioned ? ((fiDesc as any)?.itemIndex ?? fi) : fi, isSectioned ? (fiDesc?.sectionIndex ?? 0) : 0);
       }
@@ -1266,13 +1268,17 @@ export function Riff<T = unknown>({
         const nextDesc = isSectioned ? flattenResult?.flatData[nextFi] : null;
         let nextAttr = null;
         if (isSectioned && nextDesc?._kind === 'header') {
-          nextAttr = effectiveLayout.attributesForSupplementary?.('header', nextDesc.sectionIndex);
+          nextAttr = nativeMod.layoutCache.getAttributes(`item-${nextDesc.sectionIndex}-header`);
         } else {
           nextAttr = effectiveLayout.attributesForItem(isSectioned ? ((nextDesc as any)?.itemIndex ?? nextFi) : nextFi, isSectioned ? (nextDesc?.sectionIndex ?? 0) : 0);
         }
         boundaryY = nextAttr ? nextAttr.frame.y : sectionInsetTop + nextFi * stride;
       }
 
+      if (isSectioned && fiDesc?._kind === 'header') {
+        const rawCache = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+        console.log(`[RNCVX-DEBUG] Section ${fiDesc.sectionIndex} header raw native cache hit: `, !!rawCache);
+      }
       console.log(`[RNCVX-STICKY] sIdx=${fiDesc?.sectionIndex} naturalY=${naturalY} boundaryY=${boundaryY} attrOk=${!!attr} fi=${fi} nextFi=${nextFi}`);
       map.set(fi, { naturalY, boundaryY, headerHeight });
     }
@@ -1315,7 +1321,19 @@ export function Riff<T = unknown>({
     let cellLeft = sectionInsetLeft;
     let cellWidth = itemWidth;
 
-    const attr = effectiveLayout.attributesForItem(index, 0);
+    let attr = null;
+    if (isSectioned) {
+      if (fiDesc?._kind === 'header') {
+        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+      } else if (fiDesc?._kind === 'footer') {
+        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-footer`);
+      } else {
+        attr = effectiveLayout.attributesForItem((fiDesc as any)?.itemIndex ?? index, fiDesc?.sectionIndex ?? 0);
+      }
+    } else {
+      attr = effectiveLayout.attributesForItem(index, 0);
+    }
+
     if (attr) {
       estimatedTop = attr.frame.y;
       cellLeft = attr.frame.x;
@@ -1422,7 +1440,13 @@ export function Riff<T = unknown>({
     let activeSlot = 0;
     for (let i = stickyHeaderFlatIndices.length - 1; i >= 0; i--) {
       const fi = stickyHeaderFlatIndices[i]!;
-      const attr = effectiveLayout.attributesForItem(fi, 0);
+      const sd = isSectioned ? flattenResult?.flatData[fi] : null;
+      let attr = null;
+      if (isSectioned && sd?._kind === 'header') {
+        attr = nativeMod.layoutCache.getAttributes(`item-${sd.sectionIndex}-header`);
+      } else {
+        attr = effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
+      }
       const posY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
       if (posY <= scrollY) {
         activeSlot = i;

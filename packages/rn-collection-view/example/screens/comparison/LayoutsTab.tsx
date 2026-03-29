@@ -18,10 +18,10 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, Animated, Easing } from 'react-native';
 import { Riff as CollectionView } from '../../components/CollectionView';
-import { list } from 'riff/src/layouts/list';
-import { grid } from 'riff/src/layouts/grid';
-import { masonry } from 'riff/src/layouts/masonry';
-import { flow } from 'riff/src/layouts/flow';
+import { list } from '../../../src/layouts/list';
+import { grid } from '../../../src/layouts/grid';
+import { masonry } from '../../../src/layouts/masonry';
+import { flow } from '../../../src/layouts/flow';
 import { CircularList } from '../../components/CircularList';
 import { Carousel3D } from '../../components/Carousel3D';
 
@@ -164,46 +164,24 @@ function ListDemo() {
   const listLayout = useMemo(() => list({
     estimatedItemHeight: 72,
     itemSpacing: 8,
-    stickyMode: 'push',
   }), []);
 
-  const sections = useMemo(() => {
-    const secs: any[] = [];
-    const chunkSize = 50;
-    for (let i = 0; i < LIST_DATA.length; i += chunkSize) {
-      const sectionIndex = i / chunkSize;
-      secs.push({
-        key: `section-${sectionIndex}`,
-        data: LIST_DATA.slice(i, i + chunkSize),
-        header: { 
-          render: () => <AnimatedTimerHeader title={`Section ${sectionIndex + 1}`} color={COLORS[sectionIndex % COLORS.length]!} />, 
-          height: 50, 
-          sticky: true 
-        },
-        footer: {
-          render: () => <AnimatedTimerFooter title={`End of Section ${sectionIndex + 1}`} />, 
-          height: 30 
-        },
-        insets: { top: 8, bottom: 8, left: 0, right: 0 }
-      });
-    }
-    return secs;
-  }, []);
+  const sections = useMemo(() => [{
+    key: 'section-0',
+    data: LIST_DATA.slice(0, 50),
+    insets: { top: 8, bottom: 8, left: 0, right: 0 },
+  }], []);
 
   return (
     <CollectionView
       sections={sections}
       layout={listLayout}
       estimatedItemHeight={72}
+      scrollViewProps={{ style: { backgroundColor: '#2a2a3e' }, indicatorStyle: 'white' }}
       keyExtractor={useCallback((item: ListItem) => item.id, [])}
-      renderSectionBackground={useCallback((idx: number) => <AnimatedSectionBackground sectionIndex={idx} />, [])}
       renderItem={useCallback(({ item }: { item: ListItem }) => (
-        <View style={[S.listCell, { borderLeftColor: item.color }]}>
-          <Text style={S.listCellNum}>{item.num}</Text>
-          <View style={S.listCellContent}>
-            <Text style={S.listCellTitle}>Item {item.num}</Text>
-            <Text style={S.listCellSub}>{item.subtitle}</Text>
-          </View>
+        <View style={{ height: 72, backgroundColor: '#1a1a2e', borderLeftWidth: 4, borderLeftColor: item.color, justifyContent: 'center', paddingHorizontal: 16 }}>
+          <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>Item {item.num}</Text>
         </View>
       ), [])}
     />
