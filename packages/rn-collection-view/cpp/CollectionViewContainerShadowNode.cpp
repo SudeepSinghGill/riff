@@ -145,12 +145,35 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
   std::vector<rncv::MeasurementDelta> deltas;
 
   for (size_t i = 0; i < children.size(); ++i) {
+    std::string type;
+    std::string kind;
+    int32_t dataIndex = -1;
+
+    if (auto cellNode = std::dynamic_pointer_cast<const RNMeasuredCellShadowNode>(children[i])) {
+      const auto& p = cellNode->getConcreteProps();
+      type = p.type;
+      kind = p.kind;
+      dataIndex = p.index;
+    } else if (auto scrollNode = std::dynamic_pointer_cast<const RNScrollCoordinatedViewShadowNode>(children[i])) {
+      const auto& p = scrollNode->getConcreteProps();
+      type = p.type;
+      kind = p.kind;
+      dataIndex = p.index;
+    } else {
+      RNCV_SN_LOG("child[%zu] is neither RNMeasuredCell nor RNScrollCoordinatedView, skipping", i);
+      continue;
+    }
+    
+    std::string key = keyPrefix + std::to_string(dataIndex);
+    if (type == "supplementary") {
+       key = kind + "-" + std::to_string(dataIndex);
+    } else if (type == "decoration") {
+       key = "deco-" + kind + "-" + std::to_string(dataIndex);
+    }
+
     const auto& childMetrics = children[i]->getLayoutMetrics();
     const auto yogaHeight = childMetrics.frame.size.height;
     const auto yogaWidth = childMetrics.frame.size.width;
-
-    const auto dataIndex = renderRangeStart + static_cast<int32_t>(i);
-    const auto key = keyPrefix + std::to_string(dataIndex);
 
     // Check height delta (for Height and Both).
     if (contentDim == rncv::ContentDimension::Height ||
@@ -182,8 +205,31 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
     if (handled) {
       // Re-read all positions from cache (engine may have cascaded changes).
       for (size_t i = 0; i < children.size(); ++i) {
-        const auto dataIndex = renderRangeStart + static_cast<int32_t>(i);
-        const auto key = keyPrefix + std::to_string(dataIndex);
+        std::string type;
+        std::string kind;
+        int32_t dataIndex = -1;
+
+        if (auto cellNode = std::dynamic_pointer_cast<const RNMeasuredCellShadowNode>(children[i])) {
+          const auto& p = cellNode->getConcreteProps();
+          type = p.type;
+          kind = p.kind;
+          dataIndex = p.index;
+        } else if (auto scrollNode = std::dynamic_pointer_cast<const RNScrollCoordinatedViewShadowNode>(children[i])) {
+          const auto& p = scrollNode->getConcreteProps();
+          type = p.type;
+          kind = p.kind;
+          dataIndex = p.index;
+        } else {
+          continue;
+        }
+        
+        std::string key = keyPrefix + std::to_string(dataIndex);
+        if (type == "supplementary") {
+           key = kind + "-" + std::to_string(dataIndex);
+        } else if (type == "decoration") {
+           key = "deco-" + kind + "-" + std::to_string(dataIndex);
+        }
+
         auto cached = cache->getAttributes(key);
         if (cached) {
           correctedPositions_[i * 4 + 0] = static_cast<Float>(cached->frame.x);

@@ -58,9 +58,10 @@ const Activity = (React as any).Activity as
   | undefined;
 
 import NativeCollectionViewModule from 'riff/src/specs/NativeCollectionViewModule';
-import { RiffSnapshot } from './CollectionSnapshot';
+import RNMeasuredCell from '../../src/specs/RNMeasuredCellNativeComponent';
 import RNScrollCoordinatedView from './RNScrollCoordinatedViewNativeComponent';
 import RNCollectionViewContainer from './RNCollectionViewContainerNativeComponent';
+import { RiffSnapshot } from './CollectionSnapshot';
 import type { CollectionViewLayout, LayoutContext } from 'riff/src/types/protocol';
 import { list as listLayout } from 'riff/src/layouts/list';
 
@@ -1317,6 +1318,10 @@ export function Riff<T = unknown>({
           boundaryY={stickyConfig.boundaryY}
           headerHeight={stickyConfig.headerHeight}
           enabled={true}
+          type="supplementary"
+          kind="header"
+          index={index}
+          isMeasureOnly={measureOnly}
         >
           {content}
         </RNScrollCoordinatedView>
@@ -1324,9 +1329,15 @@ export function Riff<T = unknown>({
     }
 
     return (
-      <View key={key} collapsable={false} style={containerStyle}>
+      <RNMeasuredCell 
+        key={key} 
+        style={containerStyle}
+        type="cell"
+        index={index}
+        isMeasureOnly={measureOnly}
+      >
         {content}
-      </View>
+      </RNMeasuredCell>
     );
   };
 
@@ -1343,6 +1354,13 @@ export function Riff<T = unknown>({
   // without mounting every sticky in a 1000-section list.
   const STICKY_BUFFER_BEFORE = 1;
   const STICKY_BUFFER_AFTER  = 2;
+
+  // In ShadowNode mode, the `cells` array no longer needs to be contiguous.
+  // The C++ layer explicitly identifies each child by its `index` prop.
+  // We can safely prepend sticky headers and skip them in the main loop!
+  
+  let effFirst = 0;
+  let effLast = -1;
 
   const stickyIndexSet = useMemo(
     () => stickyConfigMap ? new Set(stickyConfigMap.keys()) : null,
@@ -1379,13 +1397,6 @@ export function Riff<T = unknown>({
     }
   }
 
-  // In ShadowNode mode, the `cells` array must be STRICTLY CONTIGUOUS and match 
-  // exactly 1-to-1 with the children array passed to C++, starting at `effFirst`.
-  // Do not prepend sticky headers or skip items, because C++ assumes `Child[0] == index effFirst`.
-  
-  let effFirst = 0;
-  let effLast = -1;
-
   const scrollContent = (() => {
     if (!viewportWidth && rr !== null) return null;
 
@@ -1396,6 +1407,7 @@ export function Riff<T = unknown>({
       effLast = Math.min(initialNumToRender, itemCount) - 1;
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
+        if (mountedStickySet?.has(i)) continue;
         cells.push(renderCell(data[i]!, i, false));
       }
     } else if (!isVariableHeight || measureRange.last < measureRange.first) {
@@ -1403,6 +1415,7 @@ export function Riff<T = unknown>({
       effLast = rr.last;
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
+        if (mountedStickySet?.has(i)) continue;
         cells.push(renderCell(data[i]!, i, false));
       }
     } else {
@@ -1410,12 +1423,13 @@ export function Riff<T = unknown>({
       effLast  = Math.max(rr.last,  measureRange.last);
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
+        if (mountedStickySet?.has(i)) continue;
         const measureOnly = i < rr.first || i > rr.last;
         cells.push(renderCell(data[i]!, i, measureOnly));
       }
     }
 
-    return <>{cells}</>;
+    return <>{stickyHeaderCells}{cells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────
