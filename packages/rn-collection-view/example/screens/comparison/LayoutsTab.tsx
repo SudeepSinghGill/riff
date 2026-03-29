@@ -387,8 +387,7 @@ const S = StyleSheet.create({
   content: { flex: 1 },
 
   listCell: { height: 72, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16,
-              borderLeftWidth: 4, borderBottomWidth: StyleSheet.hairlineWidth,
-              borderBottomColor: 'rgba(255,255,255,0.08)' },
+              borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.08)' },
   listCellNum: { fontSize: 14, fontWeight: '700', color: '#888', width: 36 },
   listCellContent: { flex: 1 },
   listCellTitle: { fontSize: 15, fontWeight: '600', color: '#fff' },

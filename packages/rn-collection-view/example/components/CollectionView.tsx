@@ -1379,52 +1379,43 @@ export function Riff<T = unknown>({
     }
   }
 
-  const scrollContent = (() => {
-    // Cells are rendered as direct children of RNCollectionViewContainer
-    // (no wrapper View). The ShadowNode needs to see each cell as a direct
-    // child so it can match them to LayoutCache entries and apply Yoga
-    // measurement deltas. Content height comes from state.contentSize
-    // (computed by ShadowNode from the cache), not from a wrapper View.
+  // In ShadowNode mode, the `cells` array must be STRICTLY CONTIGUOUS and match 
+  // exactly 1-to-1 with the children array passed to C++, starting at `effFirst`.
+  // Do not prepend sticky headers or skip items, because C++ assumes `Child[0] == index effFirst`.
+  
+  let effFirst = 0;
+  let effLast = -1;
 
+  const scrollContent = (() => {
     if (!viewportWidth && rr !== null) return null;
 
     let cells: React.ReactElement[];
 
     if (rr === null) {
-      // Before the layout effect fires: render initialNumToRender items.
-      // With seeded viewport dimensions, prepare() has already run so
-      // renderCell reads real positions from attributesForItem().
-      // useLayoutEffect fires before paint and sets the real range.
-      const n = Math.min(initialNumToRender, itemCount);
+      effFirst = 0;
+      effLast = Math.min(initialNumToRender, itemCount) - 1;
       cells = [];
-      for (let i = 0; i < n; i++) {
-        // Skip sticky headers — they're rendered permanently above.
-        if (mountedStickySet?.has(i)) continue;
+      for (let i = effFirst; i <= effLast; i++) {
         cells.push(renderCell(data[i]!, i, false));
       }
     } else if (!isVariableHeight || measureRange.last < measureRange.first) {
-      // Fixed height or measure range not yet set: render range only.
+      effFirst = rr.first;
+      effLast = rr.last;
       cells = [];
-      for (let i = rr.first; i <= rr.last; i++) {
-        if (mountedStickySet?.has(i)) continue;
+      for (let i = effFirst; i <= effLast; i++) {
         cells.push(renderCell(data[i]!, i, false));
       }
     } else {
-      // Variable height with active measure range.
-      // measureRange is always a superset of renderRange (set in the same batch).
-      // The union guard handles any edge case where they diverge momentarily.
-      const effFirst = Math.min(rr.first, measureRange.first);
-      const effLast  = Math.max(rr.last,  measureRange.last);
+      effFirst = Math.min(rr.first, measureRange.first);
+      effLast  = Math.max(rr.last,  measureRange.last);
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
-        if (mountedStickySet?.has(i)) continue;
-        // measureOnly = outside the (urgent) render range — park off-screen.
         const measureOnly = i < rr.first || i > rr.last;
         cells.push(renderCell(data[i]!, i, measureOnly));
       }
     }
 
-    return <>{stickyHeaderCells}{cells}</>;
+    return <>{cells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────
@@ -1519,8 +1510,8 @@ export function Riff<T = unknown>({
     );
   }
 
-  const renderRangeStart = rr?.first ?? 0;
-  const renderRangeEnd   = rr?.last ?? -1;
+  const renderRangeStart = effFirst;
+  const renderRangeEnd   = effLast;
 
   return (
     <View style={[{ flex: 1 }, style]} onLayout={onContainerLayout}>
