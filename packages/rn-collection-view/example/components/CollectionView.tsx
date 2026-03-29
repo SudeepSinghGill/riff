@@ -1405,25 +1405,30 @@ export function Riff<T = unknown>({
     if (rr === null) {
       effFirst = 0;
       effLast = Math.min(initialNumToRender, itemCount) - 1;
+      effLast = Math.min(effLast, data.length - 1);
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
         if (mountedStickySet?.has(i)) continue;
+        if (!data[i]) continue;
         cells.push(renderCell(data[i]!, i, false));
       }
     } else if (!isVariableHeight || measureRange.last < measureRange.first) {
       effFirst = rr.first;
-      effLast = rr.last;
+      effLast = Math.min(rr.last, data.length - 1);
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
         if (mountedStickySet?.has(i)) continue;
+        if (!data[i]) continue;
         cells.push(renderCell(data[i]!, i, false));
       }
     } else {
       effFirst = Math.min(rr.first, measureRange.first);
       effLast  = Math.max(rr.last,  measureRange.last);
+      effLast  = Math.min(effLast, data.length - 1);
       cells = [];
       for (let i = effFirst; i <= effLast; i++) {
         if (mountedStickySet?.has(i)) continue;
+        if (!data[i]) continue;
         const measureOnly = i < rr.first || i > rr.last;
         cells.push(renderCell(data[i]!, i, measureOnly));
       }

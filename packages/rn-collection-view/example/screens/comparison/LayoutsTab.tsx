@@ -184,7 +184,6 @@ function ListDemo() {
           render: () => <AnimatedTimerFooter title={`End of Section ${sectionIndex + 1}`} />, 
           height: 30 
         },
-        background: (idx: number) => <AnimatedSectionBackground sectionIndex={idx} />,
         insets: { top: 8, bottom: 8, left: 0, right: 0 }
       });
     }
@@ -197,6 +196,7 @@ function ListDemo() {
       layout={listLayout}
       estimatedItemHeight={72}
       keyExtractor={useCallback((item: ListItem) => item.id, [])}
+      renderSectionBackground={useCallback((idx: number) => <AnimatedSectionBackground sectionIndex={idx} />, [])}
       renderItem={useCallback(({ item }: { item: ListItem }) => (
         <View style={[S.listCell, { borderLeftColor: item.color }]}>
           <Text style={S.listCellNum}>{item.num}</Text>
