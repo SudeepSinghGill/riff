@@ -462,6 +462,7 @@ interface FlattenResult<T> {
   sectionStartFlatIndices:   number[];
   /** Pre-populated heights for supplementary views with declared height. */
   declaredHeights:           Map<string, number>;
+  keyToFlatIndex:            Map<string, number>;
 }
 
 function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
@@ -470,6 +471,7 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
   const stickyFooterFlatIndices: number[]      = [];
   const sectionStartFlatIndices: number[]      = [];
   const declaredHeights                        = new Map<string, number>();
+  const keyToFlatIndex                         = new Map<string, number>();
 
   for (let si = 0; si < sections.length; si++) {
     const s = sections[si]!;
@@ -479,10 +481,12 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
       const fi = flatData.length;
       if (s.header.sticky) stickyHeaderFlatIndices.push(fi);
       declaredHeights.set(`__h_${s.key}`, s.header.height);
+      keyToFlatIndex.set(`item-${si}-header`, fi);
       flatData.push({ _kind: 'header', sectionIndex: si });
     }
 
     for (let ii = 0; ii < s.data.length; ii++) {
+      keyToFlatIndex.set(`item-${si}-${ii}`, flatData.length);
       flatData.push({ _kind: 'item', sectionIndex: si, item: s.data[ii]!, itemIndex: ii });
     }
 
@@ -490,11 +494,12 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
       const fi = flatData.length;
       if (s.footer.sticky) stickyFooterFlatIndices.push(fi);
       declaredHeights.set(`__f_${s.key}`, s.footer.height);
+      keyToFlatIndex.set(`item-${si}-footer`, fi);
       flatData.push({ _kind: 'footer', sectionIndex: si });
     }
   }
 
-  return { flatData, stickyHeaderFlatIndices, stickyFooterFlatIndices, sectionStartFlatIndices, declaredHeights };
+  return { flatData, stickyHeaderFlatIndices, stickyFooterFlatIndices, sectionStartFlatIndices, declaredHeights, keyToFlatIndex };
 }
 
 /** Flat-mode key extractor for sectioned items. */
@@ -935,18 +940,22 @@ export function Riff<T = unknown>({
     } else {
       let minIdx = Infinity, maxIdx = -Infinity;
       for (const attr of attrs) {
-        if (attr.index < minIdx) minIdx = attr.index;
-        if (attr.index > maxIdx) maxIdx = attr.index;
+        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(attr.key) ?? -1) : attr.index;
+        if (fi === -1) continue;
+        if (fi < minIdx) minIdx = fi;
+        if (fi > maxIdx) maxIdx = fi;
       }
-      const render = { first: minIdx, last: maxIdx };
+      const render = { first: minIdx === Infinity ? 0 : minIdx, last: maxIdx === -Infinity ? -1 : maxIdx };
 
       const visAttrs = effectiveLayout.attributesForElements({
         x: 0, y: scrollY, width: viewportWidth, height: viewportHeight,
       });
       let visFirst = Infinity, visLast = -Infinity;
       for (const a of visAttrs) {
-        if (a.index < visFirst) visFirst = a.index;
-        if (a.index > visLast) visLast = a.index;
+        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(a.key) ?? -1) : a.index;
+        if (fi === -1) continue;
+        if (fi < visFirst) visFirst = fi;
+        if (fi > visLast) visLast = fi;
       }
       const visible = { first: visFirst === Infinity ? 0 : visFirst, last: visLast === -Infinity ? -1 : visLast };
 
@@ -1133,8 +1142,10 @@ export function Riff<T = unknown>({
 
       let rFirst = Infinity, rLast = -Infinity;
       for (const a of attrs) {
-        if (a.index < rFirst) rFirst = a.index;
-        if (a.index > rLast) rLast = a.index;
+        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(a.key) ?? -1) : a.index;
+        if (fi === -1) continue;
+        if (fi < rFirst) rFirst = fi;
+        if (fi > rLast) rLast = fi;
       }
       const newR = { first: rFirst === Infinity ? 0 : rFirst, last: rLast === -Infinity ? -1 : rLast };
 
@@ -1143,8 +1154,10 @@ export function Riff<T = unknown>({
       });
       let vFirst = Infinity, vLast = -Infinity;
       for (const a of visAttrs) {
-        if (a.index < vFirst) vFirst = a.index;
-        if (a.index > vLast) vLast = a.index;
+        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(a.key) ?? -1) : a.index;
+        if (fi === -1) continue;
+        if (fi < vFirst) vFirst = fi;
+        if (fi > vLast) vLast = fi;
       }
       const newV = { first: vFirst === Infinity ? 0 : vFirst, last: vLast === -Infinity ? -1 : vLast };
 
@@ -1228,14 +1241,28 @@ export function Riff<T = unknown>({
 
     for (let i = 0; i < stickyHeaderFlatIndices.length; i++) {
       const fi = stickyHeaderFlatIndices[i]!;
-      const attr = effectiveLayout.attributesForItem(fi, 0);
+      const fiDesc = isSectioned ? flattenResult?.flatData[fi] : null;
+      
+      let attr = null;
+      if (isSectioned && fiDesc?._kind === 'header') {
+        attr = effectiveLayout.attributesForSupplementaryView?.('header', 0, fiDesc.sectionIndex);
+      } else {
+        attr = effectiveLayout.attributesForItem(isSectioned ? (fiDesc?.itemIndex ?? fi) : fi, isSectioned ? (fiDesc?.sectionIndex ?? 0) : 0);
+      }
+      
       const naturalY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
       const headerHeight = attr ? attr.frame.height : effectiveItemHeight;
 
       const nextFi = stickyHeaderFlatIndices[i + 1];
       let boundaryY = 999999;
       if (nextFi !== undefined) {
-        const nextAttr = effectiveLayout.attributesForItem(nextFi, 0);
+        const nextDesc = isSectioned ? flattenResult?.flatData[nextFi] : null;
+        let nextAttr = null;
+        if (isSectioned && nextDesc?._kind === 'header') {
+          nextAttr = effectiveLayout.attributesForSupplementaryView?.('header', 0, nextDesc.sectionIndex);
+        } else {
+          nextAttr = effectiveLayout.attributesForItem(isSectioned ? (nextDesc?.itemIndex ?? nextFi) : nextFi, isSectioned ? (nextDesc?.sectionIndex ?? 0) : 0);
+        }
         boundaryY = nextAttr ? nextAttr.frame.y : sectionInsetTop + nextFi * stride;
       }
 
@@ -1243,7 +1270,7 @@ export function Riff<T = unknown>({
     }
     return map;
   }, [hasStickyHeaders, stickyHeaderFlatIndices, effectiveLayout,
-      effectiveItemHeight, sectionInsetTop, stride,
+      effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult,
       // eslint-disable-next-line react-hooks/exhaustive-deps
       layoutCacheVersion]);
 
