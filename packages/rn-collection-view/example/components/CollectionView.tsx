@@ -465,7 +465,7 @@ interface FlattenResult<T> {
   keyToFlatIndex:            Map<string, number>;
 }
 
-const RNCV_DEBUG_LOGS = true;
+const RNCV_DEBUG_LOGS = false;
 
 function rncvLog(tag: string, payload: Record<string, unknown>) {
   if (!__DEV__ || !RNCV_DEBUG_LOGS) return;

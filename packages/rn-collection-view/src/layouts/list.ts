@@ -31,7 +31,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
   };
 };
 
-const RNCV_LAYOUT_DEBUG_LOGS = true;
+const RNCV_LAYOUT_DEBUG_LOGS = false;
 const listDebugLog = (...args: any[]) => {
   if (!__DEV__ || !RNCV_LAYOUT_DEBUG_LOGS) return;
   console.log(...args);

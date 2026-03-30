@@ -9,7 +9,11 @@
 
 // Cross-platform logging for ShadowNode (runs on background thread).
 // Active only in DEBUG builds; no-op in release.
-#if DEBUG
+#ifndef RNCV_ENABLE_NATIVE_LOGS
+#define RNCV_ENABLE_NATIVE_LOGS 0
+#endif
+
+#if DEBUG && RNCV_ENABLE_NATIVE_LOGS
   #ifdef __APPLE__
     #include <os/log.h>
     #define RNCV_SN_LOG(fmt, ...) os_log_info(os_log_create("com.rncv", "shadownode"), "[RNCV-SN] " fmt, ##__VA_ARGS__)

@@ -9,7 +9,11 @@
 
 using namespace facebook::react;
 
-#if DEBUG
+#ifndef RNCV_ENABLE_NATIVE_LOGS
+#define RNCV_ENABLE_NATIVE_LOGS 0
+#endif
+
+#if DEBUG && RNCV_ENABLE_NATIVE_LOGS
   #define RNCV_IOS_STICKY_LOG(...) NSLog(__VA_ARGS__)
 #else
   #define RNCV_IOS_STICKY_LOG(...) ((void)0)
