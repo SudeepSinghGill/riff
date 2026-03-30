@@ -826,6 +826,10 @@ export function Riff<T = unknown>({
     ? flattenResult!.stickyHeaderFlatIndices
     : (propStickyHeaderIndices ?? []);
   const hasStickyHeaders = stickyHeaderFlatIndices.length > 0;
+  const stickyFooterFlatIndices = isSectioned
+    ? flattenResult!.stickyFooterFlatIndices
+    : (propStickyFooterIndices ?? []);
+  const hasStickyFooters = stickyFooterFlatIndices.length > 0;
 
   // ── Core state ──────────────────────────────────────────────────────────────
   // Seed viewport dimensions so the layout protocol can run on frame 1.
@@ -1346,64 +1350,68 @@ export function Riff<T = unknown>({
     },
   };
 
-  // ── Sticky header config for ScrollCoordinatedView ──────────────────────────
-  // Build a map: flatIndex → { naturalY, boundaryY, headerHeight, behavior }
+  // ── Sticky supplementary config for ScrollCoordinatedView ───────────────────
+  // Build a map: flatIndex → { kind, naturalY, boundaryY, sizeHeight }
   // Each sticky cell is wrapped in RNScrollCoordinatedView in renderCell.
   // The native component handles the transform on the UI thread.
   // MUST be defined before renderCell / scrollContent IIFE that consumes it.
 
   const stickyConfigMap = useMemo(() => {
-    if (!hasStickyHeaders) return null;
-    const map = new Map<number, { naturalY: number; boundaryY: number; headerHeight: number }>();
+    if (!hasStickyHeaders && !hasStickyFooters) return null;
+    const map = new Map<number, { kind: 'header' | 'footer'; naturalY: number; boundaryY: number; sizeHeight: number }>();
 
-    for (let i = 0; i < stickyHeaderFlatIndices.length; i++) {
-      const fi = stickyHeaderFlatIndices[i]!;
+    const allSticky = [
+      ...stickyHeaderFlatIndices.map(fi => ({ fi, kind: 'header' as const })),
+      ...stickyFooterFlatIndices.map(fi => ({ fi, kind: 'footer' as const })),
+    ].sort((a, b) => a.fi - b.fi);
+
+    for (let i = 0; i < allSticky.length; i++) {
+      const { fi, kind: stickyKind } = allSticky[i]!;
       const fiDesc = isSectioned ? flattenResult?.flatData[fi] : null;
       
       let attr = null;
       if (isSectioned && fiDesc?._kind === 'header') {
         attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+      } else if (isSectioned && fiDesc?._kind === 'footer') {
+        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-footer`);
       } else {
         attr = effectiveLayout.attributesForItem(isSectioned ? ((fiDesc as any)?.itemIndex ?? fi) : fi, isSectioned ? (fiDesc?.sectionIndex ?? 0) : 0);
       }
       
       const naturalY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
-      const headerHeight = attr ? attr.frame.height : effectiveItemHeight;
+      const sizeHeight = attr ? attr.frame.height : effectiveItemHeight;
 
-      const nextFi = stickyHeaderFlatIndices[i + 1];
+      // Push boundary: start Y of the next section (prefer header, else first item).
       let boundaryY = 999999;
-      if (nextFi !== undefined) {
-        const nextDesc = isSectioned ? flattenResult?.flatData[nextFi] : null;
-        let nextAttr = null;
-        if (isSectioned && nextDesc?._kind === 'header') {
-          nextAttr = nativeMod.layoutCache.getAttributes(`item-${nextDesc.sectionIndex}-header`);
-        } else {
-          nextAttr = effectiveLayout.attributesForItem(isSectioned ? ((nextDesc as any)?.itemIndex ?? nextFi) : nextFi, isSectioned ? (nextDesc?.sectionIndex ?? 0) : 0);
+      if (isSectioned && typeof fiDesc?.sectionIndex === 'number') {
+        const nextSection = fiDesc.sectionIndex + 1;
+        if (propSections && nextSection < propSections.length) {
+          const nextHeader = nativeMod.layoutCache.getAttributes(`item-${nextSection}-header`);
+          if (nextHeader) {
+            boundaryY = nextHeader.frame.y;
+          } else {
+            const nextFirst = nativeMod.layoutCache.getAttributes(`item-${nextSection}-0`);
+            if (nextFirst) boundaryY = nextFirst.frame.y;
+          }
         }
-        boundaryY = nextAttr ? nextAttr.frame.y : sectionInsetTop + nextFi * stride;
       }
 
-      if (isSectioned && fiDesc?._kind === 'header') {
-        const rawCache = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
-        rncvVerboseLog(`[RNCVX-DEBUG] Section ${fiDesc.sectionIndex} header raw native cache hit: `, !!rawCache);
-      }
-      rncvVerboseLog(`[RNCVX-STICKY] sIdx=${fiDesc?.sectionIndex} naturalY=${naturalY} boundaryY=${boundaryY} attrOk=${!!attr} fi=${fi} nextFi=${nextFi}`);
+      rncvVerboseLog(`[RNCVX-STICKY] kind=${stickyKind} sIdx=${fiDesc?.sectionIndex} naturalY=${naturalY} boundaryY=${boundaryY} attrOk=${!!attr} fi=${fi}`);
       rncvLog('RNCV-JS-STICKY', {
         op: 'stickyConfigMap-entry',
         fi,
         sectionIndex: fiDesc?.sectionIndex,
-        kind: fiDesc?._kind,
+        kind: stickyKind,
         attrHit: !!attr,
         naturalY,
         boundaryY,
-        headerHeight,
-        nextFi,
+        headerHeight: sizeHeight,
       });
-      map.set(fi, { naturalY, boundaryY, headerHeight });
+      map.set(fi, { kind: stickyKind, naturalY, boundaryY, sizeHeight });
     }
     return map;
-  }, [hasStickyHeaders, stickyHeaderFlatIndices, effectiveLayout,
-      effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult,
+  }, [hasStickyHeaders, hasStickyFooters, stickyHeaderFlatIndices, stickyFooterFlatIndices,
+      effectiveLayout, effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult, propSections,
       // eslint-disable-next-line react-hooks/exhaustive-deps
       layoutCacheVersion]);
 
@@ -1531,10 +1539,10 @@ export function Riff<T = unknown>({
           behavior={stickyMode}
           naturalY={stickyConfig.naturalY}
           boundaryY={stickyConfig.boundaryY}
-          headerHeight={stickyConfig.headerHeight}
+          headerHeight={stickyConfig.sizeHeight}
           enabled={true}
           type="supplementary"
-          kind="header"
+          kind={stickyConfig.kind}
           index={index}
           cacheKey={cacheKey}
           isMeasureOnly={measureOnly}
@@ -1586,51 +1594,62 @@ export function Riff<T = unknown>({
 
   let mountedStickySet: Set<number> | null = null;
   let stickyHeaderCells: React.ReactElement[] | null = null;
+  let stickyFooterCells: React.ReactElement[] | null = null;
 
-  if (stickyConfigMap && stickyIndexSet && stickyHeaderFlatIndices.length > 0) {
-    // Find the active sticky: last one whose position ≤ scroll top.
+  if (stickyConfigMap && stickyIndexSet && (stickyHeaderFlatIndices.length > 0 || stickyFooterFlatIndices.length > 0)) {
     const scrollY = prevScrollYRef.current;
-    let activeSlot = 0;
-    for (let i = stickyHeaderFlatIndices.length - 1; i >= 0; i--) {
-      const fi = stickyHeaderFlatIndices[i]!;
-      const sd = isSectioned ? flattenResult?.flatData[fi] : null;
-      let attr = null;
-      if (isSectioned && sd?._kind === 'header') {
-        attr = nativeMod.layoutCache.getAttributes(`item-${sd.sectionIndex}-header`);
-      } else {
-        attr = effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
-      }
-      const posY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
-      if (posY <= scrollY) {
-        activeSlot = i;
-        break;
-      }
-    }
-
-    const first = Math.max(0, activeSlot - STICKY_BUFFER_BEFORE);
-    const last  = Math.min(stickyHeaderFlatIndices.length - 1, activeSlot + STICKY_BUFFER_AFTER);
-    rncvLog('RNCV-JS-STICKY', {
-      op: 'sticky-active-window',
-      scrollY,
-      stickyHeaderFlatIndices,
-      activeSlot,
-      first,
-      last,
-    });
+    const vpH = viewportHeightRef.current || viewportHeight;
 
     mountedStickySet = new Set<number>();
-    stickyHeaderCells = [];
-    for (let s = first; s <= last; s++) {
-      const fi = stickyHeaderFlatIndices[s]!;
-      if (!data[fi]) continue;
-      mountedStickySet.add(fi);
-      stickyHeaderCells.push(renderCell(data[fi]!, fi, false));
+
+    if (stickyHeaderFlatIndices.length > 0) {
+      // Active header: last one whose naturalY ≤ scrollY
+      let activeSlot = 0;
+      for (let i = stickyHeaderFlatIndices.length - 1; i >= 0; i--) {
+        const fi = stickyHeaderFlatIndices[i]!;
+        const sd = isSectioned ? flattenResult?.flatData[fi] : null;
+        const attr = (isSectioned && sd?._kind === 'header')
+          ? nativeMod.layoutCache.getAttributes(`item-${sd.sectionIndex}-header`)
+          : effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
+        const posY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
+        if (posY <= scrollY) { activeSlot = i; break; }
+      }
+
+      const first = Math.max(0, activeSlot - STICKY_BUFFER_BEFORE);
+      const last  = Math.min(stickyHeaderFlatIndices.length - 1, activeSlot + STICKY_BUFFER_AFTER);
+      stickyHeaderCells = [];
+      for (let s = first; s <= last; s++) {
+        const fi = stickyHeaderFlatIndices[s]!;
+        if (!data[fi]) continue;
+        mountedStickySet.add(fi);
+        stickyHeaderCells.push(renderCell(data[fi]!, fi, false));
+      }
     }
-    rncvLog('RNCV-JS-STICKY', {
-      op: 'sticky-mounted',
-      mountedStickyIndices: Array.from(mountedStickySet.values()),
-      mountedCount: mountedStickySet.size,
-    });
+
+    if (stickyFooterFlatIndices.length > 0) {
+      // Active footer: last one whose naturalY ≤ (scrollY + vpH - footerH)
+      let activeSlot = 0;
+      for (let i = stickyFooterFlatIndices.length - 1; i >= 0; i--) {
+        const fi = stickyFooterFlatIndices[i]!;
+        const sd = isSectioned ? flattenResult?.flatData[fi] : null;
+        const attr = (isSectioned && sd?._kind === 'footer')
+          ? nativeMod.layoutCache.getAttributes(`item-${sd.sectionIndex}-footer`)
+          : effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
+        const posY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
+        const h = attr ? attr.frame.height : effectiveItemHeight;
+        if (posY <= (scrollY + vpH - h)) { activeSlot = i; break; }
+      }
+
+      const first = Math.max(0, activeSlot - STICKY_BUFFER_BEFORE);
+      const last  = Math.min(stickyFooterFlatIndices.length - 1, activeSlot + STICKY_BUFFER_AFTER);
+      stickyFooterCells = [];
+      for (let s = first; s <= last; s++) {
+        const fi = stickyFooterFlatIndices[s]!;
+        if (!data[fi]) continue;
+        mountedStickySet.add(fi);
+        stickyFooterCells.push(renderCell(data[fi]!, fi, false));
+      }
+    }
   }
 
   const scrollContent = (() => {
@@ -1676,12 +1695,12 @@ export function Riff<T = unknown>({
       effFirst,
       effLast,
       cellsCount: cells.length,
-      stickyCellsCount: stickyHeaderCells?.length ?? 0,
+      stickyCellsCount: (stickyHeaderCells?.length ?? 0) + (stickyFooterCells?.length ?? 0),
       mountedStickyIndices: mountedStickySet ? Array.from(mountedStickySet.values()) : [],
       isVariableHeight,
     });
 
-    return <>{stickyHeaderCells}{cells}</>;
+    return <>{stickyHeaderCells}{stickyFooterCells}{cells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────

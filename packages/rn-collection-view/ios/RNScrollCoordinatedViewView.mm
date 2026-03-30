@@ -9,11 +9,11 @@
 
 using namespace facebook::react;
 
-#ifndef RNCV_ENABLE_NATIVE_LOGS
-#define RNCV_ENABLE_NATIVE_LOGS 0
+#ifndef RNCV_ENABLE_STICKY_TRACE
+#define RNCV_ENABLE_STICKY_TRACE 0
 #endif
 
-#if DEBUG && RNCV_ENABLE_NATIVE_LOGS
+#if DEBUG && RNCV_ENABLE_STICKY_TRACE
   #define RNCV_IOS_STICKY_LOG(...) NSLog(__VA_ARGS__)
 #else
   #define RNCV_IOS_STICKY_LOG(...) ((void)0)
@@ -36,6 +36,9 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   CGFloat _headerHeight;
   BOOL    _isPush;
   BOOL    _enabled;
+  BOOL    _isFooter;
+  BOOL    _footerLogSeen;
+  CGFloat _lastLoggedScrollY;
 }
 
 // ── Fabric registration ──────────────────────────────────────────────────────
@@ -56,6 +59,9 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
     _headerHeight = 0;
     _isPush      = YES;    // default behavior = push
     _enabled     = YES;
+    _isFooter    = NO;
+    _footerLogSeen = NO;
+    _lastLoggedScrollY = CGFLOAT_MAX;
     _observing   = NO;
   }
   return self;
@@ -78,16 +84,19 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   _headerHeight = newProps.headerHeight;
   _isPush       = isPush(newProps.behavior);
   _enabled      = newProps.enabled;
-  RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] updateProps tag:%ld index:%d type:%s kind:%s cacheKey:%s behavior:%s boundaryY:%.1f headerH:%.1f enabled:%d",
-                      (long)self.tag,
-                      (int)newProps.index,
-                      newProps.type.c_str(),
-                      newProps.kind.c_str(),
-                      newProps.cacheKey.c_str(),
-                      _isPush ? "push" : "sticky",
-                      _boundaryY,
-                      _headerHeight,
-                      (int)_enabled);
+  _isFooter     = (newProps.kind == "footer");
+  if (_isFooter) {
+    _footerLogSeen = NO;
+    _lastLoggedScrollY = CGFLOAT_MAX;
+    RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] updateProps tag:%ld index:%d cacheKey:%s behavior:%s boundaryY:%.1f footerH:%.1f enabled:%d",
+                        (long)self.tag,
+                        (int)newProps.index,
+                        newProps.cacheKey.c_str(),
+                        _isPush ? "push" : "sticky",
+                        _boundaryY,
+                        _headerHeight,
+                        (int)_enabled);
+  }
 
   // Re-apply transform immediately with current scroll position.
   [self _applyTransform];
@@ -137,9 +146,6 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
       _parentScrollView = (UIScrollView *)v;
       break;
     }
-    if ([NSStringFromClass([v class]) containsString:@"ScrollView"]) {
-      RNCV_IOS_STICKY_LOG(@"[RNCVX-NATIVE-STICKY] Found ScrollView wrapper class: %@", NSStringFromClass([v class]));
-    }
     v = v.superview;
   }
 
@@ -152,14 +158,18 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
 
     // Apply immediately so the view starts at the correct position.
     [self _applyTransform];
-    const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
-    const int index = props ? (int)props->index : -1;
-    RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] observing tag:%ld index:%d parent:%@",
-                        (long)self.tag, index, NSStringFromClass([_parentScrollView class]));
+    if (_isFooter) {
+      const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
+      const int index = props ? (int)props->index : -1;
+      RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] observing tag:%ld index:%d parent:%@",
+                          (long)self.tag, index, NSStringFromClass([_parentScrollView class]));
+    }
   } else {
-    const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
-    const int index = props ? (int)props->index : -1;
-    RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] FAILED to find UIScrollView for tag:%ld index:%d", (long)self.tag, index);
+    if (_isFooter) {
+      const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
+      const int index = props ? (int)props->index : -1;
+      RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] FAILED to find UIScrollView for tag:%ld index:%d", (long)self.tag, index);
+    }
   }
 }
 
@@ -202,6 +212,7 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   if (self.bounds.size.height <= 0) return;
 
   CGFloat scrollY = _parentScrollView.contentOffset.y;
+  CGFloat viewportH = _parentScrollView.bounds.size.height;
 
   // Derive naturalY from the view's actual Fabric-managed position.
   // self.center and self.bounds are independent of self.layer.transform,
@@ -210,14 +221,27 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   // lag behind as variable heights are measured and positions shift.
   CGFloat naturalY = self.center.y - self.bounds.size.height * 0.5;
   CGFloat translateY;
+  CGFloat desiredTop = 0.0;
 
-  if (_isPush) {
-    // push: max(0, min(scrollY - naturalY, boundaryY - naturalY - headerHeight))
-    CGFloat maxTranslate = _boundaryY - naturalY - _headerHeight;
-    translateY = MAX(0.0, MIN(scrollY - naturalY, maxTranslate));
+  if (_isFooter) {
+    // Footer pins to viewport bottom: desiredTop = scrollY + viewportH - height
+    // translate = min(0, desiredTop - naturalY), with optional push boundary.
+    desiredTop = scrollY + viewportH - _headerHeight;
+    if (_isPush) {
+      // Prevent footer bottom from crossing boundaryY (start of next section).
+      CGFloat maxTranslate = _boundaryY - naturalY - _headerHeight;
+      translateY = MIN(0.0, MIN(desiredTop - naturalY, maxTranslate));
+    } else {
+      translateY = MIN(0.0, desiredTop - naturalY);
+    }
   } else {
-    // sticky: max(0, scrollY - naturalY)
-    translateY = MAX(0.0, scrollY - naturalY);
+    // Header pins to viewport top: translate = max(0, scrollY - naturalY), with push boundary.
+    if (_isPush) {
+      CGFloat maxTranslate = _boundaryY - naturalY - _headerHeight;
+      translateY = MAX(0.0, MIN(scrollY - naturalY, maxTranslate));
+    } else {
+      translateY = MAX(0.0, scrollY - naturalY);
+    }
   }
 
   self.layer.transform = CATransform3DMakeTranslation(0, translateY, 0);
@@ -227,22 +251,33 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   const char *type = props ? props->type.c_str() : "";
   const char *kind = props ? props->kind.c_str() : "";
   const char *cacheKey = props ? props->cacheKey.c_str() : "";
-  RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] apply tag:%ld index:%d behavior:%s type:%s kind:%s cacheKey:%s naturalY:%.1f centerY:%.1f bound:%.1f headerH:%.1f scrollY:%.1f trans:%.1f",
-                      (long)self.tag,
-                      index,
-                      _isPush ? "push" : "sticky",
-                      type,
-                      kind,
-                      cacheKey,
-                      naturalY,
-                      self.center.y,
-                      _boundaryY,
-                      _headerHeight,
-                      scrollY,
-                      translateY);
+  if (_isFooter) {
+    const BOOL shouldLog = !_footerLogSeen ||
+                           _lastLoggedScrollY == CGFLOAT_MAX ||
+                           fabs(scrollY - _lastLoggedScrollY) >= 60.0;
+    if (shouldLog) {
+      _footerLogSeen = YES;
+      _lastLoggedScrollY = scrollY;
+      RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] apply tag:%ld index:%d behavior:%s type:%s kind:%s cacheKey:%s naturalY:%.1f centerY:%.1f bound:%.1f footerH:%.1f viewportH:%.1f scrollY:%.1f desiredTop:%.1f trans:%.1f",
+                          (long)self.tag,
+                          index,
+                          _isPush ? "push" : "sticky",
+                          type,
+                          kind,
+                          cacheKey,
+                          naturalY,
+                          self.center.y,
+                          _boundaryY,
+                          _headerHeight,
+                          viewportH,
+                          scrollY,
+                          desiredTop,
+                          translateY);
+    }
+  }
 
   // Elevate z when actively sticky (translated > 0) so it floats above siblings.
-  self.layer.zPosition = translateY > 0 ? 100 : 0;
+  self.layer.zPosition = fabs(translateY) > 0.1 ? 100 : 0;
 }
 
 @end

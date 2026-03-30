@@ -179,6 +179,11 @@ function ListDemo() {
       height: 50,
       sticky: true,
     },
+    footer: {
+      render: () => <AnimatedTimerFooter title="Section 1 Footer" />,
+      height: 30,
+      sticky: true,
+    },
     insets: { top: 8, bottom: 8, left: 0, right: 0 },
   }], []);
 
