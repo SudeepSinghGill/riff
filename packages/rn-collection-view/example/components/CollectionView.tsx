@@ -476,6 +476,11 @@ function rncvLog(tag: string, payload: Record<string, unknown>) {
   console.log(`[${tag}] ${serialized}`);
 }
 
+function rncvVerboseLog(...args: any[]) {
+  if (!__DEV__ || !RNCV_DEBUG_LOGS) return;
+  console.log(...args);
+}
+
 function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
   const flatData:                FlatItem<T>[] = [];
   const stickyHeaderFlatIndices: number[]      = [];
@@ -1055,8 +1060,8 @@ export function Riff<T = unknown>({
         if (fi > maxIdx) maxIdx = fi;
       }
       
-      if (missedKeys.length > 0) console.log(`[RNCVX] scrollY=${scrollY} MISSING KEYS (first 3):`, missedKeys.slice(0, 3));
-      console.log(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} C++_attr_count=${attrs.length} -> max_fi=${maxIdx} min_fi=${minIdx}`);
+      if (missedKeys.length > 0) rncvVerboseLog(`[RNCVX] scrollY=${scrollY} MISSING KEYS (first 3):`, missedKeys.slice(0, 3));
+      rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} C++_attr_count=${attrs.length} -> max_fi=${maxIdx} min_fi=${minIdx}`);
       const render = { first: minIdx === Infinity ? 0 : minIdx, last: maxIdx === -Infinity ? -1 : maxIdx };
 
       const visAttrs = effectiveLayout.attributesForElements({
@@ -1380,9 +1385,9 @@ export function Riff<T = unknown>({
 
       if (isSectioned && fiDesc?._kind === 'header') {
         const rawCache = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
-        console.log(`[RNCVX-DEBUG] Section ${fiDesc.sectionIndex} header raw native cache hit: `, !!rawCache);
+        rncvVerboseLog(`[RNCVX-DEBUG] Section ${fiDesc.sectionIndex} header raw native cache hit: `, !!rawCache);
       }
-      console.log(`[RNCVX-STICKY] sIdx=${fiDesc?.sectionIndex} naturalY=${naturalY} boundaryY=${boundaryY} attrOk=${!!attr} fi=${fi} nextFi=${nextFi}`);
+      rncvVerboseLog(`[RNCVX-STICKY] sIdx=${fiDesc?.sectionIndex} naturalY=${naturalY} boundaryY=${boundaryY} attrOk=${!!attr} fi=${fi} nextFi=${nextFi}`);
       rncvLog('RNCV-JS-STICKY', {
         op: 'stickyConfigMap-entry',
         fi,
@@ -1764,7 +1769,7 @@ export function Riff<T = unknown>({
     : null;
 
 
-  if (renderScrollView || ScrollViewComponent) {
+  if (__DEV__ && (renderScrollView || ScrollViewComponent)) {
     console.warn(
       'CollectionView: ScrollViewComponent and renderScrollView are not supported ' +
       'in ShadowNode mode. The native RNCollectionViewContainer owns the scroll view.',

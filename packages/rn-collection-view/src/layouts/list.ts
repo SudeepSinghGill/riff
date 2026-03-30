@@ -31,6 +31,12 @@ const nativeMod = NativeCollectionViewModule as unknown as {
   };
 };
 
+const RNCV_LAYOUT_DEBUG_LOGS = true;
+const listDebugLog = (...args: any[]) => {
+  if (!__DEV__ || !RNCV_LAYOUT_DEBUG_LOGS) return;
+  console.log(...args);
+};
+
 class ListLayout implements CollectionViewLayout {
   readonly type = 'list';
   private readonly delegate: ListLayoutDelegate;
@@ -113,7 +119,7 @@ class ListLayout implements CollectionViewLayout {
       return params;
     });
 
-    console.log(`[RNCVX-LIST] Sending to C++ nativeMod.listLayout.computeSections:`, sectionParams.map(s => ({ headerHeight: s.headerHeight, footerHeight: s.footerHeight, itemCount: s.itemCount })));
+    listDebugLog(`[RNCVX-LIST] Sending to C++ nativeMod.listLayout.computeSections:`, sectionParams.map(s => ({ headerHeight: s.headerHeight, footerHeight: s.footerHeight, itemCount: s.itemCount })));
 
     // Build a fingerprint of the data shape. Only clear + recompute when it changes.
     // This preserves Yoga-measured heights across measurement-triggered re-renders.
@@ -128,7 +134,7 @@ class ListLayout implements CollectionViewLayout {
     // Verification: immediately check if header was stored
     const headerCheck = nativeMod.layoutCache.getAttributes('item-0-header');
     const totalSize = nativeMod.layoutCache.getTotalContentSize();
-    console.log(`[RNCVX-LIST-VERIFY] After computeSections: item-0-header=${!!headerCheck} y=${headerCheck?.frame?.y} h=${headerCheck?.frame?.height} totalContentH=${totalSize?.height}`);
+    listDebugLog(`[RNCVX-LIST-VERIFY] After computeSections: item-0-header=${!!headerCheck} y=${headerCheck?.frame?.y} h=${headerCheck?.frame?.height} totalContentH=${totalSize?.height}`);
   }
 
   attributesForElements(inRect: Rect): LayoutAttributes[] {

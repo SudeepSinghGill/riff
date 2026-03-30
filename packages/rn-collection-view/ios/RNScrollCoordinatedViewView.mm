@@ -9,6 +9,12 @@
 
 using namespace facebook::react;
 
+#if DEBUG
+  #define RNCV_IOS_STICKY_LOG(...) NSLog(__VA_ARGS__)
+#else
+  #define RNCV_IOS_STICKY_LOG(...) ((void)0)
+#endif
+
 // String→enum for behavior prop.
 static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   return b == RNScrollCoordinatedViewBehavior::Push;
@@ -68,16 +74,16 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   _headerHeight = newProps.headerHeight;
   _isPush       = isPush(newProps.behavior);
   _enabled      = newProps.enabled;
-  NSLog(@"[RNCV-IOS-STICKY] updateProps tag:%ld index:%d type:%s kind:%s cacheKey:%s behavior:%s boundaryY:%.1f headerH:%.1f enabled:%d",
-        (long)self.tag,
-        (int)newProps.index,
-        newProps.type.c_str(),
-        newProps.kind.c_str(),
-        newProps.cacheKey.c_str(),
-        _isPush ? "push" : "sticky",
-        _boundaryY,
-        _headerHeight,
-        (int)_enabled);
+  RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] updateProps tag:%ld index:%d type:%s kind:%s cacheKey:%s behavior:%s boundaryY:%.1f headerH:%.1f enabled:%d",
+                      (long)self.tag,
+                      (int)newProps.index,
+                      newProps.type.c_str(),
+                      newProps.kind.c_str(),
+                      newProps.cacheKey.c_str(),
+                      _isPush ? "push" : "sticky",
+                      _boundaryY,
+                      _headerHeight,
+                      (int)_enabled);
 
   // Re-apply transform immediately with current scroll position.
   [self _applyTransform];
@@ -128,7 +134,7 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
       break;
     }
     if ([NSStringFromClass([v class]) containsString:@"ScrollView"]) {
-      NSLog(@"[RNCVX-NATIVE-STICKY] Found ScrollView wrapper class: %@", NSStringFromClass([v class]));
+      RNCV_IOS_STICKY_LOG(@"[RNCVX-NATIVE-STICKY] Found ScrollView wrapper class: %@", NSStringFromClass([v class]));
     }
     v = v.superview;
   }
@@ -144,12 +150,12 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
     [self _applyTransform];
     const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
     const int index = props ? (int)props->index : -1;
-    NSLog(@"[RNCV-IOS-STICKY] observing tag:%ld index:%d parent:%@",
-          (long)self.tag, index, NSStringFromClass([_parentScrollView class]));
+    RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] observing tag:%ld index:%d parent:%@",
+                        (long)self.tag, index, NSStringFromClass([_parentScrollView class]));
   } else {
     const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
     const int index = props ? (int)props->index : -1;
-    NSLog(@"[RNCV-IOS-STICKY] FAILED to find UIScrollView for tag:%ld index:%d", (long)self.tag, index);
+    RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] FAILED to find UIScrollView for tag:%ld index:%d", (long)self.tag, index);
   }
 }
 
@@ -217,19 +223,19 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   const char *type = props ? props->type.c_str() : "";
   const char *kind = props ? props->kind.c_str() : "";
   const char *cacheKey = props ? props->cacheKey.c_str() : "";
-  NSLog(@"[RNCV-IOS-STICKY] apply tag:%ld index:%d behavior:%s type:%s kind:%s cacheKey:%s naturalY:%.1f centerY:%.1f bound:%.1f headerH:%.1f scrollY:%.1f trans:%.1f",
-        (long)self.tag,
-        index,
-        _isPush ? "push" : "sticky",
-        type,
-        kind,
-        cacheKey,
-        naturalY,
-        self.center.y,
-        _boundaryY,
-        _headerHeight,
-        scrollY,
-        translateY);
+  RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY] apply tag:%ld index:%d behavior:%s type:%s kind:%s cacheKey:%s naturalY:%.1f centerY:%.1f bound:%.1f headerH:%.1f scrollY:%.1f trans:%.1f",
+                      (long)self.tag,
+                      index,
+                      _isPush ? "push" : "sticky",
+                      type,
+                      kind,
+                      cacheKey,
+                      naturalY,
+                      self.center.y,
+                      _boundaryY,
+                      _headerHeight,
+                      scrollY,
+                      translateY);
 
   // Elevate z when actively sticky (translated > 0) so it floats above siblings.
   self.layer.zPosition = translateY > 0 ? 100 : 0;
