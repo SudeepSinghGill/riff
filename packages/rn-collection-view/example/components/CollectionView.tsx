@@ -80,6 +80,8 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     getItemHeights(section: number, count: number): number[];
     getTotalContentSize(): { width: number; height: number };
     version(): number;
+    /** MVC: enable/disable correction. Drives ShadowNode snapshotAnchorIfNeeded() gating. */
+    setMVCEnabled(enabled: boolean): void;
     /** MVC: snapshot anchor before prepare() rewrites positions. Reads scroll offset from LayoutCache. */
     snapshotAnchor(): void;
     /** MVC: compare anchor's new Y after prepare(). Stores pending correction. */
@@ -1035,6 +1037,13 @@ export function Riff<T = unknown>({
     };
   }, [viewportWidth, viewportHeight, propSections, propKeyExtractor, data.length,
       sectionInsetTop, sectionInsetBottom, sectionInsetLeft, sectionInsetRight]);
+
+  // Sync MVC enabled state to LayoutCache so the ShadowNode's snapshotAnchorIfNeeded()
+  // can gate on it for size-change mutations (where layoutContext doesn't change and
+  // snapshotAnchor() isn't called from the prepare useMemo below).
+  useEffect(() => {
+    nativeLayoutCache.setMVCEnabled(maintainVisibleContentPosition);
+  }, [maintainVisibleContentPosition, nativeLayoutCache]);
 
   // Prepare the layout when context changes (data, container size).
   // Cache clearing is handled internally by each layout engine (e.g. list.ts)

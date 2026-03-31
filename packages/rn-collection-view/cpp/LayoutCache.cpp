@@ -154,11 +154,9 @@ Point LayoutCache::getScrollOffset() const {
 
 // ─── MVC correction ──────────────────────────────────────────────────────────
 
-void LayoutCache::snapshotAnchor() {
-  std::lock_guard<std::mutex> lock(_mutex);
+void LayoutCache::_snapshotAnchorLocked() {
+  // Caller must already hold _mutex.
   const double scrollY = _scrollOffset.y;
-  // Find item with smallest Y that starts at or below scrollY.
-  // If none, fall back to item whose bottom exceeds scrollY (partially visible).
   std::string bestKey;
   double bestY = std::numeric_limits<double>::max();
   bool found = false;
@@ -185,6 +183,23 @@ void LayoutCache::snapshotAnchor() {
   } else {
     _hasAnchor = false;
   }
+}
+
+void LayoutCache::snapshotAnchor() {
+  std::lock_guard<std::mutex> lock(_mutex);
+  _snapshotAnchorLocked();
+}
+
+void LayoutCache::setMVCEnabled(bool enabled) {
+  std::lock_guard<std::mutex> lock(_mutex);
+  _mvcEnabled = enabled;
+}
+
+void LayoutCache::snapshotAnchorIfNeeded() {
+  std::lock_guard<std::mutex> lock(_mutex);
+  if (_hasAnchor) return;   // JS already snapshotted before prepare()
+  if (!_mvcEnabled) return; // MVC disabled — don't auto-snapshot
+  _snapshotAnchorLocked();
 }
 
 double LayoutCache::computeCorrection() {
@@ -495,6 +510,17 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
       PropNameID::forAscii(rt, "version"), 0,
       [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
         return Value(static_cast<double>(version()));
+      }));
+
+  // setMVCEnabled(bool) → undefined
+  target.setProperty(rt, "setMVCEnabled",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "setMVCEnabled"), 1,
+      [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count > 0) {
+          setMVCEnabled(args[0].getBool());
+        }
+        return Value::undefined();
       }));
 
   // snapshotAnchor() → undefined
