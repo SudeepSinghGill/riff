@@ -1465,17 +1465,31 @@ export function Riff<T = unknown>({
       const naturalY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
       const sizeHeight = attr ? attr.frame.height : effectiveItemHeight;
 
-      // Push boundary: start Y of the next section (prefer header, else first item).
+      // Push boundary differs by kind:
+      // - Header: next section start — the next header pushes this one away from viewport top.
+      // - Footer: current section start — footer shouldn't be pulled above its own section.
       let boundaryY = 999999;
       if (isSectioned && typeof fiDesc?.sectionIndex === 'number') {
-        const nextSection = fiDesc.sectionIndex + 1;
-        if (propSections && nextSection < propSections.length) {
-          const nextHeader = nativeMod.layoutCache.getAttributes(`item-${nextSection}-header`);
-          if (nextHeader) {
-            boundaryY = nextHeader.frame.y;
+        if (stickyKind === 'footer') {
+          // Footer boundary = section's own header Y (or first item Y if no header).
+          const sectionHeader = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+          if (sectionHeader) {
+            boundaryY = sectionHeader.frame.y;
           } else {
-            const nextFirst = effectiveLayout.attributesForItem(0, nextSection);
-            if (nextFirst) boundaryY = nextFirst.frame.y;
+            const firstItem = effectiveLayout.attributesForItem(0, fiDesc.sectionIndex);
+            if (firstItem) boundaryY = firstItem.frame.y;
+          }
+        } else {
+          // Header boundary = next section start.
+          const nextSection = fiDesc.sectionIndex + 1;
+          if (propSections && nextSection < propSections.length) {
+            const nextHeader = nativeMod.layoutCache.getAttributes(`item-${nextSection}-header`);
+            if (nextHeader) {
+              boundaryY = nextHeader.frame.y;
+            } else {
+              const nextFirst = effectiveLayout.attributesForItem(0, nextSection);
+              if (nextFirst) boundaryY = nextFirst.frame.y;
+            }
           }
         }
       }

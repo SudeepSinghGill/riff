@@ -357,7 +357,8 @@ static os_log_t rncvLog(void) {
     CGFloat targetW = positions[i * 4 + 2];
     CGFloat targetH = positions[i * 4 + 3];
     CGRect frame = child.frame;
-    const BOOL hasActiveTransform = !CGAffineTransformIsIdentity(child.transform);
+    const BOOL hasActiveTransform = !CGAffineTransformIsIdentity(child.transform) ||
+        !CATransform3DIsIdentity(child.layer.transform);
     const CGFloat currentNaturalX =
         hasActiveTransform ? (child.center.x - child.bounds.size.width * 0.5f) : frame.origin.x;
     const CGFloat currentNaturalY =
