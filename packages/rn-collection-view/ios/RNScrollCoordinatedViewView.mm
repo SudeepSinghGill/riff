@@ -72,7 +72,7 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   [self _stopObserving];
 }
 
-// ── Props ────────────────────────────────────────────────────────────────────
+//̊ ── Props ────────────────────────────────────────────────────────────────────
 
 - (void)updateProps:(const Props::Shared &)props oldProps:(const Props::Shared &)oldProps
 {
@@ -134,6 +134,12 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   if (!_observing && self.window) {
     [self _findAndObserveScrollView];
   }
+
+  // Recompute the sticky transform whenever our geometry changes.
+  // applyPositionsFromState (in the container view) sets our bounds+center,
+  // which marks us as needing layout and lands here.  Without this call,
+  // the transform stays stale until the next scroll event fires KVO.
+  [self _applyTransform];
 }
 
 - (void)_findAndObserveScrollView

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <yoga/YGNode.h>
 #include <react/debug/react_native_assert.h>
 
@@ -50,8 +51,6 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
   const auto& props =
       *std::static_pointer_cast<const RNCollectionViewContainerProps>(getProps());
   const auto children = getLayoutableChildNodes();
-
-  hadMeasurementDeltas_ = false;
 
   if (children.empty()) {
     correctedContentHeight_ = 0;
@@ -275,7 +274,6 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
   // The engine updates the cache in-place. We re-read affected positions.
 
   if (!deltas.empty() && engine && cache) {
-    hadMeasurementDeltas_ = true;
     const auto cacheVersionBeforeApply = cache->version();
     RNCV_SN_LOG("applyMeasurements: %zu deltas (first: key=%s old=%.1f new=%.1f)",
                 deltas.size(), deltas[0].key.c_str(), deltas[0].oldValue, deltas[0].newValue);
@@ -365,70 +363,6 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
   }
 }
 
-Float CollectionViewContainerShadowNode::computeOffsetCorrection(
-    Float scrollY,
-    const std::vector<Float>& oldPositions,
-    const std::vector<Float>& newPositions,
-    size_t childCount) const {
-  // Phase 4: Compute scroll offset correction.
-  //
-  // When content above the viewport changes (insert, remove, resize),
-  // adjust scrollY so visible content doesn't jump.
-  //
-  // Strategy: find the first visible item in the OLD layout, locate it
-  // in the NEW layout, and return the Y delta.
-  //
-  // For resize (same item count): same index maps to same item.
-  // For insert/remove: child count changes by k. Assuming mutations are
-  // at a single point, the old item at index F is now at index F+k in
-  // the new layout. This is correct for prepend/append; for scattered
-  // mutations, production will use item keys passed via props.
-
-  const auto oldCount = oldPositions.size() / 4;
-  const auto newCount = newPositions.size() / 4;
-
-  if (oldCount == 0 || newCount == 0) return 0;
-
-  // Find first visible item in old layout (first whose bottom > scrollY).
-  size_t oldFirstVisible = oldCount; // sentinel
-  for (size_t i = 0; i < oldCount; ++i) {
-    const auto y = oldPositions[i * 4 + 1];
-    const auto h = oldPositions[i * 4 + 3];
-    if (y + h > scrollY) {
-      oldFirstVisible = i;
-      break;
-    }
-  }
-  if (oldFirstVisible >= oldCount) return 0;
-
-  const auto oldY = oldPositions[oldFirstVisible * 4 + 1];
-
-  // Case 1: Same child count (resize only). Same index = same item.
-  if (oldCount == newCount) {
-    const auto newY = newPositions[oldFirstVisible * 4 + 1];
-    return newY - oldY;
-  }
-
-  // Case 2: Child count changed (insert or remove).
-  // Check if the item at the same index moved — if not, change was below viewport.
-  if (oldFirstVisible < newCount) {
-    const auto sameIdxY = newPositions[oldFirstVisible * 4 + 1];
-    if (std::abs(sameIdxY - oldY) < 0.5f) {
-      // Item at same index didn't move — mutation was below viewport.
-      return 0;
-    }
-  }
-
-  // Item at same index DID move — mutation was above viewport.
-  // The old first-visible item shifted by countDelta indices.
-  const auto countDelta = static_cast<int64_t>(newCount) - static_cast<int64_t>(oldCount);
-  const auto newIdx = static_cast<int64_t>(oldFirstVisible) + countDelta;
-
-  if (newIdx < 0 || newIdx >= static_cast<int64_t>(newCount)) return 0;
-
-  const auto newY = newPositions[newIdx * 4 + 1];
-  return newY - oldY;
-}
 
 void CollectionViewContainerShadowNode::updateStateIfNeeded() {
   auto state = getStateData();
@@ -460,50 +394,13 @@ void CollectionViewContainerShadowNode::updateStateIfNeeded() {
   }
 
   if (state.positions != correctedPositions_) {
-    // Only compute offset correction when measurement deltas actually
-    // changed item positions (e.g., Yoga measured a different height).
-    // A render-range shift alone doesn't mean content moved — the same
-    // items are at the same absolute positions, just a different window.
-    if (hadMeasurementDeltas_) {
-      const auto& oldPositions = state.positions;
-      // Read scroll offset from LayoutCache (written by native view)
-      // instead of state (which would trigger stale Fabric commits).
-      const auto& props2 =
-          *std::static_pointer_cast<const RNCollectionViewContainerProps>(getProps());
-      auto scrollCache = CollectionViewModule::getLayoutCacheForId(props2.layoutCacheId);
-      Float scrollY = 0;
-      if (scrollCache) {
-        auto scrollOffset = scrollCache->getScrollOffset();
-        scrollY = static_cast<Float>(scrollOffset.y);
-      }
-      const auto oldChildCount = oldPositions.size() / 4;
-
-      if (scrollY > 0 && oldChildCount > 0) {
-        const auto minCount = std::min(childCount, oldChildCount);
-        auto correction = computeOffsetCorrection(
-            scrollY, oldPositions, correctedPositions_, minCount);
-        if (std::abs(correction) > 0.5f) {
-          state.contentOffsetCorrectionY = correction;
-          RNCV_SN_LOG("offset correction=%.1f scrollY=%.1f", correction, scrollY);
-        } else {
-          state.contentOffsetCorrectionY = 0;
-        }
-      } else {
-        state.contentOffsetCorrectionY = 0;
-      }
-    } else {
-      state.contentOffsetCorrectionY = 0;
-    }
-
+    // Offset correction is now handled entirely by JS + LayoutCache
+    // (snapshotAnchor → computeCorrection → consumePendingCorrection).
+    // The ShadowNode just forwards positions; the native view reads the
+    // pending correction directly from LayoutCache in updateState:.
     state.positions = correctedPositions_;
     state.layoutRevision++;
     changed = true;
-  } else {
-    // Positions unchanged — clear any previous correction.
-    if (state.contentOffsetCorrectionY != 0) {
-      state.contentOffsetCorrectionY = 0;
-      changed = true;
-    }
   }
 
   if (changed) {
