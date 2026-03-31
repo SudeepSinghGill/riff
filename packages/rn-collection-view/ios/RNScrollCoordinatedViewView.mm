@@ -37,8 +37,6 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   BOOL    _isPush;
   BOOL    _enabled;
   BOOL    _isFooter;
-  BOOL    _footerLogSeen;
-  CGFloat _lastLoggedScrollY;
 }
 
 // ── Fabric registration ──────────────────────────────────────────────────────
@@ -60,8 +58,6 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
     _isPush      = YES;    // default behavior = push
     _enabled     = YES;
     _isFooter    = NO;
-    _footerLogSeen = NO;
-    _lastLoggedScrollY = CGFLOAT_MAX;
     _observing   = NO;
   }
   return self;
@@ -72,7 +68,22 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   [self _stopObserving];
 }
 
-// ── Props ────────────────────────────────────────────────────────────────────
+// ── Layout metrics ────────────────────────────────────────────────────────────
+//
+// Fabric calls this when Yoga assigns a new frame to the view.  The base class
+// sets center/bounds from the Yoga-computed natural position but does NOT touch
+// layer.transform.  If a sticky translate is active the view would appear at
+// naturalY + staleTranslate — visually wrong.  Re-apply the transform
+// immediately so the correct visual position is established.
+
+- (void)updateLayoutMetrics:(const facebook::react::LayoutMetrics &)layoutMetrics
+           oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
+{
+  [super updateLayoutMetrics:layoutMetrics oldLayoutMetrics:oldLayoutMetrics];
+  [self _applyTransform];
+}
+
+// ── Props ─────────────────────────────────────────────────────────────────────
 
 - (void)updateProps:(const Props::Shared &)props oldProps:(const Props::Shared &)oldProps
 {
@@ -85,18 +96,6 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   _isPush       = isPush(newProps.behavior);
   _enabled      = newProps.enabled;
   _isFooter     = (newProps.kind == "footer");
-  if (_isFooter) {
-    _footerLogSeen = NO;
-    _lastLoggedScrollY = CGFLOAT_MAX;
-    RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] updateProps tag:%ld index:%d cacheKey:%s behavior:%s boundaryY:%.1f footerH:%.1f enabled:%d",
-                        (long)self.tag,
-                        (int)newProps.index,
-                        newProps.cacheKey.c_str(),
-                        _isPush ? "push" : "sticky",
-                        _boundaryY,
-                        _headerHeight,
-                        (int)_enabled);
-  }
 
   // Re-apply transform immediately with current scroll position.
   [self _applyTransform];
@@ -134,6 +133,12 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   if (!_observing && self.window) {
     [self _findAndObserveScrollView];
   }
+
+  // Recompute the sticky transform whenever our geometry changes.
+  // applyPositionsFromState (in the container view) sets our bounds+center,
+  // which marks us as needing layout and lands here.  Without this call,
+  // the transform stays stale until the next scroll event fires KVO.
+  [self _applyTransform];
 }
 
 - (void)_findAndObserveScrollView
@@ -158,18 +163,6 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
 
     // Apply immediately so the view starts at the correct position.
     [self _applyTransform];
-    if (_isFooter) {
-      const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
-      const int index = props ? (int)props->index : -1;
-      RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] observing tag:%ld index:%d parent:%@",
-                          (long)self.tag, index, NSStringFromClass([_parentScrollView class]));
-    }
-  } else {
-    if (_isFooter) {
-      const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
-      const int index = props ? (int)props->index : -1;
-      RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] FAILED to find UIScrollView for tag:%ld index:%d", (long)self.tag, index);
-    }
   }
 }
 
@@ -228,9 +221,11 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
     // translate = min(0, desiredTop - naturalY), with optional push boundary.
     desiredTop = scrollY + viewportH - _headerHeight;
     if (_isPush) {
-      // Prevent footer bottom from crossing boundaryY (start of next section).
-      CGFloat maxTranslate = _boundaryY - naturalY - _headerHeight;
-      translateY = MIN(0.0, MIN(desiredTop - naturalY, maxTranslate));
+      // boundaryY = section start Y (header or first item). Footer shouldn't
+      // be pulled above it. Use MAX so we pick the LESS negative value —
+      // constraining upward movement, not exaggerating it.
+      CGFloat minTranslate = _boundaryY - naturalY;
+      translateY = MIN(0.0, MAX(desiredTop - naturalY, minTranslate));
     } else {
       translateY = MIN(0.0, desiredTop - naturalY);
     }
@@ -245,36 +240,6 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   }
 
   self.layer.transform = CATransform3DMakeTranslation(0, translateY, 0);
-
-  const auto props = std::static_pointer_cast<const RNScrollCoordinatedViewProps>(_props);
-  const int index = props ? (int)props->index : -1;
-  const char *type = props ? props->type.c_str() : "";
-  const char *kind = props ? props->kind.c_str() : "";
-  const char *cacheKey = props ? props->cacheKey.c_str() : "";
-  if (_isFooter) {
-    const BOOL shouldLog = !_footerLogSeen ||
-                           _lastLoggedScrollY == CGFLOAT_MAX ||
-                           fabs(scrollY - _lastLoggedScrollY) >= 60.0;
-    if (shouldLog) {
-      _footerLogSeen = YES;
-      _lastLoggedScrollY = scrollY;
-      RNCV_IOS_STICKY_LOG(@"[RNCV-IOS-STICKY-FOOTER] apply tag:%ld index:%d behavior:%s type:%s kind:%s cacheKey:%s naturalY:%.1f centerY:%.1f bound:%.1f footerH:%.1f viewportH:%.1f scrollY:%.1f desiredTop:%.1f trans:%.1f",
-                          (long)self.tag,
-                          index,
-                          _isPush ? "push" : "sticky",
-                          type,
-                          kind,
-                          cacheKey,
-                          naturalY,
-                          self.center.y,
-                          _boundaryY,
-                          _headerHeight,
-                          viewportH,
-                          scrollY,
-                          desiredTop,
-                          translateY);
-    }
-  }
 
   // Elevate z when actively sticky (translated > 0) so it floats above siblings.
   self.layer.zPosition = fabs(translateY) > 0.1 ? 100 : 0;

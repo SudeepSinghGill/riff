@@ -70,6 +70,14 @@ std::shared_ptr<rncv::LayoutCache> CollectionViewModule::getLayoutCacheForId(
   return it->second.lock(); // returns nullptr if expired
 }
 
+// Free-function thin wrapper — declared in LayoutCacheRegistry.h.
+// Allows native iOS views to access the cache without importing the
+// full CollectionViewModule.h header.
+// NOTE: already inside namespace facebook::react — no nested namespace block needed.
+std::shared_ptr<rncv::LayoutCache> layoutCacheForId(int32_t cacheId) {
+  return CollectionViewModule::getLayoutCacheForId(cacheId);
+}
+
 // ── Constructor ──────────────────────────────────────────────────────────────
 
 CollectionViewModule::CollectionViewModule(

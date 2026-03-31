@@ -42,6 +42,7 @@ class ListLayout implements CollectionViewLayout {
   private readonly delegate: ListLayoutDelegate;
   private lastContext: LayoutContext | null = null;
   private _lastFingerprint: string = '';
+  private lastSectionKeys: (readonly string[])[] = [];
 
   constructor(delegate: ListLayoutDelegate) {
     this.delegate = delegate;
@@ -115,9 +116,14 @@ class ListLayout implements CollectionViewLayout {
       if (itemHeights) {
         params.itemHeights = itemHeights;
       }
+      if (sec.itemKeys) {
+        params.keys = sec.itemKeys;
+      }
 
       return params;
     });
+
+    this.lastSectionKeys = context.sections.map(s => s.itemKeys ?? []);
 
     listDebugLog(`[RNCVX-LIST] Sending to C++ nativeMod.listLayout.computeSections:`, sectionParams.map(s => ({ headerHeight: s.headerHeight, footerHeight: s.footerHeight, itemCount: s.itemCount })));
 
@@ -142,8 +148,8 @@ class ListLayout implements CollectionViewLayout {
   }
 
   attributesForItem(index: number, section: number): LayoutAttributes | null {
-    // Key format matches C++ ListLayout: "item-{section}-{index}" or custom keys
-    const key = `item-${section}-${index}`;
+    const sectionKeys = this.lastSectionKeys[section];
+    const key = sectionKeys?.[index] ?? `item-${section}-${index}`;
     return nativeMod.layoutCache.getAttributes(key);
   }
 
