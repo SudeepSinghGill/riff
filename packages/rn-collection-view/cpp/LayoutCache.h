@@ -133,10 +133,20 @@ public:
   //   2. computeCorrection()      — after prepare() writes new positions
   //   3. consumePendingCorrection() — called by native view in updateState:
 
+  /// Enable/disable MVC correction. Called from JS when the prop changes.
+  /// When disabled, snapshotAnchorIfNeeded() is a no-op (ShadowNode won't
+  /// auto-snapshot for size-change mutations).
+  void setMVCEnabled(bool enabled);
+
   /// Record the anchor item: smallest-Y item at or below the current scroll
   /// offset (reads _scrollOffset internally — written by native view on every
   /// scroll frame). Call BEFORE prepare() so old positions are still in cache.
   void snapshotAnchor();
+
+  /// Like snapshotAnchor(), but a no-op if an anchor is already set.
+  /// Called by the ShadowNode before applyMeasurements() to cover size-change
+  /// mutations where JS prepare() was not re-run (layoutContext unchanged).
+  void snapshotAnchorIfNeeded();
 
   /// Compare anchor's new Y to snapshotted Y. Store result as pending correction.
   /// Call AFTER prepare() writes new positions. Returns the correction delta.
@@ -184,11 +194,13 @@ private:
   std::string _anchorKey;
   double      _anchorY             = 0;
   bool        _hasAnchor           = false;
+  bool        _mvcEnabled          = false;
   double      _pendingCorrectionY  = 0;
   bool        _hasPendingCorrection = false;
 
   // Internal helpers (call with lock held)
   void _setAttributesLocked(const LayoutAttributes& attrs);
+  void _snapshotAnchorLocked(); // anchor-finding logic; caller must hold _mutex
 
   // JSI conversion helpers
   static LayoutAttributes  attrsFromJSI(facebook::jsi::Runtime& rt,

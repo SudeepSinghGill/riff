@@ -274,6 +274,10 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
   // The engine updates the cache in-place. We re-read affected positions.
 
   if (!deltas.empty() && engine && cache) {
+    // Snapshot anchor before cascading positions so MVC correction is available
+    // even when prepare() was not re-run (e.g. pure size-change mutations where
+    // layoutContext hasn't changed and JS snapshotAnchor() wasn't called).
+    cache->snapshotAnchorIfNeeded();
     const auto cacheVersionBeforeApply = cache->version();
     RNCV_SN_LOG("applyMeasurements: %zu deltas (first: key=%s old=%.1f new=%.1f)",
                 deltas.size(), deltas[0].key.c_str(), deltas[0].oldValue, deltas[0].newValue);
