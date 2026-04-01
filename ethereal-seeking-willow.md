@@ -9,8 +9,8 @@
 | MVC – insert/delete scroll correction | ✅ Done |
 | MVC – size-change scroll correction | ✅ Done |
 | L5 – Mutation buttons + MVC toggle in ListDemo | ✅ Done (wired in LayoutsTab.tsx) |
-| L4 – ScrollToItem | 🔄 Next (branch: `cur-scrollto`) |
-| L3 – Proper Decoration Views | ⬜ After L4 |
+| L4 – ScrollToItem | ✅ Done (branch: `cur-scrollto`, merged to main) |
+| L3 – Proper Decoration Views | 🔄 Next |
 | 5g – Extend ShadowNode to grid/masonry/flow | ⬜ After L3 |
 | 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
 
@@ -19,56 +19,35 @@
 ## Execution Order
 
 ```
-L4 (scrollTo) → L3 (decoration views) → 5g (other layouts) → 5j (remove JS wrapper)
+L4 (scrollTo) ✅ → L3 (decoration views) → 5g (other layouts) → 5j (remove JS wrapper)
 ```
 
 ---
 
-## L4 — ScrollToItem (current work)
+## L4 — ScrollToItem (DONE)
 
-**Branch:** `cur-scrollto`
+**Branch:** `cur-scrollto` (merged to main)
 
-**API:**
-```typescript
-collectionViewRef.scrollToItem(key: string, options?: {
-  animated?: boolean;                               // default true
-  position?: 'top' | 'center' | 'bottom' | 'nearest'; // default 'top'
-});
-collectionViewRef.scrollToOffset(options: { x?: number; y: number; animated?: boolean });
-```
+**What was built:**
+- 3-layer architecture: JS imperative API → C++ JSI `scrollTo` binding → native `_scrollToX:y:animated:`
+- Scroll handler registry in `CollectionViewModule.cpp` — static map keyed by `layoutCacheId`, decouples JSI from native view
+- Native `RNCollectionViewContainerView` registers/unregisters handler in `updateProps:`/`prepareForRecycle`
+- JS `scrollToItem(key, options)` reads frame from LayoutCache using stable keys, computes target offset for `top|center|bottom|nearest` positions, clamps to `[0, contentHeight - viewportHeight]`
 
-**Implementation layers:**
-1. **Native** (`RNCollectionViewContainerView.mm`): `scrollToOffset:animated:` → `[_scrollView setContentOffset:animated:]`. Reuse `_applyingCorrection` guard from MVC.
-2. **C++ JSI** (`CollectionViewModule.cpp`): Add `scrollTo(layoutCacheId, x, y, animated)` binding.
-3. **JS** (`CollectionView.tsx`): `scrollToItem(key)` → sync `nativeLayoutCache.getAttributes(key)` → compute targetY → call `nativeMod.scrollTo(...)`.
+**Key decisions:**
+- **Stable keys end-to-end:** `scrollToItem` accepts `"sectionKey:itemId"` (e.g. `"cell-animation:s1-17"`) — same key format the C++ ListLayout stores in the cache when `keyExtractor` is provided via `layoutContext.sections[s].itemKeys`. No key translation needed.
+- **contentHeightRef pattern:** `useImperativeHandle` deps don't include `contentHeight` (would recreate handle every layout pass). Instead, `contentHeightRef` mirrors the state — same pattern as existing `viewportHeightRef`.
+- **No settling loop:** LayoutCache has positions for all items (estimates for unseen). Same as UICollectionView with `estimatedItemSize`. Settling can be added later.
 
-**Target offset computation:**
-```
-top:     attrs.frame.y
-center:  attrs.frame.y - (viewportHeight - attrs.frame.height) / 2
-bottom:  attrs.frame.y - viewportHeight + attrs.frame.height
-nearest: no-op if visible; else top or bottom by direction
-```
-Clamp to `[0, contentHeight - viewportHeight]`.
-
-**Dynamic size note:** `computeSections()` runs over all items upfront, so LayoutCache always has a position for every item. Unseen items use `estimatedItemHeight` — same behavior as UICollectionView with `estimatedItemSize`. No settling loop for POC; acceptable for demo.
-
-**Demo wiring:** Enable the currently-disabled "→ Top", "→ #42", "→ Bot" buttons in `LayoutsTab.tsx` controls bar.
-
-**Files:**
-| File | Change |
-|---|---|
-| `cpp/CollectionViewModule.h/.cpp` | `scrollTo(id, x, y, animated)` JSI binding |
-| `ios/CollectionViewModule.mm` | Forward to container view |
-| `ios/RNCollectionViewContainerView.h/.mm` | `scrollToOffset:animated:` |
-| `example/components/CollectionView.tsx` | `scrollToItem` / `scrollToOffset` imperative API |
-| `example/screens/comparison/LayoutsTab.tsx` | Enable scroll-to buttons; fix "MVC not wired" info text |
+**Bugs fixed during implementation:**
+1. `prepareForRecycle` didn't reset `_layoutCacheId` → recycled views skipped scroll handler re-registration
+2. `contentHeight` stale in `useImperativeHandle` closure → all scrolls clamped to y=0
 
 ---
 
-## L3 — Proper Decoration Views
+## L3 — Proper Decoration Views (NEXT)
 
-**Branch:** `cur-decorative-views` (create after L4 is merged)
+**Branch:** `cur-decorative-views` (create from main)
 
 Replaces the JS-workaround `renderSectionBackground` (not windowed, manually positioned) with proper layout-driven decoration views.
 
@@ -146,7 +125,7 @@ After 5g. Remove `position: 'absolute'`, `left`, `top`, `width`, `height` from c
 | Size-change with scroll stability | ✅ snapshotAnchorIfNeeded | ❌ |
 | Decoration views (arbitrary kinds) | planned L3 | ❌ |
 | Separators (layout-driven) | planned L3 | basic, not layout-driven |
-| scrollToItem by stable key | planned L4 | index only |
+| scrollToItem by stable key | ✅ L4 | index only |
 | Custom layouts (carousel, radial) | ✅ | ❌ list only |
 | C++ window controller on UI thread | ✅ | ❌ JS |
 | Memory pressure adaptation | ✅ | ❌ |
@@ -163,5 +142,6 @@ After 5g. Remove `position: 'absolute'`, `left`, `top`, `width`, `height` from c
 | `cpp/LayoutCache.h/.cpp` | Cache + LayoutAttributes |
 | `cpp/CollectionViewContainerShadowNode.cpp` | ShadowNode positioning |
 | `cpp/CollectionViewModule.h/.cpp` | TurboModule + JSI bindings |
+| `cpp/LayoutCacheRegistry.h` | Thin header for LayoutCache + scroll handler lookup |
 | `ios/RNCollectionViewContainerView.mm` | Native scroll container |
 | `ios/RNScrollCoordinatedViewView.mm` | Sticky view KVO |
