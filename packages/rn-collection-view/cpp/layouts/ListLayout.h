@@ -46,6 +46,15 @@ struct ListLayoutParams {
   // 0 = no header / footer for this section.
   double headerHeight   = 0;
   double footerHeight   = 0;
+
+  // --- Decoration views (L3) ---
+  // Section background: one decoration entry spanning the full section rect.
+  // Separators: one decoration entry between each consecutive pair of items.
+  bool   emitSectionBackground  = false;
+  bool   emitSeparators         = false;
+  double separatorHeight        = 0.5;   // hairlineWidth default
+  double separatorInsetLeading  = 0;
+  double separatorInsetTrailing = 0;
 };
 
 // ─── ListLayout ───────────────────────────────────────────────────────────────

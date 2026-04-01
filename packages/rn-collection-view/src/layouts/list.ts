@@ -39,7 +39,7 @@ const listDebugLog = (...args: any[]) => {
 
 class ListLayout implements CollectionViewLayout {
   readonly type = 'list';
-  private readonly delegate: ListLayoutDelegate;
+  readonly delegate: ListLayoutDelegate;
   private lastContext: LayoutContext | null = null;
   private _lastFingerprint: string = '';
   private lastSectionKeys: (readonly string[])[] = [];
@@ -111,6 +111,13 @@ class ListLayout implements CollectionViewLayout {
         section: sIdx,
         headerHeight,
         footerHeight,
+        // Decoration params — passed to C++ so it emits the right entries.
+        // Separator color lives in JS; C++ only handles geometry.
+        emitSectionBackground: d.sectionBackground === true,
+        emitSeparators: d.separator != null,
+        separatorHeight: d.separator?.height ?? 0.5,
+        separatorInsetLeading: d.separator?.insetLeading ?? 0,
+        separatorInsetTrailing: d.separator?.insetTrailing ?? 0,
       };
 
       if (itemHeights) {

@@ -125,7 +125,7 @@ std::vector<double> LayoutCache::getSectionOffsets() const {
     auto it = _map.find(key);
     if (it == _map.end()) continue;
     const auto& attrs = it->second;
-    if (attrs.isSupplementary) continue;
+    if (attrs.isSupplementary || attrs.isDecoration) continue;
     if (attrs.section != currentSection) {
       currentSection = attrs.section;
       // Fill any gaps (sparse sections)
@@ -323,6 +323,8 @@ LayoutAttributes LayoutCache::attrsFromJSI(Runtime& rt, const Object& obj) {
   a.tier            = tierFromString(stringFromObj(rt, obj, "tier", "outside"));
   a.isSticky        = boolFromObj(rt, obj, "isSticky");
   a.isAnimating     = boolFromObj(rt, obj, "isAnimating");
+  a.isDecoration    = boolFromObj(rt, obj, "isDecoration");
+  a.decorationKind  = stringFromObj(rt, obj, "decorationKind");
 
   // extras: arbitrary key-value pairs
   Value extrasVal = obj.getProperty(rt, "extras");
@@ -379,6 +381,9 @@ Object LayoutCache::attrsToJSI(Runtime& rt, const LayoutAttributes& a) {
       String::createFromAscii(rt, tierToString(a.tier)));
   obj.setProperty(rt, "isSticky",     Value(a.isSticky));
   obj.setProperty(rt, "isAnimating",  Value(a.isAnimating));
+  obj.setProperty(rt, "isDecoration",  Value(a.isDecoration));
+  obj.setProperty(rt, "decorationKind",
+      String::createFromUtf8(rt, a.decorationKind));
 
   // Only serialize extras if non-empty.
   if (!a.extras.empty()) {

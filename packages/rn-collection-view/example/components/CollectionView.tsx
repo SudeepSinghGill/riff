@@ -78,6 +78,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     clear(): void;
     setAttributes(attrs: object): void;
     getAttributes(key: string): any;
+    getAttributesInRect(rect: { x: number; y: number; width: number; height: number }): any[];
     removeAttributes(key: string): void;
     getItemHeights(section: number, count: number): number[];
     getTotalContentSize(): { width: number; height: number };
@@ -319,6 +320,8 @@ export interface RiffProps<T = unknown> {
    * Useful for debug overlays: (renderCount, totalCount) => void.
    */
   onRenderCountChange?: (renderCount: number, totalCount: number) => void;
+  /** Called after each render with the number of mounted decoration views (windowing proof). */
+  onDecorationCountChange?: (count: number) => void;
 
   /**
    * Fires when the container's measured size changes.
@@ -399,8 +402,28 @@ export interface RiffProps<T = unknown> {
    */
   stickyMode?: 'sticky' | 'push';
 
-  /** Per-section background decoration, rendered inside scroll content. */
+  /**
+   * @deprecated Use `decorationRenderers.sectionBackground` instead.
+   * Requires `sectionBackground: true` on the list layout delegate.
+   * Old prop: not windowed, manually positioned via JS.
+   */
   renderSectionBackground?: (sectionIndex: number) => React.ReactElement | null;
+
+  /**
+   * Renderers for decoration views emitted by the layout engine.
+   * Decoration views are windowed (off-screen ones are not mounted).
+   *
+   * - `sectionBackground(sectionIndex, frame)`: covers the full section rect.
+   *   Requires `sectionBackground: true` on the list layout delegate.
+   * - Any custom kind emitted by a custom layout engine.
+   *
+   * Separators are built-in and use the color from the list layout's
+   * `separator.color` option — no renderer needed.
+   */
+  decorationRenderers?: {
+    sectionBackground?: (sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => React.ReactElement | null;
+    [kind: string]: ((sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => React.ReactElement | null) | undefined;
+  };
 
   scrollViewProps?: ScrollViewProps;
   ScrollViewComponent?: React.ComponentType<ScrollViewProps>;
@@ -807,6 +830,8 @@ export function Riff<T = unknown>({
   stickyMode = 'push',
   extraData,
   renderSectionBackground,
+  decorationRenderers,
+  onDecorationCountChange,
   ScrollViewComponent,
   scrollViewProps,
   renderScrollView: propRenderScrollView,
@@ -908,6 +933,7 @@ export function Riff<T = unknown>({
   const seedH = initialHeight ?? Dimensions.get('window').height;
   const viewportWidthRef  = useRef(seedW);
   const viewportHeightRef = useRef(seedH);
+  const decorationCountRef = useRef(0);
   // contentHeightRef mirrors contentHeight state. useImperativeHandle closes over
   // its deps once — a ref lets scrollToItem read the current value without
   // requiring contentHeight in the deps array (which would recreate the handle
@@ -1334,7 +1360,7 @@ export function Riff<T = unknown>({
     },
   }), [data, keyExtractor, onDataChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Debug callback ───────────────────────────────────────────────────────────
+  // ── Debug callbacks ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (onRenderCountChange) {
@@ -1344,6 +1370,11 @@ export function Riff<T = unknown>({
       onRenderCountChange(count, itemCount);
     }
   }, [renderRange, itemCount, onRenderCountChange]);
+
+  // Report mounted decoration count after every render.
+  useLayoutEffect(() => {
+    onDecorationCountChange?.(decorationCountRef.current);
+  });  // no deps — runs after every render
 
   // ── Layout helpers ───────────────────────────────────────────────────────────
 
@@ -1884,7 +1915,84 @@ export function Riff<T = unknown>({
       isVariableHeight,
     });
 
-    return <>{stickyHeaderCells}{stickyFooterCells}{cells}</>;
+    // ── Decoration views ─────────────────────────────────────────────────────
+    // Query the layout cache for decoration entries (section backgrounds,
+    // separators) that fall within the current render window.
+    // Off-screen decorations are NOT mounted — same windowing as cells.
+    let decorationElements: React.ReactElement[] = [];
+    const hasDecoRenderers = !!(decorationRenderers || renderSectionBackground);
+    const listDelegate = effectiveLayout?.type === 'list' ? (effectiveLayout as any).delegate : null;
+    const hasSeparators = !!(listDelegate?.separator);
+    if ((hasDecoRenderers || hasSeparators) && viewportWidth > 0) {
+      const scrollY = prevScrollYRef.current;
+      const vpH = viewportHeightRef.current || viewportHeight;
+      const margin = vpH * renderMultiplier;
+      const decoRect = {
+        x: 0,
+        y: Math.max(0, scrollY - margin),
+        width: viewportWidth,
+        height: vpH + margin * 2,
+      };
+      const decoAttrs = nativeMod.layoutCache.getAttributesInRect(decoRect)
+        .filter((a: any) => a.isDecoration);
+
+      const sepColor: string = listDelegate?.separator?.color ?? '#C6C6C8';
+
+      // Merge old renderSectionBackground into decorationRenderers.sectionBackground.
+      const bgRenderer =
+        decorationRenderers?.sectionBackground ??
+        (renderSectionBackground
+          ? (si: number, _frame: any) => renderSectionBackground(si)
+          : undefined);
+
+      for (const attrs of decoAttrs) {
+        const { key, decorationKind, section: si, frame } = attrs;
+        let innerContent: React.ReactElement | null = null;
+
+        if (decorationKind === 'separator') {
+          innerContent = (
+            <View
+              style={{ width: frame.width, height: frame.height, backgroundColor: sepColor }}
+              pointerEvents="none"
+            />
+          );
+        } else if (decorationKind === 'sectionBackground' && bgRenderer) {
+          const rendered = bgRenderer(si, frame);
+          if (!rendered) continue;
+          innerContent = (
+            <View style={{ width: frame.width, height: frame.height }} pointerEvents="none">
+              {rendered}
+            </View>
+          );
+        } else if (decorationKind && decorationRenderers?.[decorationKind]) {
+          const rendered = decorationRenderers[decorationKind]!(si, frame);
+          if (!rendered) continue;
+          innerContent = (
+            <View style={{ width: frame.width, height: frame.height }} pointerEvents="none">
+              {rendered}
+            </View>
+          );
+        } else {
+          continue; // no renderer for this kind
+        }
+
+        decorationElements.push(
+          <RNMeasuredCell
+            key={key}
+            style={{ position: 'absolute' as const, left: frame.x, top: frame.y, width: frame.width }}
+            type="decoration"
+            index={-1}
+            cacheKey={key}
+            isMeasureOnly={false}
+          >
+            {innerContent}
+          </RNMeasuredCell>,
+        );
+      }
+    }
+
+    decorationCountRef.current = decorationElements.length;
+    return <>{decorationElements}{stickyHeaderCells}{stickyFooterCells}{cells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────

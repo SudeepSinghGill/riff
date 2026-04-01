@@ -171,6 +171,25 @@ export interface ListLayoutDelegate {
 
   // ── Sticky behavior (layout knows how to pin in linear coordinates) ──
   stickyMode?: StickyMode;
+
+  // ── Decoration views ──
+  // Separators are a list-layout concern — configured here, not on <Riff>.
+  // The layout engine emits inter-item separator decoration attributes; the
+  // component renders them with a built-in <View> colored by `separator.color`.
+  separator?: {
+    /** Line color. Default: '#C6C6C8' (iOS system separator grey). */
+    color?: string;
+    /** Line height in points. Default: StyleSheet.hairlineWidth (0.5). */
+    height?: number;
+    /** Left inset. Default: 0. */
+    insetLeading?: number;
+    /** Right inset. Default: 0. */
+    insetTrailing?: number;
+  };
+
+  // When true, the layout engine emits a sectionBackground decoration attribute
+  // covering the full section rect. Render via decorationRenderers on the component.
+  sectionBackground?: boolean;
 }
 
 /**

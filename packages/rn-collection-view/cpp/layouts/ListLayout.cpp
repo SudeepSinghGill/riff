@@ -143,6 +143,10 @@ bool ListLayout::applyMeasurements(
   double aggregateShift = 0.0;
 
   for (auto& attr : all) {
+    // Decoration frames are fully owned by the layout engine — re-emitted on
+    // the next computeSections() call. Skip them here to avoid partial updates.
+    if (attr.isDecoration) continue;
+
     bool changed = false;
 
     // Apply any accumulated shift from items above us
@@ -237,6 +241,10 @@ static std::string str(Runtime& rt, const Object& o, const char* k, std::string 
   Value v = o.getProperty(rt, k);
   return v.isString() ? v.getString(rt).utf8(rt) : def;
 }
+static bool bln(Runtime& rt, const Object& o, const char* k, bool def = false) {
+  Value v = o.getProperty(rt, k);
+  return v.isBool() ? v.getBool() : def;
+}
 
 ListLayoutParams ListLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   ListLayoutParams p;
@@ -249,9 +257,14 @@ ListLayoutParams ListLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.sectionInsetRight   = dbl(rt, obj, "sectionInsetRight");
   p.itemSpacing         = dbl(rt, obj, "itemSpacing");
   p.section             = i32(rt, obj, "section");
-  p.keyPrefix           = str(rt, obj, "keyPrefix");
-  p.headerHeight        = dbl(rt, obj, "headerHeight");
-  p.footerHeight        = dbl(rt, obj, "footerHeight");
+  p.keyPrefix               = str(rt, obj, "keyPrefix");
+  p.headerHeight            = dbl(rt, obj, "headerHeight");
+  p.footerHeight            = dbl(rt, obj, "footerHeight");
+  p.emitSectionBackground   = bln(rt, obj, "emitSectionBackground");
+  p.emitSeparators          = bln(rt, obj, "emitSeparators");
+  p.separatorHeight         = dbl(rt, obj, "separatorHeight", 0.5);
+  p.separatorInsetLeading   = dbl(rt, obj, "separatorInsetLeading");
+  p.separatorInsetTrailing  = dbl(rt, obj, "separatorInsetTrailing");
 
   // Optional per-item heights array (estimated mode)
   Value heights = obj.getProperty(rt, "itemHeights");
@@ -303,8 +316,26 @@ double ListLayout::computeSection(const ListLayoutParams& p,
       ? "item-" + std::to_string(sectionIndex) + "-"
       : p.keyPrefix;
   const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
+  const double sectionStartY = startY; // saved for section background frame
 
   double y = startY;
+
+  // Separator prototype — reused for each inter-item separator.
+  // Constructed once outside the item loop so only key/frame.y change per separator.
+  LayoutAttributes sep;
+  if (p.emitSeparators) {
+    sep.section         = sectionIndex;
+    sep.index           = -1;
+    sep.isDecoration    = true;
+    sep.decorationKind  = "separator";
+    sep.zIndex          = 0;
+    sep.sizingState     = SizingState::Measured;
+    sep.isDirty         = false;
+    sep.alpha           = 1.0;
+    sep.frame.x         = p.sectionInsetLeft + p.separatorInsetLeading;
+    sep.frame.width     = contentWidth - p.separatorInsetLeading - p.separatorInsetTrailing;
+    sep.frame.height    = p.separatorHeight;
+  }
   RNCV_LIST_LOG("computeSection start section=%d p.section=%d prefix=%s itemCount=%d headerH=%.1f footerH=%.1f startY=%.1f keysCount=%zu",
                 sectionIndex, p.section, prefix.c_str(), p.itemCount, p.headerHeight, p.footerHeight,
                 startY, p.keys.size());
@@ -352,6 +383,11 @@ double ListLayout::computeSection(const ListLayoutParams& p,
                       _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
       }
       y += p.itemHeight + p.itemSpacing;
+      if (p.emitSeparators && i < p.itemCount - 1) {
+        sep.key      = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
+        sep.frame.y  = y - p.itemSpacing; // item bottom (before spacing gap)
+        _cache->setAttributes(sep);
+      }
     }
   } else {
     // Estimated heights
@@ -370,6 +406,11 @@ double ListLayout::computeSection(const ListLayoutParams& p,
                       _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
       }
       y += h + p.itemSpacing;
+      if (p.emitSeparators && i < count - 1) {
+        sep.key      = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
+        sep.frame.y  = y - p.itemSpacing; // item bottom (before spacing gap)
+        _cache->setAttributes(sep);
+      }
     }
   }
 
@@ -396,6 +437,22 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     y += p.footerHeight;
   }
 
+  // ── Section background (decoration) ──────────────────────────────────────
+  if (p.emitSectionBackground) {
+    LayoutAttributes bg;
+    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
+    bg.section        = sectionIndex;
+    bg.index          = -1;
+    bg.frame          = { p.sectionInsetLeft, sectionStartY, contentWidth, y - sectionStartY };
+    bg.isDecoration   = true;
+    bg.decorationKind = "sectionBackground";
+    bg.zIndex         = -1;
+    bg.sizingState    = SizingState::Measured;
+    bg.isDirty        = false;
+    bg.alpha          = 1.0;
+    _cache->setAttributes(bg);
+  }
+
   RNCV_LIST_LOG("computeSection end section=%d endY=%.1f", sectionIndex, y);
   return y; // Y where next section starts
 }
@@ -420,8 +477,24 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
       ? "item-" + std::to_string(sectionIndex) + "-"
       : p.keyPrefix;
   const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
+  const double sectionStartY = startY;
 
   double y = startY;
+
+  LayoutAttributes sep;
+  if (p.emitSeparators) {
+    sep.section         = sectionIndex;
+    sep.index           = -1;
+    sep.isDecoration    = true;
+    sep.decorationKind  = "separator";
+    sep.zIndex          = 0;
+    sep.sizingState     = SizingState::Measured;
+    sep.isDirty         = false;
+    sep.alpha           = 1.0;
+    sep.frame.x         = p.sectionInsetLeft + p.separatorInsetLeading;
+    sep.frame.width     = contentWidth - p.separatorInsetLeading - p.separatorInsetTrailing;
+    sep.frame.height    = p.separatorHeight;
+  }
 
   // ── Header ────────────────────────────────────────────────────────────────
   if (p.headerHeight > 0) {
@@ -457,6 +530,11 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.frame.height = h;
     _cache->setAttributes(_scratch);
     y += h + p.itemSpacing;
+    if (p.emitSeparators && i < p.itemCount - 1) {
+      sep.key     = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
+      sep.frame.y = y - p.itemSpacing;
+      _cache->setAttributes(sep);
+    }
   }
 
   if (p.itemCount > 0) y -= p.itemSpacing;
@@ -475,6 +553,22 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.isDirty           = false;
     _cache->setAttributes(_scratch);
     y += p.footerHeight;
+  }
+
+  // ── Section background ─────────────────────────────────────────────────
+  if (p.emitSectionBackground) {
+    LayoutAttributes bg;
+    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
+    bg.section        = sectionIndex;
+    bg.index          = -1;
+    bg.frame          = { p.sectionInsetLeft, sectionStartY, contentWidth, y - sectionStartY };
+    bg.isDecoration   = true;
+    bg.decorationKind = "sectionBackground";
+    bg.zIndex         = -1;
+    bg.sizingState    = SizingState::Measured;
+    bg.isDirty        = false;
+    bg.alpha          = 1.0;
+    _cache->setAttributes(bg);
   }
 
   return y;

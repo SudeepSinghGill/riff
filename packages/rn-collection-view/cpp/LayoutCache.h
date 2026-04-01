@@ -65,6 +65,13 @@ struct LayoutAttributes {
   // ── Animation state ──────────────────────────────────────────────────
   bool        isAnimating   = false;
 
+  // ── Decoration metadata ──────────────────────────────────────────────
+  // Set by layout engines that emit visual-only views (section backgrounds,
+  // separators). Decoration views have no data backing and are owned by the
+  // layout — their frames are fully determined by the layout engine.
+  bool        isDecoration   = false;
+  std::string decorationKind;           // "sectionBackground", "separator"
+
   // ── Escape hatch for layout-specific data ────────────────────────────
   // Arbitrary key-value pairs. No native release needed to add new data.
   // Use for layout-specific properties (parallax factor, snap alignment, etc.)

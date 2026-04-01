@@ -255,18 +255,68 @@ function CtrlBtn({ label, onPress, disabled, active }: {
 
 // ── List layout config ──────────────────────────────────────────────────────
 
+/**
+ * Animated section background. Proves a single view lives behind all cells.
+ * Slow hue animation: a diagonal gradient band sweeps across continuously.
+ */
+function AnimatedSectionBg({ sectionIndex, frame }: { sectionIndex: number; frame: { x: number; y: number; width: number; height: number } }) {
+  // Each section has a distinct base hue so they're visually distinct.
+  const BASE_HUES = ['#e63946', '#2a9d8f', '#6a4c93'];
+  const baseColor = BASE_HUES[sectionIndex % BASE_HUES.length]!;
+
+  // Slow sweep: a semi-transparent band pans left→right over ~6 seconds.
+  const bandX = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(bandX, {
+        toValue: 1,
+        duration: 6000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    ).start();
+  }, [bandX]);
+
+  // Band travels full section width + band width.
+  const bandWidth = 80;
+  const translateX = bandX.interpolate({
+    inputRange:  [0, 1],
+    outputRange: [-bandWidth, frame.width + bandWidth],
+  });
+
+  return (
+    <View style={{ flex: 1, backgroundColor: baseColor + '28', overflow: 'hidden' }}>
+      <Animated.View
+        style={{
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          width: bandWidth,
+          backgroundColor: 'rgba(255,255,255,0.13)',
+          transform: [{ translateX }],
+        }}
+      />
+    </View>
+  );
+}
+
 function ListDemo() {
   // S0 data is mutable — insert / delete / resize act on it
   const [s0Items, setS0Items] = useState<ListItem[]>(S0_DATA);
   const [resizedIds, setResizedIds] = useState<Set<string>>(() => new Set());
   const [mvcEnabled, setMvcEnabled] = useState(false);
+  const [sepEnabled, setSepEnabled] = useState(true);
+  const [decoCount, setDecoCount] = useState(0);
   const insertCounter = useRef(S0_DATA.length);
   const cvRef = useRef<RiffHandle>(null);
 
   const listLayout = useMemo(() => list({
     estimatedItemHeight: 72,
     itemSpacing: 8,
-  }), []);
+    separator: sepEnabled ? { color: '#4a4a6a', insetLeading: 16 } : undefined,
+    sectionBackground: true,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [sepEnabled]);
 
   // ── Mutation handlers ──────────────────────────────────────────────────────
 
@@ -367,6 +417,12 @@ function ListDemo() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  const decorationRenderers = useMemo(() => ({
+    sectionBackground: (sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => (
+      <AnimatedSectionBg sectionIndex={sectionIndex} frame={frame} />
+    ),
+  }), []);
+
   return (
     <View style={S.flex}>
       {/* Controls bar */}
@@ -383,6 +439,10 @@ function ListDemo() {
         <CtrlBtn label="↕S2[-1]" onPress={resizeS2Last} active={resizedIds.has('s2-19')} />
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
+        <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
+        <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
+        </View>
       </View>
 
       <CollectionView
@@ -396,6 +456,8 @@ function ListDemo() {
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         maintainVisibleContentPosition={mvcEnabled}
+        decorationRenderers={decorationRenderers}
+        onDecorationCountChange={setDecoCount}
       />
     </View>
   );

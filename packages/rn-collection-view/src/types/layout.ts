@@ -118,6 +118,19 @@ export interface LayoutAttributes {
 
   /** Whether this item is being animated (insertion, deletion, update). */
   readonly isAnimating: boolean;
+
+  /**
+   * True for decoration views emitted by the layout engine (e.g. section
+   * backgrounds, separators). Decoration views have no data backing — their
+   * frames are fully determined by the layout engine.
+   */
+  readonly isDecoration?: boolean;
+
+  /**
+   * For decoration views: identifies the kind.
+   * "sectionBackground" | "separator" (or any custom string from a custom layout).
+   */
+  readonly decorationKind?: string;
 }
 
 // ─── Section descriptor ──────────────────────────────────────────────────────
