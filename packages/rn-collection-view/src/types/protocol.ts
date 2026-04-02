@@ -156,10 +156,19 @@ export interface InvalidationScope {
 export interface ListLayoutDelegate {
   /**
    * When true, items flow horizontally (primary axis = X).
-   * `itemHeight` is repurposed as item size along the scroll axis.
-   * Container height minus insets determines the cross-axis (Y) item size.
+   * `itemHeight` is the estimated item width (primary axis). Yoga measures final width.
+   * `estimatedCrossAxisHeight` is the estimated item height (cross axis). Yoga measures final height.
+   * The list's cross-axis height = max(all measured item heights) + vertical insets.
    */
   horizontal?: boolean;
+
+  /**
+   * Initial estimate for item height in horizontal mode (cross-axis size).
+   * Yoga measures the actual height after render. The list adjusts its height
+   * to the max of all measured item heights. Default: 200.
+   * Has no effect in vertical mode.
+   */
+  estimatedCrossAxisHeight?: number;
 
   // ── Item sizing (one of these) ──
   /** Fixed height for all items, or a function of container width. Fast path — no measurement needed.

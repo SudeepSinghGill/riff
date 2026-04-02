@@ -776,39 +776,71 @@ const S = StyleSheet.create({
 
 // ── Horizontal list demo ──────────────────────────────────────────────────────
 
-type HCard = { id: string; color: string; num: number; label: string };
+/**
+ * Variable-height product cards for horizontal list demo.
+ * Heights are content-determined by Yoga — the list grows to fit the tallest
+ * card it has measured. Cards with more lines / tags are naturally taller.
+ */
+type HCard = {
+  id: string;
+  color: string;
+  num: number;
+  label: string;
+  description: string;   // variable length — drives height variance
+  tags: string[];        // 0-3 tags — additional height variance
+};
 
 const H_COLORS = ['#e63946', '#2a9d8f', '#e9c46a', '#f4a261', '#264653', '#457b9d', '#6a4c93', '#1982c4', '#06d6a0', '#ef476f'];
 
-const makeSections = () => [
+const DESCRIPTIONS = [
+  '',
+  'A fine specimen worth examining.',
+  'Bold, vivid, and full of character.\nOne of a kind.',
+  'Curated with care.\nLimited availability.\nHighly recommended.',
+];
+const TAG_POOLS = [[], ['new'], ['sale', 'hot'], ['featured', 'trending', 'limited']];
+
+const makeHSections = () => [
   {
     key: 'nature',
     label: '🌿 Nature',
     items: Array.from({ length: 12 }, (_, i) => ({
-      id: `nature-${i}`, color: H_COLORS[i % H_COLORS.length]!, num: i,
+      id: `nature-${i}`,
+      color: H_COLORS[i % H_COLORS.length]!,
+      num: i,
       label: `Nature ${i + 1}`,
+      description: DESCRIPTIONS[i % DESCRIPTIONS.length]!,
+      tags: TAG_POOLS[i % TAG_POOLS.length]!,
     })),
   },
   {
     key: 'cities',
     label: '🏙 Cities',
     items: Array.from({ length: 10 }, (_, i) => ({
-      id: `city-${i}`, color: H_COLORS[(i + 3) % H_COLORS.length]!, num: i,
+      id: `city-${i}`,
+      color: H_COLORS[(i + 3) % H_COLORS.length]!,
+      num: i,
       label: `City ${i + 1}`,
+      description: DESCRIPTIONS[(i + 2) % DESCRIPTIONS.length]!,
+      tags: TAG_POOLS[(i + 1) % TAG_POOLS.length]!,
     })),
   },
   {
     key: 'abstract',
     label: '🎨 Abstract',
     items: Array.from({ length: 15 }, (_, i) => ({
-      id: `abs-${i}`, color: H_COLORS[(i + 6) % H_COLORS.length]!, num: i,
+      id: `abs-${i}`,
+      color: H_COLORS[(i + 6) % H_COLORS.length]!,
+      num: i,
       label: `Art ${i + 1}`,
+      description: DESCRIPTIONS[(i + 1) % DESCRIPTIONS.length]!,
+      tags: TAG_POOLS[(i + 2) % TAG_POOLS.length]!,
     })),
   },
 ];
 
 export function HorizontalListDemo() {
-  const sections = useMemo(() => makeSections(), []);
+  const sections = useMemo(() => makeHSections(), []);
 
   const riffSections = sections.map(s => ({
     key: s.key,
@@ -826,7 +858,8 @@ export function HorizontalListDemo() {
 
   const hLayout = useMemo(() => list({
     horizontal: true,
-    itemHeight: 120,  // card width (primary axis size in horizontal mode)
+    itemHeight: 130,           // estimated card width (primary axis); Yoga measures final
+    estimatedCrossAxisHeight: 120, // estimated card height (cross axis); Yoga measures final
     itemSpacing: 10,
     sectionSpacing: 0,
     sectionBackground: true,
@@ -836,6 +869,18 @@ export function HorizontalListDemo() {
     <View style={[HS.card, { backgroundColor: item.color + 'cc' }]}>
       <Text style={HS.cardNum}>{item.num + 1}</Text>
       <Text style={HS.cardLabel}>{item.label}</Text>
+      {item.description.length > 0 && (
+        <Text style={HS.cardDesc}>{item.description}</Text>
+      )}
+      {item.tags.length > 0 && (
+        <View style={HS.tagRow}>
+          {item.tags.map(t => (
+            <View key={t} style={HS.tag}>
+              <Text style={HS.tagText}>{t}</Text>
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   ), []);
 
@@ -843,8 +888,9 @@ export function HorizontalListDemo() {
     <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <View style={HS.titleBar}>
         <Text style={HS.title}>Horizontal List</Text>
-        <Text style={HS.subtitle}>3 sections · fixed-width cards · section background</Text>
+        <Text style={HS.subtitle}>3 sections · variable-height cards · list grows to fit tallest measured card</Text>
       </View>
+      {/* List is NOT flex:1 — its height is content-determined (max card height + insets) */}
       <CollectionView
         sections={riffSections}
         layout={hLayout}
@@ -861,13 +907,18 @@ const HS = StyleSheet.create({
   title:            { fontSize: 15, fontWeight: '700', color: '#e2e8f0' },
   subtitle:         { fontSize: 11, color: '#475569', marginTop: 2 },
 
-  sectionHeader:    { flex: 1, justifyContent: 'center', alignItems: 'center',
-                      backgroundColor: '#1a1a2a', paddingHorizontal: 8 },
-  sectionHeaderText:{ fontSize: 13, fontWeight: '700', color: '#94a3b8',
-                      transform: [{ rotate: '90deg' }] },
+  sectionHeader:    { justifyContent: 'center', alignItems: 'center',
+                      backgroundColor: '#1a1a2a', paddingVertical: 12, paddingHorizontal: 8 },
+  sectionHeaderText:{ fontSize: 12, fontWeight: '700', color: '#94a3b8', textAlign: 'center' },
 
-  card:             { flex: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-                      margin: 2 },
-  cardNum:          { fontSize: 28, fontWeight: '800', color: '#fff' },
-  cardLabel:        { fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 4 },
+  card:             { borderRadius: 12, alignItems: 'center', paddingHorizontal: 10,
+                      paddingVertical: 14, margin: 2 },
+  cardNum:          { fontSize: 26, fontWeight: '800', color: '#fff' },
+  cardLabel:        { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 3, textAlign: 'center' },
+  cardDesc:         { fontSize: 10, color: 'rgba(255,255,255,0.6)', marginTop: 6, textAlign: 'center',
+                      lineHeight: 14 },
+  tagRow:           { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 8, justifyContent: 'center' },
+  tag:              { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 4,
+                      paddingHorizontal: 6, paddingVertical: 2 },
+  tagText:          { fontSize: 9, color: '#fff', fontWeight: '600', textTransform: 'uppercase' },
 });

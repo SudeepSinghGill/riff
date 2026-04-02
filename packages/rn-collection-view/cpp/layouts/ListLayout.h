@@ -64,10 +64,12 @@ struct ListLayoutParams {
 
   // --- Horizontal mode ---
   // When true, items advance along X instead of Y.
-  // viewportHeight provides the cross-axis container size needed to compute item heights.
-  // itemHeight is repurposed as item size along the scroll axis (X).
-  bool   horizontal     = false;
-  double viewportHeight = 0;
+  // itemHeight is the estimated primary-axis size (width along scroll axis).
+  // estimatedCrossAxisHeight is the estimated height (cross-axis). Yoga measures final height.
+  // viewportHeight is no longer used for item sizing (was wrong — items don't fill viewport).
+  bool   horizontal              = false;
+  double viewportHeight          = 0;   // kept for completeness but not used for item sizing
+  double estimatedCrossAxisHeight = 200; // initial cross-axis height estimate; Yoga refines
 };
 
 // ─── ListLayout ───────────────────────────────────────────────────────────────
@@ -123,7 +125,9 @@ public:
       LayoutCache& cache) override;
 
   ContentDimension contentDeterminedDimension() const override {
-    return _horizontal ? ContentDimension::Width : ContentDimension::Height;
+    // Vertical: Yoga measures item heights (primary axis).
+    // Horizontal: Yoga measures both item widths (primary) and heights (cross-axis).
+    return _horizontal ? ContentDimension::Both : ContentDimension::Height;
   }
 
   // ── JSI ─────────────────────────────────────────────────────────────────

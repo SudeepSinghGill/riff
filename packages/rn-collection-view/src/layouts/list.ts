@@ -128,6 +128,7 @@ class ListLayout implements CollectionViewLayout {
         separatorInsetLeading: d.separator?.insetLeading ?? 0,
         separatorInsetTrailing: d.separator?.insetTrailing ?? 0,
         sectionSpacing: d.sectionSpacing ?? 0,
+        estimatedCrossAxisHeight: d.estimatedCrossAxisHeight ?? 200,
       };
 
       if (itemHeights) {

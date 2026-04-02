@@ -389,11 +389,12 @@ void CollectionViewContainerShadowNode::updateStateIfNeeded() {
   const auto containerWidth  = getLayoutMetrics().frame.size.width;
   const auto containerHeight = getLayoutMetrics().frame.size.height;
 
-  // For horizontal layouts, content scrolls along X: width = computed, height = viewport.
+  // For horizontal layouts, content scrolls along X: width = computed, height = max item height.
   // For vertical layouts, content scrolls along Y: width = viewport, height = computed.
+  // Both dimensions come from the LayoutCache for horizontal (content-determined on both axes).
   const bool isHorizontal = props.horizontal;
   auto contentSize = isHorizontal
-      ? Size{correctedContentWidth_, containerHeight}
+      ? Size{correctedContentWidth_, correctedContentHeight_}
       : Size{containerWidth, correctedContentHeight_};
 
   // Compute content bounding rect from corrected positions.

@@ -2001,7 +2001,7 @@ export function Riff<T = unknown>({
         decorationElements.push(
           <RNMeasuredCell
             key={key}
-            style={{ position: 'absolute' as const, left: frame.x, top: frame.y, width: frame.width }}
+            style={{ position: 'absolute' as const, left: frame.x, top: frame.y, width: frame.width, height: frame.height }}
             type="decoration"
             index={-1}
             cacheKey={key}
