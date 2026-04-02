@@ -936,7 +936,7 @@ const HS = StyleSheet.create({
   title:              { fontSize: 15, fontWeight: '700', color: '#e2e8f0' },
   subtitle:           { fontSize: 11, color: '#475569', marginTop: 2 },
 
-  listBackground:     { backgroundColor: '#161616', marginHorizontal: 0,
+  listBackground:     { flex: 1, backgroundColor: '#161616', marginHorizontal: 0,
                         borderRadius: 0, overflow: 'hidden' },
 
   // Section header — full cross-axis height via flex:1
