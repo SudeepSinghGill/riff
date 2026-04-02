@@ -276,7 +276,25 @@ export interface GridLayoutDelegate {
   columnSpacing?: number;
   rowSpacing?: number;
 
+  /**
+   * Vertical gap inserted after each section's footer (or last row if no footer),
+   * before the next section's header. Analogous to NSCollectionLayoutSection.interSectionSpacing.
+   */
+  sectionSpacing?: number;
+
   stickyMode?: StickyMode;
+
+  // ── Decoration views ──
+  /** Row separators between rows in the grid. */
+  separator?: {
+    color?: string;
+    height?: number;
+    insetLeading?: number;
+    insetTrailing?: number;
+  };
+  /** When true, the layout engine emits a sectionBackground decoration attribute
+   *  covering the items area. Render via decorationRenderers on the component. */
+  sectionBackground?: boolean;
 }
 
 /**

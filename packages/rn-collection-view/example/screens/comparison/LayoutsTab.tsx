@@ -68,12 +68,17 @@ const S2_DATA: ListItem[] = Array.from({ length: 20 }, (_, i) => {
 
 // ── Grid data ────────────────────────────────────────────────────────────────
 
-const GRID_COUNT = 200;
-type GridItem = { id: string; color: string; num: number };
-const GRID_DATA: GridItem[] = Array.from({ length: GRID_COUNT }, (_, i) => ({
-  id: `grid-${i}`,
-  color: COLORS[i % COLORS.length]!,
-  num: i,
+type GridCell = { id: string; color: string; num: number };
+
+// 3 sections of fixed-height cells — each section uses COLORS rotated
+const GS0_DATA: GridCell[] = Array.from({ length: 18 }, (_, i) => ({
+  id: `gs0-${i}`, color: COLORS[i % COLORS.length]!, num: i,
+}));
+const GS1_DATA: GridCell[] = Array.from({ length: 12 }, (_, i) => ({
+  id: `gs1-${i}`, color: COLORS[(i + 2) % COLORS.length]!, num: i,
+}));
+const GS2_DATA: GridCell[] = Array.from({ length: 24 }, (_, i) => ({
+  id: `gs2-${i}`, color: COLORS[(i + 5) % COLORS.length]!, num: i,
 }));
 
 // ── Masonry data ─────────────────────────────────────────────────────────────
@@ -480,30 +485,140 @@ export function ListDemo() {
 
 // ── Grid layout config ──────────────────────────────────────────────────────
 
+const GRID_HDR_H  = 44;
+const GRID_FTR_H  = 28;
+const GRID_ROW_H  = 90;
+
+function GridSectionHeader({ label, color }: { label: string; color: string }) {
+  return (
+    <View style={{ flex: 1, backgroundColor: color + 'dd', justifyContent: 'center', paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: color }}>
+      <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{label}</Text>
+    </View>
+  );
+}
+
+function GridSectionFooter({ color, count }: { color: string; count: number }) {
+  return (
+    <View style={{ flex: 1, backgroundColor: color + '44', justifyContent: 'center', paddingHorizontal: 14, borderTopWidth: 1, borderTopColor: color + '88' }}>
+      <Text style={{ color: color, fontSize: 11, fontWeight: '600' }}>{count} items</Text>
+    </View>
+  );
+}
+
 function GridDemo() {
+  const [gs0Items, setGs0Items] = useState<GridCell[]>(GS0_DATA);
+  const [mvcEnabled, setMvcEnabled] = useState(false);
+  const [sepEnabled, setSepEnabled] = useState(false);
+  const [decoCount, setDecoCount] = useState(0);
+  const insertCounter = useRef(GS0_DATA.length);
+
   const gridLayout = useMemo(() => grid({
     columns: 3,
-    rowHeight: 100,
-    columnSpacing: 8,
-    rowSpacing: 8,
+    rowHeight: GRID_ROW_H,
+    columnSpacing: 6,
+    rowSpacing: 6,
+    sectionSpacing: 16,
+    sectionBackground: true,
+    separator: sepEnabled ? { color: '#333', height: 0.5 } : undefined,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [sepEnabled]);
+
+  const handleInsert = useCallback(() => {
+    const newItems: GridCell[] = Array.from({ length: 3 }, () => {
+      const idx = insertCounter.current++;
+      return { id: `gs0-ins-${idx}`, color: COLORS[idx % COLORS.length]!, num: idx };
+    });
+    setGs0Items(prev => [...newItems, ...prev]);
+  }, []);
+
+  const handleDelete = useCallback(() => {
+    setGs0Items(prev => prev.length >= 3 ? prev.slice(3) : prev);
+  }, []);
+
+  const sections = useMemo(() => [
+    {
+      key: 'gs0',
+      data: gs0Items,
+      header: {
+        render: () => <GridSectionHeader label="S0 — Photos (18)" color="#e63946" />,
+        height: GRID_HDR_H,
+        sticky: true,
+      },
+      footer: {
+        render: () => <GridSectionFooter color="#e63946" count={gs0Items.length} />,
+        height: GRID_FTR_H,
+        sticky: true,
+      },
+      insets: { top: 6, bottom: 6, left: 8, right: 8 },
+    },
+    {
+      key: 'gs1',
+      data: GS1_DATA,
+      header: {
+        render: () => <GridSectionHeader label="S1 — Documents (12)" color="#2a9d8f" />,
+        height: GRID_HDR_H,
+        sticky: true,
+      },
+      footer: {
+        render: () => <GridSectionFooter color="#2a9d8f" count={GS1_DATA.length} />,
+        height: GRID_FTR_H,
+        sticky: true,
+      },
+      insets: { top: 6, bottom: 6, left: 8, right: 8 },
+    },
+    {
+      key: 'gs2',
+      data: GS2_DATA,
+      header: {
+        render: () => <GridSectionHeader label="S2 — Archive (24)" color="#6a4c93" />,
+        height: GRID_HDR_H,
+        sticky: true,
+      },
+      footer: {
+        render: () => <GridSectionFooter color="#6a4c93" count={GS2_DATA.length} />,
+        height: GRID_FTR_H,
+        sticky: true,
+      },
+      insets: { top: 6, bottom: 6, left: 8, right: 8 },
+    },
+  ], [gs0Items]);
+
+  const decorationRenderers = useMemo(() => ({
+    sectionBackground: (sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => (
+      <AnimatedSectionBg sectionIndex={sectionIndex} frame={frame} />
+    ),
   }), []);
 
+  const renderItem = useCallback(({ item }: { item: GridCell }) => (
+    <View style={[S.gridCell, { backgroundColor: item.color }]}>
+      <Text style={S.gridCellText}>{item.num}</Text>
+    </View>
+  ), []);
+
   return (
-    <CollectionView
-      data={GRID_DATA}
-      layout={gridLayout}
-      estimatedItemHeight={100}
-      sectionInsetTop={8}
-      sectionInsetBottom={8}
-      sectionInsetLeft={8}
-      sectionInsetRight={8}
-      keyExtractor={useCallback((item: GridItem) => item.id, [])}
-      renderItem={useCallback(({ item }: { item: GridItem }) => (
-        <View style={[S.gridCell, { backgroundColor: item.color }]}>
-          <Text style={S.gridCellText}>{item.num}</Text>
+    <View style={S.flex}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={S.ctrlBarScroll} contentContainerStyle={S.ctrlBar}>
+        <CtrlBtn label="+Insert" onPress={handleInsert} />
+        <CtrlBtn label="×Delete" onPress={handleDelete} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
+        <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
+        <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
         </View>
-      ), [])}
-    />
+      </ScrollView>
+
+      <CollectionView
+        sections={sections}
+        layout={gridLayout}
+        stickyMode="push"
+        estimatedItemHeight={GRID_ROW_H}
+        maintainVisibleContentPosition={mvcEnabled}
+        decorationRenderers={decorationRenderers}
+        onDecorationCountChange={setDecoCount}
+        renderItem={renderItem}
+      />
+    </View>
   );
 }
 
@@ -839,6 +954,8 @@ const makeHSections = () => [
   },
 ];
 
+const H_RESIZE_DESC = 'Resized — wider card.\nExtra line 2.\nExtra line 3.';
+
 // Section metadata for headers/footers
 const H_SECTIONS_META: { key: string; label: string; icon: string; color: string }[] = [
   { key: 'nature',   label: 'Nature',   icon: '🌿', color: '#0f2a1a' },
@@ -847,87 +964,174 @@ const H_SECTIONS_META: { key: string; label: string; icon: string; color: string
 ];
 
 export function HorizontalListDemo() {
-  const sections = useMemo(() => makeHSections(), []);
+  // Section 0 (nature) is mutable — insert / delete / resize act on it
+  const staticSections = useMemo(() => makeHSections(), []);
+  const [s0Items, setS0Items] = useState<HCard[]>(staticSections[0]!.items);
+  const [resizedIds, setResizedIds] = useState<Set<string>>(() => new Set());
+  const [mvcEnabled, setMvcEnabled] = useState(false);
+  const [decoCount, setDecoCount] = useState(0);
+  const insertCounter = useRef(staticSections[0]!.items.length);
+  const cvRef = useRef<RiffHandle>(null);
 
-  const riffSections = sections.map((s, sIdx) => {
-    const meta = H_SECTIONS_META[sIdx]!;
-    return {
-      key: s.key,
-      data: s.items,
-      header: {
-        render: () => (
-          // flex: 1 fills the native-positioned frame (full cross-axis height set by applyMeasurements)
-          <View style={[HS.sectionHeader, { backgroundColor: meta.color }]}>
-            <View style={HS.sectionHeaderIcon}>
-              <Text style={HS.sectionHeaderEmoji}>{meta.icon}</Text>
+  // ── Mutation handlers ──────────────────────────────────────────────────────
+
+  const handleInsert = useCallback(() => {
+    const newItems: HCard[] = Array.from({ length: 3 }, () => {
+      const idx = insertCounter.current++;
+      return {
+        id: `nature-ins-${idx}`,
+        color: H_COLORS[idx % H_COLORS.length]!,
+        num: idx,
+        label: `New ${idx + 1}`,
+        description: 'Inserted card — scroll right to see MVC.',
+        tags: ['new'],
+      };
+    });
+    setS0Items(prev => [...newItems, ...prev]);
+  }, []);
+
+  const handleDelete = useCallback(() => {
+    setS0Items(prev => prev.length >= 3 ? prev.slice(3) : prev);
+  }, []);
+
+  const toggleResize = useCallback((id: string) => {
+    setResizedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const resizeFirst = useCallback(() => {
+    if (s0Items.length > 0) toggleResize(s0Items[0]!.id);
+  }, [s0Items, toggleResize]);
+
+  // ── Sections ───────────────────────────────────────────────────────────────
+
+  const riffSections = useMemo(() => {
+    const allSections = [
+      { ...staticSections[0]!, items: s0Items },
+      staticSections[1]!,
+      staticSections[2]!,
+    ];
+    return allSections.map((s, sIdx) => {
+      const meta = H_SECTIONS_META[sIdx]!;
+      return {
+        key: s.key,
+        data: s.items,
+        header: {
+          render: () => (
+            <View style={[HS.sectionHeader, { backgroundColor: meta.color }]}>
+              <Text style={HS.sectionHeaderTitle}>
+                {meta.label.toUpperCase().split('').join('\n')}
+              </Text>
             </View>
-            <Text style={HS.sectionHeaderTitle}>{meta.label}</Text>
-            <Text style={HS.sectionHeaderCount}>{s.items.length} items</Text>
-          </View>
-        ),
-        height: 80,   // primary-axis width of header strip
-        sticky: true,
-      },
-      footer: {
-        render: () => (
-          <View style={[HS.sectionFooter, { backgroundColor: meta.color }]}>
-            <Text style={HS.sectionFooterIcon}>{meta.icon}</Text>
-            <Text style={HS.sectionFooterLabel}>End</Text>
-          </View>
-        ),
-        height: 50,   // primary-axis width of footer strip
-        sticky: true,
-      },
-      insets: { top: 10, bottom: 10, left: 12, right: 12 },
-    };
-  });
+          ),
+          height: 20,
+          sticky: true,
+        },
+        footer: {
+          render: () => (
+            <View style={[HS.sectionFooter, { backgroundColor: meta.color }]}>
+              <Text style={HS.sectionFooterLabel}>
+                {'END'.split('').join('\n')}
+              </Text>
+            </View>
+          ),
+          height: 20,
+          sticky: true,
+        },
+        insets: { top: 10, bottom: 10, left: 12, right: 12 },
+      };
+    });
+  }, [s0Items, staticSections]);
 
   const hLayout = useMemo(() => list({
     horizontal: true,
-    itemHeight: 130,              // estimated card width (primary axis); Yoga measures final
-    estimatedCrossAxisHeight: 140, // estimated card height (cross axis); Yoga measures final
+    itemHeight: 130,
+    estimatedCrossAxisHeight: 140,
     itemSpacing: 10,
     sectionSpacing: 4,
     sectionBackground: true,
   }), []);
 
-  const renderCard = useCallback(({ item }: { item: HCard }) => (
-    <View style={[HS.card, { backgroundColor: item.color + 'cc' }]}>
-      {/* Thumbnail placeholder — 100×100 */}
-      <View style={HS.cardThumb}>
-        <Text style={HS.cardThumbNum}>{item.num + 1}</Text>
-      </View>
-      <Text style={HS.cardLabel}>{item.label}</Text>
-      {item.description.length > 0 && (
-        <Text style={HS.cardDesc}>{item.description}</Text>
-      )}
-      {item.tags.length > 0 && (
-        <View style={HS.tagRow}>
-          {item.tags.map(t => (
-            <View key={t} style={HS.tag}>
-              <Text style={HS.tagText}>{t}</Text>
-            </View>
-          ))}
+  // ── Decoration renderers (section backgrounds) ─────────────────────────────
+
+  const decorationRenderers = useMemo(() => ({
+    sectionBackground: (sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => (
+      <AnimatedSectionBg sectionIndex={sectionIndex} frame={frame} />
+    ),
+  }), []);
+
+  // ── renderItem ─────────────────────────────────────────────────────────────
+
+  const renderCard = useCallback(({ item }: { item: HCard }) => {
+    const isResized = resizedIds.has(item.id);
+    const description = isResized ? H_RESIZE_DESC : item.description;
+    const tags = isResized ? ['resized', 'wider', ...item.tags] : item.tags;
+    return (
+      <View style={[HS.card, { backgroundColor: item.color + 'cc' }]}>
+        <View style={HS.cardThumb}>
+          <Text style={HS.cardThumbNum}>{item.num + 1}</Text>
         </View>
-      )}
-    </View>
-  ), []);
+        <Text style={HS.cardLabel}>{item.label}</Text>
+        {description.length > 0 && (
+          <Text style={HS.cardDesc}>{description}</Text>
+        )}
+        {tags.length > 0 && (
+          <View style={HS.tagRow}>
+            {tags.map(t => (
+              <View key={t} style={HS.tag}>
+                <Text style={HS.tagText}>{t}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    );
+  }, [resizedIds]);
+
+  const keyExtractor = useCallback((item: HCard) => item.id, []);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <View style={HS.titleBar}>
         <Text style={HS.title}>Horizontal List</Text>
-        <Text style={HS.subtitle}>3 sections · variable-height cards · list grows to tallest measured card</Text>
+        <Text style={HS.subtitle}>3 sections · sticky headers/footers · section backgrounds · insert/delete/resize</Text>
       </View>
+
+      {/* Controls bar */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={HS.ctrlBar} contentContainerStyle={HS.ctrlBarContent}>
+        <CtrlBtn label="← Start" onPress={() => cvRef.current?.scrollToOffset({ x: 0 })} />
+        <CtrlBtn label="→ S1" onPress={() => cvRef.current?.scrollToItem('cities:city-0', { position: 'start' })} />
+        <CtrlBtn label="→ S2" onPress={() => cvRef.current?.scrollToItem('abstract:abs-0', { position: 'start' })} />
+        <CtrlBtn label="→ End" onPress={() => cvRef.current?.scrollToItem('abstract:abs-14', { position: 'end' })} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label="+Insert" onPress={handleInsert} />
+        <CtrlBtn label="×Delete" onPress={handleDelete} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label="↔S0[0]" onPress={resizeFirst} active={s0Items.length > 0 && resizedIds.has(s0Items[0]!.id)} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
+        <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
+        </View>
+      </ScrollView>
+
       {/* List background + content-determined height container */}
       <View style={HS.listBackground}>
         <CollectionView
+          handle={cvRef}
           sections={riffSections}
           layout={hLayout}
           renderItem={renderCard}
-          keyExtractor={(item: HCard) => item.id}
+          keyExtractor={keyExtractor}
           estimatedItemHeight={140}
-          scrollViewProps={{ style: { backgroundColor: 'transparent' } }}
+          extraData={resizedIds}
+          maintainVisibleContentPosition={mvcEnabled}
+          decorationRenderers={decorationRenderers}
+          onDecorationCountChange={setDecoCount}
+          scrollViewProps={{ style: { backgroundColor: 'transparent' }, indicatorStyle: 'white' }}
         />
       </View>
     </View>
@@ -939,23 +1143,21 @@ const HS = StyleSheet.create({
   title:              { fontSize: 15, fontWeight: '700', color: '#e2e8f0' },
   subtitle:           { fontSize: 11, color: '#475569', marginTop: 2 },
 
-  listBackground:     { flex: 1, backgroundColor: '#161616', marginHorizontal: 0,
+  ctrlBar:            { backgroundColor: '#111', flexGrow: 0 },
+  ctrlBarContent:     { flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
+
+  listBackground:     { height: 260, backgroundColor: '#0f1623', marginHorizontal: 0,
                         borderRadius: 0, overflow: 'hidden' },
 
-  // Section header — full cross-axis height via flex:1
-  sectionHeader:      { flex: 1, alignItems: 'center', justifyContent: 'center',
-                        paddingHorizontal: 12 },
-  sectionHeaderIcon:  { width: 100, height: 100, borderRadius: 16,
-                        backgroundColor: 'rgba(255,255,255,0.08)',
-                        alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
-  sectionHeaderEmoji: { fontSize: 44 },
-  sectionHeaderTitle: { fontSize: 14, fontWeight: '700', color: '#e2e8f0', textAlign: 'center' },
-  sectionHeaderCount: { fontSize: 11, color: '#64748b', marginTop: 4 },
+  // Section header — full cross-axis height via flex:1, narrow 20px primary-axis strip
+  sectionHeader:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionHeaderTitle: { fontSize: 8, fontWeight: '700', color: 'rgba(255,255,255,0.7)',
+                        textAlign: 'center', lineHeight: 10 },
 
-  // Section footer
-  sectionFooter:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  sectionFooterIcon:  { fontSize: 22, marginBottom: 4 },
-  sectionFooterLabel: { fontSize: 10, color: '#475569', fontWeight: '600' },
+  // Section footer — same narrow strip
+  sectionFooter:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionFooterLabel: { fontSize: 8, color: 'rgba(255,255,255,0.5)', fontWeight: '600',
+                        textAlign: 'center', lineHeight: 10 },
 
   // Cards
   card:               { borderRadius: 14, alignItems: 'center', paddingHorizontal: 10,

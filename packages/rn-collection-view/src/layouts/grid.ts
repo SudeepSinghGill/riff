@@ -3,13 +3,15 @@
  *
  * Backed by the C++ GridLayout engine via JSI.
  * Items placed left-to-right in rows. Each row's height = tallest item in that row
- * (or estimated `rowHeight` if provided — actual height determined by Yoga).
+ * (or fixed `rowHeight` if provided — actual height determined by Yoga for dynamic rows).
  *
- * Width per item = (containerWidth - insets - spacing) / columns.
+ * Multi-section support: each section gets its own header/footer/background/separators.
+ * The C++ engine writes all LayoutAttributes to the shared LayoutCache.
+ * All queries go through the LayoutCache so ShadowNode corrections are immediately visible.
  *
- * The C++ engine writes LayoutAttributes to the shared LayoutCache.
- * This JS wrapper delegates all spatial queries to the LayoutCache so the
- * ShadowNode's measurement corrections are immediately visible to JS.
+ * Standard JSI contract (mirrors ListLayout):
+ *   nativeMod.gridLayout.computeSections(sections[])       → void
+ *   nativeMod.gridLayout.invalidateSectionsFrom(n, [])     → void
  */
 
 import type {
@@ -29,20 +31,12 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     clear(): void;
   };
   gridLayout: {
-    computeGridLayout(params: {
-      itemCount: number;
-      columns: number;
-      columnSpacing: number;
-      rowSpacing: number;
-      viewportWidth: number;
-      rowHeight: number;
-      sectionInsetTop?: number;
-      sectionInsetBottom?: number;
-      sectionInsetLeft?: number;
-      sectionInsetRight?: number;
-      itemHeights?: number[];
-      keys: string[];
-    }): { positions: number[]; contentHeight: number };
+    /** Legacy single-section method. Kept for compatibility. */
+    computeGridLayout(params: object): { positions: number[]; contentHeight: number };
+    /** Standard multi-section method — preferred. */
+    computeSections(sections: object[]): void;
+    /** Standard partial re-layout from fromSection onward. */
+    invalidateSectionsFrom(fromSection: number, sections: object[]): void;
   };
 };
 
@@ -56,62 +50,80 @@ class GridLayoutEngine implements CollectionViewLayout {
 
   prepare(context: LayoutContext): void {
     const d = this.delegate;
-
-    const sec = context.sections[0];
-    if (!sec || sec.itemCount === 0 || context.containerWidth <= 0) {
-      return;
-    }
-
     const w = context.containerWidth;
+
+    if (w <= 0 || context.sections.length === 0) return;
+
     const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
-    const effectiveRowHeight = typeof d.rowHeight === 'function' ? d.rowHeight(w) : d.rowHeight;
+    const effectiveRowHeight = typeof d.rowHeight === 'function' ? d.rowHeight(w) : (d.rowHeight ?? 0);
 
-    // Build per-item heights if dynamic.
-    // Priority: measured (actual) → delegate heightForItem (estimate).
-    let itemHeights: number[] | undefined;
-    if (!effectiveRowHeight && (d.heightForItem || context.measuredHeightForItem)) {
-      itemHeights = new Array(sec.itemCount);
-      for (let i = 0; i < sec.itemCount; i++) {
-        const measured = context.measuredHeightForItem?.(i, 0);
-        itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, 0, w) : 0);
+    const sections = context.sections.map((sec, sectionIndex) => {
+      // Build per-item heights when rows are dynamic (no fixed rowHeight)
+      let itemHeights: number[] | undefined;
+      if (!effectiveRowHeight && (d.heightForItem || context.measuredHeightForItem)) {
+        itemHeights = new Array(sec.itemCount);
+        for (let i = 0; i < sec.itemCount; i++) {
+          const measured = context.measuredHeightForItem?.(i, sectionIndex);
+          itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, sectionIndex, w) : 44);
+        }
       }
-    }
 
-    // Build keys array
-    const keys: string[] = new Array(sec.itemCount);
-    for (let i = 0; i < sec.itemCount; i++) {
-      keys[i] = `grid-${i}`;
-    }
+      // Keys: prefer section.itemKeys for stable identity, else fallback prefix
+      const keyPrefix = `grid-${sectionIndex}-`;
+      const keys: string[] = sec.itemKeys
+        ? Array.from(sec.itemKeys)
+        : Array.from({ length: sec.itemCount }, (_, i) => `${keyPrefix}${i}`);
 
-    // C++ engine computes layout and writes to shared LayoutCache.
-    // We discard the JS return value — all queries go through the cache
-    // so ShadowNode measurement corrections are immediately visible.
-    nativeMod.gridLayout.computeGridLayout({
-      itemCount: sec.itemCount,
-      columns: effectiveColumns,
-      columnSpacing: d.columnSpacing ?? 0,
-      rowSpacing: d.rowSpacing ?? 0,
-      viewportWidth: w,
-      rowHeight: effectiveRowHeight ?? 0,
-      sectionInsetTop: sec.insets?.top ?? 0,
-      sectionInsetBottom: sec.insets?.bottom ?? 0,
-      sectionInsetLeft: sec.insets?.left ?? 0,
-      sectionInsetRight: sec.insets?.right ?? 0,
-      ...(itemHeights ? { itemHeights } : {}),
-      keys,
+      // Use section config heights (ground truth from supplementaryItems) when available;
+      // fall back to delegate if section has no header/footer configured.
+      const headerInfo = sec.supplementaryItems.find(s => s.kind === 'header');
+      const footerInfo = sec.supplementaryItems.find(s => s.kind === 'footer');
+      const headerH = headerInfo ? headerInfo.size.height
+        : (d.heightForHeader ? d.heightForHeader(sectionIndex) : (d.headerHeight ?? 0));
+      const footerH = footerInfo ? footerInfo.size.height
+        : (d.heightForFooter ? d.heightForFooter(sectionIndex) : (d.footerHeight ?? 0));
+
+      return {
+        itemCount: sec.itemCount,
+        columns: effectiveColumns,
+        columnSpacing: d.columnSpacing ?? 0,
+        rowSpacing: d.rowSpacing ?? 0,
+        viewportWidth: w,
+        rowHeight: effectiveRowHeight,
+        sectionInsetTop: sec.insets?.top ?? 0,
+        sectionInsetBottom: sec.insets?.bottom ?? 0,
+        sectionInsetLeft: sec.insets?.left ?? 0,
+        sectionInsetRight: sec.insets?.right ?? 0,
+        headerHeight: headerH,
+        footerHeight: footerH,
+        emitSectionBackground: d.sectionBackground ?? false,
+        emitSeparators: !!d.separator,
+        separatorHeight: d.separator?.height ?? 0.5,
+        separatorInsetLeading: d.separator?.insetLeading ?? 0,
+        separatorInsetTrailing: d.separator?.insetTrailing ?? 0,
+        sectionSpacing: d.sectionSpacing ?? 0,
+        keys,
+        keyPrefix: '', // keys are provided explicitly above
+        ...(itemHeights ? { itemHeights } : {}),
+      };
     });
+
+    nativeMod.gridLayout.computeSections(sections);
   }
 
   attributesForElements(inRect: Rect): LayoutAttributes[] {
     return nativeMod.layoutCache.getAttributesInRect(inRect);
   }
 
-  attributesForItem(index: number, _section: number): LayoutAttributes | null {
-    return nativeMod.layoutCache.getAttributes(`grid-${index}`);
+  attributesForItem(index: number, section: number): LayoutAttributes | null {
+    // Keys are built as `grid-${section}-${index}` when no itemKeys provided.
+    // When itemKeys are provided by the consumer, they form the key directly.
+    // Since we can't look up itemKeys here, fall back to the positional key.
+    return nativeMod.layoutCache.getAttributes(`grid-${section}-${index}`);
   }
 
-  attributesForSupplementary(_kind: string, _section: number): LayoutAttributes | null {
-    return null;
+  attributesForSupplementary(kind: string, section: number): LayoutAttributes | null {
+    return nativeMod.layoutCache.getAttributes(`grid-${section}-${kind}`);
   }
 
   contentSize(): Size {
@@ -131,11 +143,21 @@ class GridLayoutEngine implements CollectionViewLayout {
  * Create a grid layout with the given delegate configuration.
  *
  * ```typescript
- * // Estimated row height (actual determined by Yoga measurement)
+ * // Uniform row height (fast path — no measurement per row)
  * layout={grid({ columns: 3, rowHeight: 100, columnSpacing: 8, rowSpacing: 8 })}
  *
- * // Dynamic per-item height estimate (tallest in row wins)
+ * // Dynamic row height (row height = tallest item in each row)
  * layout={grid({ columns: 3, heightForItem: (i) => heights[i], columnSpacing: 8 })}
+ *
+ * // Multi-section with sticky headers and section backgrounds
+ * layout={grid({
+ *   columns: 2,
+ *   rowHeight: 120,
+ *   headerHeight: 44,
+ *   footerHeight: 24,
+ *   sectionBackground: true,
+ *   stickyMode: 'push',
+ * })}
  * ```
  */
 export function grid(delegate: GridLayoutDelegate): CollectionViewLayout {
