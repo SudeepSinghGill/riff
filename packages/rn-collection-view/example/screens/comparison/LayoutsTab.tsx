@@ -839,35 +839,62 @@ const makeHSections = () => [
   },
 ];
 
+// Section metadata for headers/footers
+const H_SECTIONS_META: { key: string; label: string; icon: string; color: string }[] = [
+  { key: 'nature',   label: 'Nature',   icon: '🌿', color: '#0f2a1a' },
+  { key: 'cities',   label: 'Cities',   icon: '🏙', color: '#0a1a2a' },
+  { key: 'abstract', label: 'Abstract', icon: '🎨', color: '#1a0a2a' },
+];
+
 export function HorizontalListDemo() {
   const sections = useMemo(() => makeHSections(), []);
 
-  const riffSections = sections.map(s => ({
-    key: s.key,
-    data: s.items,
-    header: {
-      render: () => (
-        <View style={HS.sectionHeader}>
-          <Text style={HS.sectionHeaderText}>{s.label}</Text>
-        </View>
-      ),
-      height: 36,
-    },
-    insets: { top: 8, bottom: 8, left: 8, right: 8 },
-  }));
+  const riffSections = sections.map((s, sIdx) => {
+    const meta = H_SECTIONS_META[sIdx]!;
+    return {
+      key: s.key,
+      data: s.items,
+      header: {
+        render: () => (
+          // flex: 1 fills the native-positioned frame (full cross-axis height set by applyMeasurements)
+          <View style={[HS.sectionHeader, { backgroundColor: meta.color }]}>
+            <View style={HS.sectionHeaderIcon}>
+              <Text style={HS.sectionHeaderEmoji}>{meta.icon}</Text>
+            </View>
+            <Text style={HS.sectionHeaderTitle}>{meta.label}</Text>
+            <Text style={HS.sectionHeaderCount}>{s.items.length} items</Text>
+          </View>
+        ),
+        height: 160,  // primary-axis width of header strip
+      },
+      footer: {
+        render: () => (
+          <View style={[HS.sectionFooter, { backgroundColor: meta.color }]}>
+            <Text style={HS.sectionFooterIcon}>{meta.icon}</Text>
+            <Text style={HS.sectionFooterLabel}>End</Text>
+          </View>
+        ),
+        height: 60,  // primary-axis width of footer strip
+      },
+      insets: { top: 10, bottom: 10, left: 12, right: 12 },
+    };
+  });
 
   const hLayout = useMemo(() => list({
     horizontal: true,
-    itemHeight: 130,           // estimated card width (primary axis); Yoga measures final
-    estimatedCrossAxisHeight: 120, // estimated card height (cross axis); Yoga measures final
+    itemHeight: 130,              // estimated card width (primary axis); Yoga measures final
+    estimatedCrossAxisHeight: 140, // estimated card height (cross axis); Yoga measures final
     itemSpacing: 10,
-    sectionSpacing: 0,
+    sectionSpacing: 4,
     sectionBackground: true,
   }), []);
 
   const renderCard = useCallback(({ item }: { item: HCard }) => (
     <View style={[HS.card, { backgroundColor: item.color + 'cc' }]}>
-      <Text style={HS.cardNum}>{item.num + 1}</Text>
+      {/* Thumbnail placeholder — 100×100 */}
+      <View style={HS.cardThumb}>
+        <Text style={HS.cardThumbNum}>{item.num + 1}</Text>
+      </View>
       <Text style={HS.cardLabel}>{item.label}</Text>
       {item.description.length > 0 && (
         <Text style={HS.cardDesc}>{item.description}</Text>
@@ -888,37 +915,59 @@ export function HorizontalListDemo() {
     <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <View style={HS.titleBar}>
         <Text style={HS.title}>Horizontal List</Text>
-        <Text style={HS.subtitle}>3 sections · variable-height cards · list grows to fit tallest measured card</Text>
+        <Text style={HS.subtitle}>3 sections · variable-height cards · list grows to tallest measured card</Text>
       </View>
-      {/* List is NOT flex:1 — its height is content-determined (max card height + insets) */}
-      <CollectionView
-        sections={riffSections}
-        layout={hLayout}
-        renderItem={renderCard}
-        keyExtractor={(item: HCard) => item.id}
-        estimatedItemHeight={120}
-      />
+      {/* List background + content-determined height container */}
+      <View style={HS.listBackground}>
+        <CollectionView
+          sections={riffSections}
+          layout={hLayout}
+          renderItem={renderCard}
+          keyExtractor={(item: HCard) => item.id}
+          estimatedItemHeight={140}
+        />
+      </View>
     </View>
   );
 }
 
 const HS = StyleSheet.create({
-  titleBar:         { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 8 },
-  title:            { fontSize: 15, fontWeight: '700', color: '#e2e8f0' },
-  subtitle:         { fontSize: 11, color: '#475569', marginTop: 2 },
+  titleBar:           { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 8 },
+  title:              { fontSize: 15, fontWeight: '700', color: '#e2e8f0' },
+  subtitle:           { fontSize: 11, color: '#475569', marginTop: 2 },
 
-  sectionHeader:    { justifyContent: 'center', alignItems: 'center',
-                      backgroundColor: '#1a1a2a', paddingVertical: 12, paddingHorizontal: 8 },
-  sectionHeaderText:{ fontSize: 12, fontWeight: '700', color: '#94a3b8', textAlign: 'center' },
+  listBackground:     { backgroundColor: '#161616', marginHorizontal: 0,
+                        borderRadius: 0, overflow: 'hidden' },
 
-  card:             { borderRadius: 12, alignItems: 'center', paddingHorizontal: 10,
-                      paddingVertical: 14, margin: 2 },
-  cardNum:          { fontSize: 26, fontWeight: '800', color: '#fff' },
-  cardLabel:        { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 3, textAlign: 'center' },
-  cardDesc:         { fontSize: 10, color: 'rgba(255,255,255,0.6)', marginTop: 6, textAlign: 'center',
-                      lineHeight: 14 },
-  tagRow:           { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 8, justifyContent: 'center' },
-  tag:              { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 4,
-                      paddingHorizontal: 6, paddingVertical: 2 },
-  tagText:          { fontSize: 9, color: '#fff', fontWeight: '600', textTransform: 'uppercase' },
+  // Section header — full cross-axis height via flex:1
+  sectionHeader:      { flex: 1, alignItems: 'center', justifyContent: 'center',
+                        paddingHorizontal: 12 },
+  sectionHeaderIcon:  { width: 100, height: 100, borderRadius: 16,
+                        backgroundColor: 'rgba(255,255,255,0.08)',
+                        alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  sectionHeaderEmoji: { fontSize: 44 },
+  sectionHeaderTitle: { fontSize: 14, fontWeight: '700', color: '#e2e8f0', textAlign: 'center' },
+  sectionHeaderCount: { fontSize: 11, color: '#64748b', marginTop: 4 },
+
+  // Section footer
+  sectionFooter:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  sectionFooterIcon:  { fontSize: 22, marginBottom: 4 },
+  sectionFooterLabel: { fontSize: 10, color: '#475569', fontWeight: '600' },
+
+  // Cards
+  card:               { borderRadius: 14, alignItems: 'center', paddingHorizontal: 10,
+                        paddingVertical: 12, margin: 3 },
+  cardThumb:          { width: 100, height: 100, borderRadius: 12,
+                        backgroundColor: 'rgba(0,0,0,0.25)',
+                        alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  cardThumbNum:       { fontSize: 32, fontWeight: '800', color: '#fff' },
+  cardLabel:          { fontSize: 11, color: 'rgba(255,255,255,0.85)', textAlign: 'center',
+                        fontWeight: '600' },
+  cardDesc:           { fontSize: 10, color: 'rgba(255,255,255,0.55)', marginTop: 5,
+                        textAlign: 'center', lineHeight: 14 },
+  tagRow:             { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 8,
+                        justifyContent: 'center' },
+  tag:                { backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 4,
+                        paddingHorizontal: 6, paddingVertical: 2 },
+  tagText:            { fontSize: 9, color: '#fff', fontWeight: '600', textTransform: 'uppercase' },
 });

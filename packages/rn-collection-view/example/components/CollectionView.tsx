@@ -1194,19 +1194,20 @@ export function Riff<T = unknown>({
     const speed = Math.abs(velocityRef.current);
     const leadBoost = Math.min(4, speed) * renderMultiplier;
     const leadMult = renderMultiplier + leadBoost;
-    const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
+    const minTrail = isHoriz ? 0.75 : 0.25;
+    const trailMult = Math.max(minTrail, renderMultiplier - leadBoost * 0.5);
     const goingForward = velocityRef.current >= 0;
 
     const attrs = effectiveLayout.attributesForElements(isHoriz ? {
       x: scrollX - (goingForward ? trailMult : leadMult) * viewportWidth,
       y: 0,
-      width: viewportWidth * (leadMult + trailMult),
+      width: viewportWidth + (leadMult + trailMult) * viewportWidth,
       height: viewportHeight,
     } : {
       x: 0,
       y: scrollY - (goingForward ? trailMult : leadMult) * viewportHeight,
       width: viewportWidth,
-      height: viewportHeight * (leadMult + trailMult),
+      height: viewportHeight + (leadMult + trailMult) * viewportHeight,
     });
 
     if (attrs.length === 0) {
@@ -1457,7 +1458,10 @@ export function Riff<T = unknown>({
       const speed = Math.abs(velocityRef.current);
       const leadBoost = Math.min(4, speed) * renderMultiplier;
       const leadMult = renderMultiplier + leadBoost;
-      const trailMult = Math.max(0.25, renderMultiplier - leadBoost * 0.5);
+      // Horizontal lists have a wider item-to-viewport ratio than vertical lists,
+      // so the minimum trailing buffer needs to be larger to avoid premature unmounts.
+      const minTrail = isHorizontal ? 0.75 : 0.25;
+      const trailMult = Math.max(minTrail, renderMultiplier - leadBoost * 0.5);
       const goingForward = velocityRef.current >= 0;
       const vpW = layoutMeasurement.width || viewportWidth;
 
