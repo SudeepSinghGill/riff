@@ -10,8 +10,10 @@
 | MVC – size-change scroll correction | ✅ Done |
 | L5 – Mutation buttons + MVC toggle in ListDemo | ✅ Done (wired in LayoutsTab.tsx) |
 | L4 – ScrollToItem | ✅ Done (branch: `cur-scrollto`, merged to main) |
-| L3 – Proper Decoration Views | 🔄 Next |
-| 5g – Extend ShadowNode to grid/masonry/flow | ⬜ After L3 |
+| L3 – Proper Decoration Views | 🔄 In progress (branch: `cur-section-footer-test`, built, fixing 8 bugs) |
+| L3.fix – Decoration bug fixes (stale frames, MVC anchor, fingerprint, demo UI) | ⬜ Next |
+| L3.1 – Decoration contentInsets API (frame adjustment like NSCollectionLayoutDecorationItem) | ⬜ After L3.fix |
+| 5g – Extend ShadowNode to grid/masonry/flow | ⬜ After L3.1 |
 | 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
 
 ---
@@ -45,9 +47,9 @@ L4 (scrollTo) ✅ → L3 (decoration views) → 5g (other layouts) → 5j (remov
 
 ---
 
-## L3 — Proper Decoration Views (NEXT)
+## L3 — Proper Decoration Views
 
-**Branch:** `cur-decorative-views` (create from main)
+**Branch:** `cur-decorative-views` (committed, needs build + test in Xcode)
 
 Replaces the JS-workaround `renderSectionBackground` (not windowed, manually positioned) with proper layout-driven decoration views.
 
@@ -90,6 +92,27 @@ decorationRenderers={{
 | `cpp/layouts/ListLayout.h/.cpp` | Emit decoration attrs in `computeSection()` |
 | `cpp/CollectionViewContainerShadowNode.cpp` | Handle decoration children in position pipeline |
 | `example/components/CollectionView.tsx` | Render decorations, consumer API, deprecate old prop |
+
+---
+
+## L3.1 — Decoration contentInsets API (after L3.fix)
+
+Mirrors `NSCollectionLayoutDecorationItem.contentInsets`. Lets consumers shift the C++-emitted decoration frame, enabling:
+- "Jacket" backgrounds that start above section content (negative top)
+- Partial-height decorations (positive bottom inset = ends before section end)
+- Horizontal overflow beyond section insets (negative left/right)
+- "Bookshelf" UI: shelf decorations with negative top inset overlap the section above
+
+Consumer API:
+```typescript
+decorationRenderers: {
+  sectionBackground: {
+    render: (si, frame) => <JacketBg />,
+    contentInsets: { top: -60, bottom: 0, left: -16, right: -16 },
+  }
+}
+```
+C++ applies insets when emitting the decoration frame so windowing and ShadowNode positioning are correct at source.
 
 ---
 

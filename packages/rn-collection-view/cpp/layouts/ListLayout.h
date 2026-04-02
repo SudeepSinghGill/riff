@@ -55,6 +55,12 @@ struct ListLayoutParams {
   double separatorHeight        = 0.5;   // hairlineWidth default
   double separatorInsetLeading  = 0;
   double separatorInsetTrailing = 0;
+
+  // --- Inter-section spacing ---
+  // Gap added after the footer (or last item if no footer) before the next
+  // section's header. Sits outside the section background frame.
+  // Analogous to NSCollectionLayoutSection.interSectionSpacing.
+  double sectionSpacing = 0;
 };
 
 // ─── ListLayout ───────────────────────────────────────────────────────────────

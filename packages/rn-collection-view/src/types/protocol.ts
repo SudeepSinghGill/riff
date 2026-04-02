@@ -190,6 +190,14 @@ export interface ListLayoutDelegate {
   // When true, the layout engine emits a sectionBackground decoration attribute
   // covering the full section rect. Render via decorationRenderers on the component.
   sectionBackground?: boolean;
+
+  /**
+   * Vertical gap inserted after each section's footer (or last item if no footer),
+   * before the next section's header. Sits outside the section background frame.
+   * Analogous to NSCollectionLayoutSection.interSectionSpacing.
+   * Default: 0.
+   */
+  sectionSpacing?: number;
 }
 
 /**

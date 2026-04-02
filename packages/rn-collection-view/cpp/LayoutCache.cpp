@@ -161,6 +161,7 @@ void LayoutCache::_snapshotAnchorLocked() {
   double bestY = std::numeric_limits<double>::max();
   bool found = false;
   for (const auto& [key, attrs] : _map) {
+    if (attrs.isDecoration) continue;
     const double y = attrs.frame.y;
     if (y >= scrollY && y < bestY) {
       bestKey = key; bestY = y; found = true;
@@ -169,6 +170,7 @@ void LayoutCache::_snapshotAnchorLocked() {
   if (!found) {
     // Fallback: topmost item partially visible (bottom > scrollY)
     for (const auto& [key, attrs] : _map) {
+      if (attrs.isDecoration) continue;
       const double y = attrs.frame.y;
       const double bottom = y + attrs.frame.height;
       if (bottom > scrollY && y < bestY) {

@@ -142,10 +142,15 @@ bool ListLayout::applyMeasurements(
 
   double aggregateShift = 0.0;
 
+  // Track per-section aggregateShift at entry (first item) and exit (last item).
+  // Used in the second pass to shift section backgrounds while preserving their
+  // original frame structure (inset gaps, header/footer padding).
+  struct SectionShifts { double entryShift = 0; double exitShift = 0; bool entered = false; };
+  std::unordered_map<int, SectionShifts> sectionShifts;
+
   for (auto& attr : all) {
-    // Decoration frames are fully owned by the layout engine — re-emitted on
-    // the next computeSections() call. Skip them here to avoid partial updates.
-    if (attr.isDecoration) continue;
+    // Section backgrounds are updated in a second pass below.
+    if (attr.isDecoration && attr.decorationKind == "sectionBackground") continue;
 
     bool changed = false;
 
@@ -155,12 +160,28 @@ bool ListLayout::applyMeasurements(
       changed = true;
     }
 
+    if (attr.isDecoration) {
+      // Separator — just shifts, no height change.
+      if (changed) cache.setAttributes(attr);
+      continue;
+    }
+
+    // Track entry shift for section background: shift BEFORE this item's own delta.
+    // Only track items (not supplementaries) — bg frame is anchored to items area start.
+    if (!attr.isSupplementary) {
+      auto& ss = sectionShifts[attr.section];
+      if (!ss.entered) {
+        ss.entryShift = aggregateShift;
+        ss.entered = true;
+      }
+    }
+
     // If this item itself has a new measurement, update it and add to rolling shift
     auto it = newHeights.find(attr.key);
     if (it != newHeights.end()) {
       double newHeight = it->second;
       double heightDiff = newHeight - attr.frame.height;
-      
+
       if (heightDiff != 0.0) {
         attr.frame.height = newHeight;
         aggregateShift += heightDiff;
@@ -172,8 +193,29 @@ bool ListLayout::applyMeasurements(
       }
     }
 
+    // Track exit shift: shift AFTER this item's own delta.
+    if (!attr.isSupplementary) {
+      sectionShifts[attr.section].exitShift = aggregateShift;
+    }
+
     // Write back to cache if modified
     if (changed) {
+      cache.setAttributes(attr);
+    }
+  }
+
+  // Second pass: adjust section background frames using per-section shift deltas.
+  // This preserves the original bg frame (inset gaps, header/footer padding) and
+  // only applies the effect of measurement changes.
+  for (auto& attr : all) {
+    if (!attr.isDecoration || attr.decorationKind != "sectionBackground") continue;
+    auto sit = sectionShifts.find(attr.section);
+    if (sit == sectionShifts.end() || !sit->second.entered) continue;
+    const double shiftY      = sit->second.entryShift;
+    const double heightDelta = sit->second.exitShift - sit->second.entryShift;
+    if (std::abs(shiftY) > 0.01 || std::abs(heightDelta) > 0.01) {
+      attr.frame.y      += shiftY;
+      attr.frame.height += heightDelta;
       cache.setAttributes(attr);
     }
   }
@@ -265,6 +307,7 @@ ListLayoutParams ListLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.separatorHeight         = dbl(rt, obj, "separatorHeight", 0.5);
   p.separatorInsetLeading   = dbl(rt, obj, "separatorInsetLeading");
   p.separatorInsetTrailing  = dbl(rt, obj, "separatorInsetTrailing");
+  p.sectionSpacing          = dbl(rt, obj, "sectionSpacing");
 
   // Optional per-item heights array (estimated mode)
   Value heights = obj.getProperty(rt, "itemHeights");
@@ -317,6 +360,7 @@ double ListLayout::computeSection(const ListLayoutParams& p,
       : p.keyPrefix;
   const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
   const double sectionStartY = startY; // saved for section background frame
+  double bgStartY = startY; // updated to after-header once header is emitted
 
   double y = startY;
 
@@ -355,6 +399,7 @@ double ListLayout::computeSection(const ListLayoutParams& p,
                   _scratch.key.c_str(), _scratch.supplementaryKind.c_str(), _scratch.section, _scratch.index,
                   _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
     y += p.headerHeight;
+    bgStartY = y; // bg starts after header so top rounded corners are exposed
   }
 
   // Gap between header bottom (or section start) and first item
@@ -417,8 +462,26 @@ double ListLayout::computeSection(const ListLayoutParams& p,
   // Undo trailing itemSpacing after last item (spacing is between items, not after)
   if (p.itemCount > 0) y -= p.itemSpacing;
 
-  // Gap between last item and footer (or section end)
+  // Bottom inset: padding between last item and footer (UIKit-correct)
   y += p.sectionInsetBottom;
+
+  // ── Section background (decoration) ──────────────────────────────────────
+  // Frame: after-header to before-footer — rows area only.
+  // Header sits above, footer sits below; both have full rounded corners exposed.
+  if (p.emitSectionBackground) {
+    LayoutAttributes bg;
+    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
+    bg.section        = sectionIndex;
+    bg.index          = -1;
+    bg.frame          = { p.sectionInsetLeft, bgStartY, contentWidth, y - bgStartY };
+    bg.isDecoration   = true;
+    bg.decorationKind = "sectionBackground";
+    bg.zIndex         = -1;
+    bg.sizingState    = SizingState::Measured;
+    bg.isDirty        = false;
+    bg.alpha          = 1.0;
+    _cache->setAttributes(bg);
+  }
 
   // ── Footer ────────────────────────────────────────────────────────────────
   if (p.footerHeight > 0) {
@@ -437,21 +500,8 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     y += p.footerHeight;
   }
 
-  // ── Section background (decoration) ──────────────────────────────────────
-  if (p.emitSectionBackground) {
-    LayoutAttributes bg;
-    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
-    bg.section        = sectionIndex;
-    bg.index          = -1;
-    bg.frame          = { p.sectionInsetLeft, sectionStartY, contentWidth, y - sectionStartY };
-    bg.isDecoration   = true;
-    bg.decorationKind = "sectionBackground";
-    bg.zIndex         = -1;
-    bg.sizingState    = SizingState::Measured;
-    bg.isDirty        = false;
-    bg.alpha          = 1.0;
-    _cache->setAttributes(bg);
-  }
+  // Inter-section gap: sits after footer, before the next section's header.
+  y += p.sectionSpacing;
 
   RNCV_LIST_LOG("computeSection end section=%d endY=%.1f", sectionIndex, y);
   return y; // Y where next section starts
@@ -478,6 +528,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
       : p.keyPrefix;
   const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
   const double sectionStartY = startY;
+  double bgStartY = startY; // updated to after-header once header is emitted
 
   double y = startY;
 
@@ -508,6 +559,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.isDirty           = false;
     _cache->setAttributes(_scratch);
     y += p.headerHeight;
+    bgStartY = y; // bg starts after header so top rounded corners are exposed
   }
 
   y += p.sectionInsetTop;
@@ -539,7 +591,26 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
 
   if (p.itemCount > 0) y -= p.itemSpacing;
 
+  // Bottom inset: padding between last item and footer (UIKit-correct)
   y += p.sectionInsetBottom;
+
+  // ── Section background ─────────────────────────────────────────────────
+  // Emitted before footer — bg covers items area only (bgStartY to before footer),
+  // matching NSCollectionLayoutDecorationItem.background behavior.
+  if (p.emitSectionBackground) {
+    LayoutAttributes bg;
+    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
+    bg.section        = sectionIndex;
+    bg.index          = -1;
+    bg.frame          = { p.sectionInsetLeft, bgStartY, contentWidth, y - bgStartY };
+    bg.isDecoration   = true;
+    bg.decorationKind = "sectionBackground";
+    bg.zIndex         = -1;
+    bg.sizingState    = SizingState::Measured;
+    bg.isDirty        = false;
+    bg.alpha          = 1.0;
+    _cache->setAttributes(bg);
+  }
 
   // ── Footer ────────────────────────────────────────────────────────────────
   if (p.footerHeight > 0) {
@@ -555,21 +626,8 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     y += p.footerHeight;
   }
 
-  // ── Section background ─────────────────────────────────────────────────
-  if (p.emitSectionBackground) {
-    LayoutAttributes bg;
-    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
-    bg.section        = sectionIndex;
-    bg.index          = -1;
-    bg.frame          = { p.sectionInsetLeft, sectionStartY, contentWidth, y - sectionStartY };
-    bg.isDecoration   = true;
-    bg.decorationKind = "sectionBackground";
-    bg.zIndex         = -1;
-    bg.sizingState    = SizingState::Measured;
-    bg.isDirty        = false;
-    bg.alpha          = 1.0;
-    _cache->setAttributes(bg);
-  }
+  // Inter-section gap: sits after footer, before the next section's header.
+  y += p.sectionSpacing;
 
   return y;
 }

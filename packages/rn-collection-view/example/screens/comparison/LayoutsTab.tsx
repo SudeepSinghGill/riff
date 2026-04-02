@@ -171,11 +171,19 @@ function ShimmerTimerHeader({ label, color }: { label: string; color: string }) 
 /** Timer + "STICKY FOOTER — Riff only" badge. */
 function ShimmerTimerFooter({ color }: { color: string }) {
   return (
-    <View style={{ height: 40, backgroundColor: '#0e0e1a', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, justifyContent: 'space-between' }}>
-      <View style={{ backgroundColor: color, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 3 }}>
-        <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700', letterSpacing: 0.3 }}>STICKY FOOTER — Riff only</Text>
-      </View>
-      <LiveTimer style={{ color: '#aaa', fontSize: 11 }} />
+    <View style={{ height: 40, backgroundColor: color, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, justifyContent: 'space-between' }}>
+      <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.6 }}>STICKY FOOTER — RIFF ONLY</Text>
+      <LiveTimer style={{ color: 'rgba(255,255,255,0.75)', fontSize: 10 }} />
+    </View>
+  );
+}
+
+/** Compact footer for non-sticky sections — tinted background with colored text. */
+function SectionFooter({ color, label }: { color: string; label: string }) {
+  return (
+    <View style={{ height: 36, backgroundColor: color, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 8 }}>
+      <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.6, flex: 1 }}>{label.toUpperCase()}</Text>
+      <LiveTimer style={{ color: 'rgba(255,255,255,0.75)', fontSize: 10 }} />
     </View>
   );
 }
@@ -212,7 +220,7 @@ function AnimatedIdentityCell({ item }: { item: ListItem }) {
 
   const mountsOk = mounts <= 1;
   return (
-    <View style={{ backgroundColor: '#1a1a2e', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12, overflow: 'hidden' }}>
+    <View style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12, overflow: 'hidden' }}>
       <Animated.View style={{
         ...StyleSheet.absoluteFillObject,
         width: 80,
@@ -260,11 +268,9 @@ function CtrlBtn({ label, onPress, disabled, active }: {
  * Slow hue animation: a diagonal gradient band sweeps across continuously.
  */
 function AnimatedSectionBg({ sectionIndex, frame }: { sectionIndex: number; frame: { x: number; y: number; width: number; height: number } }) {
-  // Each section has a distinct base hue so they're visually distinct.
   const BASE_HUES = ['#e63946', '#2a9d8f', '#6a4c93'];
   const baseColor = BASE_HUES[sectionIndex % BASE_HUES.length]!;
 
-  // Slow sweep: a semi-transparent band pans left→right over ~6 seconds.
   const bandX = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.loop(
@@ -277,22 +283,20 @@ function AnimatedSectionBg({ sectionIndex, frame }: { sectionIndex: number; fram
     ).start();
   }, [bandX]);
 
-  // Band travels full section width + band width.
-  const bandWidth = 80;
+  const bandWidth = 120;
   const translateX = bandX.interpolate({
     inputRange:  [0, 1],
     outputRange: [-bandWidth, frame.width + bandWidth],
   });
 
   return (
-    <View style={{ flex: 1, backgroundColor: baseColor + '28', overflow: 'hidden' }}>
+    <View style={{ flex: 1, backgroundColor: baseColor + '66', borderRadius: 12, overflow: 'hidden' }}>
       <Animated.View
         style={{
           position: 'absolute',
-          top: 0,
-          bottom: 0,
+          top: 0, bottom: 0,
           width: bandWidth,
-          backgroundColor: 'rgba(255,255,255,0.13)',
+          backgroundColor: 'rgba(255,255,255,0.18)',
           transform: [{ translateX }],
         }}
       />
@@ -305,14 +309,15 @@ function ListDemo() {
   const [s0Items, setS0Items] = useState<ListItem[]>(S0_DATA);
   const [resizedIds, setResizedIds] = useState<Set<string>>(() => new Set());
   const [mvcEnabled, setMvcEnabled] = useState(false);
-  const [sepEnabled, setSepEnabled] = useState(true);
+  const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
   const insertCounter = useRef(S0_DATA.length);
   const cvRef = useRef<RiffHandle>(null);
 
   const listLayout = useMemo(() => list({
-    estimatedItemHeight: 72,
-    itemSpacing: 8,
+    estimatedItemHeight: 56,
+    itemSpacing: 2,
+    sectionSpacing: 20,
     separator: sepEnabled ? { color: '#4a4a6a', insetLeading: 16 } : undefined,
     sectionBackground: true,
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -368,7 +373,7 @@ function ListDemo() {
         height: 40,
         sticky: true,
       },
-      insets: { top: 8, bottom: 8, left: 0, right: 0 },
+      insets: { top: 8, bottom: 8, left: 12, right: 12 },
     },
     {
       key: 'cell-animation',
@@ -378,7 +383,12 @@ function ListDemo() {
         height: 50,
         sticky: true,
       },
-      insets: { top: 8, bottom: 8, left: 0, right: 0 },
+      footer: {
+        render: () => <SectionFooter color="#2a9d8f" label="End of S1 — Cell Animation" />,
+        height: 36,
+        sticky: true,
+      },
+      insets: { top: 8, bottom: 8, left: 12, right: 12 },
     },
     {
       key: 'insets-spacing',
@@ -388,7 +398,12 @@ function ListDemo() {
         height: 50,
         sticky: true,
       },
-      insets: { top: 24, bottom: 24, left: 16, right: 16 },
+      footer: {
+        render: () => <SectionFooter color="#6a4c93" label="End of S2 — Insets + Spacing" />,
+        height: 36,
+        sticky: true,
+      },
+      insets: { top: 8, bottom: 8, left: 16, right: 16 },
     },
   ], [s0Items]);
 
@@ -408,7 +423,7 @@ function ListDemo() {
 
     const textColor = sectionIndex === 2 ? '#c4b5fd' : '#aaa';
     return (
-      <View style={{ backgroundColor: '#1a1a2e', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
+      <View style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
         <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>Item {item.num}</Text>
         <Text style={{ color: textColor, fontSize: 13, marginTop: 4 }}>{subtitle}</Text>
       </View>
@@ -425,8 +440,8 @@ function ListDemo() {
 
   return (
     <View style={S.flex}>
-      {/* Controls bar */}
-      <View style={S.ctrlBar}>
+      {/* Controls bar — horizontal scroll */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={S.ctrlBarScroll} contentContainerStyle={S.ctrlBar}>
         <CtrlBtn label="→ Top" onPress={() => cvRef.current?.scrollToOffset({ y: 0 })} />
         <CtrlBtn label="→ #42" onPress={() => cvRef.current?.scrollToItem('cell-animation:s1-17', { position: 'center' })} />
         <CtrlBtn label="→ Bot" onPress={() => cvRef.current?.scrollToItem('insets-spacing:s2-19', { position: 'bottom' })} />
@@ -443,14 +458,14 @@ function ListDemo() {
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
           <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
         </View>
-      </View>
+      </ScrollView>
 
       <CollectionView
         handle={cvRef}
         sections={sections}
         layout={listLayout}
         stickyMode="push"
-        estimatedItemHeight={72}
+        estimatedItemHeight={56}
         extraData={resizedIds}
         scrollViewProps={{ style: { backgroundColor: '#2a2a3e' }, indicatorStyle: 'white' }}
         keyExtractor={keyExtractor}
@@ -724,7 +739,8 @@ const S = StyleSheet.create({
 
   content: { flex: 1 },
 
-  ctrlBar: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 8, paddingVertical: 7, backgroundColor: '#111', alignItems: 'center' },
+  ctrlBarScroll: { backgroundColor: '#111', flexGrow: 0 },
+  ctrlBar: { flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
   ctrlDivider: { width: 1, height: 18, backgroundColor: '#333', marginHorizontal: 2 },
 
   listCell: { minHeight: 72, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16,

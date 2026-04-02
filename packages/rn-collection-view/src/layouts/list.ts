@@ -118,6 +118,7 @@ class ListLayout implements CollectionViewLayout {
         separatorHeight: d.separator?.height ?? 0.5,
         separatorInsetLeading: d.separator?.insetLeading ?? 0,
         separatorInsetTrailing: d.separator?.insetTrailing ?? 0,
+        sectionSpacing: d.sectionSpacing ?? 0,
       };
 
       if (itemHeights) {
@@ -136,7 +137,7 @@ class ListLayout implements CollectionViewLayout {
 
     // Build a fingerprint of the data shape. Only clear + recompute when it changes.
     // This preserves Yoga-measured heights across measurement-triggered re-renders.
-    const fp = `${context.containerWidth}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight}`).join(';')}`;
+    const fp = `${context.containerWidth}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight},${s.emitSeparators},${s.emitSectionBackground}`).join(';')}`;
     if (fp !== this._lastFingerprint) {
       nativeMod.layoutCache.clear();
       this._lastFingerprint = fp;
