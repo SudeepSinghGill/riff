@@ -145,7 +145,8 @@ public:
 
 private:
   std::shared_ptr<LayoutCache> _cache;
-  bool _horizontal = false;  // set by computeSections(); drives contentDeterminedDimension() and applyMeasurements()
+  bool _horizontal = false;      // set by computeSections(); drives contentDeterminedDimension() and applyMeasurements()
+  double _viewportHeight = 0.0;  // stored from computeSections(); used in applyMeasurements Pass 3 for horizontal
 
   // Reusable attribute — mutated and copied into cache each iteration.
   // Avoids per-item allocation in the hot loop.

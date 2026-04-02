@@ -15,8 +15,10 @@ interface NativeProps extends ViewProps {
   behavior?: WithDefault<'sticky' | 'push', 'push'>;
   naturalY?: Float;
   boundaryY?: Float;
+  boundaryX?: Float;
   headerHeight?: Float;
   enabled?: WithDefault<boolean, true>;
+  horizontal?: WithDefault<boolean, false>;
   type?: string;
   kind?: string;
   index?: Int32;

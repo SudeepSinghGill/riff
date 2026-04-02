@@ -271,8 +271,11 @@ bool ListLayout::applyMeasurements(
 
         bool changed = false;
         if (attr.isSupplementary) {
-          // Header/footer span full cross extent: crossStart + maxH + crossStart (symmetric insets).
-          const double hdrH = crossStart + maxH + crossStart;
+          // Horizontal: supplementary views span the full viewport height.
+          // Vertical: supplementary views span crossStart + maxH + crossStart (symmetric insets).
+          const double hdrH = (_horizontal && _viewportHeight > 0)
+              ? _viewportHeight
+              : crossStart + maxH + crossStart;
           if (std::abs(attr.frame.height - hdrH) > 0.01) {
             attr.frame.height = hdrH;
             changed = true;
@@ -614,8 +617,9 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     _scratch.isDirty           = false;
     if (H) {
       // Horizontal: header is a vertical strip at the left of the section.
-      // Height = estimated cross span; applyMeasurements updates to section max.
-      _scratch.frame = { primary, 0, p.headerHeight, hHdrH };
+      // Height = full viewport height so it fills the list top-to-bottom.
+      // applyMeasurements may refine further, but viewport height is the correct target.
+      _scratch.frame = { primary, 0, p.headerHeight, p.viewportHeight };
     } else {
       // Vertical: header is a full-width horizontal strip at the top of the section
       _scratch.frame = { crossStart, primary, crossContent, p.headerHeight };
@@ -758,6 +762,7 @@ double ListLayout::computeSection(const ListLayoutParams& p,
 
 void ListLayout::computeSections(const std::vector<ListLayoutParams>& sections) {
   _horizontal = !sections.empty() && sections[0].horizontal;
+  _viewportHeight = !sections.empty() ? sections[0].viewportHeight : 0.0;
   double primary = 0.0;
   RNCV_LIST_LOG("computeSections begin sections=%zu horizontal=%d", sections.size(), (int)_horizontal);
   for (int s = 0; s < static_cast<int>(sections.size()); ++s) {
@@ -823,8 +828,8 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
     if (H) {
-      // Preserve measured cross height if available.
-      const double hH = (existingHdr && existingHdr->frame.height > 0) ? existingHdr->frame.height : hHdrH;
+      // Preserve measured cross height if available; otherwise use viewportHeight.
+      const double hH = (existingHdr && existingHdr->frame.height > 0) ? existingHdr->frame.height : p.viewportHeight;
       _scratch.frame = { primary, 0, p.headerHeight, hH };
     } else {
       _scratch.frame = { crossStart, primary, crossContent, p.headerHeight };
@@ -910,8 +915,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
     if (H) {
-      // Height estimated; applyMeasurements updates to section max.
-      _scratch.frame = { primary, 0, p.footerHeight, hHdrH };
+      _scratch.frame = { primary, 0, p.footerHeight, p.viewportHeight };
     } else {
       _scratch.frame = { crossStart, primary, crossContent, p.footerHeight };
     }

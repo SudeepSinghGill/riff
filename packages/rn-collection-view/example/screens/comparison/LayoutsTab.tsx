@@ -866,6 +866,7 @@ export function HorizontalListDemo() {
           </View>
         ),
         height: 160,  // primary-axis width of header strip
+        sticky: true,
       },
       footer: {
         render: () => (
@@ -875,6 +876,7 @@ export function HorizontalListDemo() {
           </View>
         ),
         height: 60,  // primary-axis width of footer strip
+        sticky: true,
       },
       insets: { top: 10, bottom: 10, left: 12, right: 12 },
     };
@@ -925,6 +927,7 @@ export function HorizontalListDemo() {
           renderItem={renderCard}
           keyExtractor={(item: HCard) => item.id}
           estimatedItemHeight={140}
+          scrollViewProps={{ style: { backgroundColor: 'transparent' } }}
         />
       </View>
     </View>

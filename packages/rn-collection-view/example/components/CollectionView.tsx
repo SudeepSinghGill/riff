@@ -1577,7 +1577,8 @@ export function Riff<T = unknown>({
 
   const stickyConfigMap = useMemo(() => {
     if (!hasStickyHeaders && !hasStickyFooters) return null;
-    const map = new Map<number, { kind: 'header' | 'footer'; naturalY: number; boundaryY: number; sizeHeight: number }>();
+    const isHoriz = effectiveLayout.horizontal ?? false;
+    const map = new Map<number, { kind: 'header' | 'footer'; naturalY: number; boundaryY: number; boundaryX: number; sizeHeight: number }>();
 
     const allSticky = [
       ...stickyHeaderFlatIndices.map(fi => ({ fi, kind: 'header' as const })),
@@ -1629,6 +1630,31 @@ export function Riff<T = unknown>({
         }
       }
 
+      // Horizontal: compute X-axis boundary (mirrors Y-axis logic above).
+      let boundaryX = 999999;
+      if (isHoriz && isSectioned && typeof fiDesc?.sectionIndex === 'number') {
+        if (stickyKind === 'footer') {
+          const sectionHeader = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+          if (sectionHeader) {
+            boundaryX = sectionHeader.frame.x;
+          } else {
+            const firstItem = effectiveLayout.attributesForItem(0, fiDesc.sectionIndex);
+            if (firstItem) boundaryX = firstItem.frame.x;
+          }
+        } else {
+          const nextSection = fiDesc.sectionIndex + 1;
+          if (propSections && nextSection < propSections.length) {
+            const nextHeader = nativeMod.layoutCache.getAttributes(`item-${nextSection}-header`);
+            if (nextHeader) {
+              boundaryX = nextHeader.frame.x;
+            } else {
+              const nextFirst = effectiveLayout.attributesForItem(0, nextSection);
+              if (nextFirst) boundaryX = nextFirst.frame.x;
+            }
+          }
+        }
+      }
+
       rncvVerboseLog(`[RNCVX-STICKY] kind=${stickyKind} sIdx=${fiDesc?.sectionIndex} naturalY=${naturalY} boundaryY=${boundaryY} attrOk=${!!attr} fi=${fi}`);
       rncvLog('RNCV-JS-STICKY', {
         op: 'stickyConfigMap-entry',
@@ -1638,9 +1664,10 @@ export function Riff<T = unknown>({
         attrHit: !!attr,
         naturalY,
         boundaryY,
+        boundaryX,
         headerHeight: sizeHeight,
       });
-      map.set(fi, { kind: stickyKind, naturalY, boundaryY, sizeHeight });
+      map.set(fi, { kind: stickyKind, naturalY, boundaryY, boundaryX, sizeHeight });
     }
     return map;
   }, [hasStickyHeaders, hasStickyFooters, stickyHeaderFlatIndices, stickyFooterFlatIndices,
@@ -1773,6 +1800,7 @@ export function Riff<T = unknown>({
       // on the direct child of the scroll content view.  If it were wrapped in
       // a plain <View>, UIScrollView's clipsToBounds would clip the wrapper
       // once it scrolled above the viewport, hiding the transformed child.
+      const isHorizLayout = effectiveLayout.horizontal ?? false;
       return (
         <RNScrollCoordinatedView
           key={key}
@@ -1780,6 +1808,8 @@ export function Riff<T = unknown>({
           behavior={stickyMode}
           naturalY={stickyConfig.naturalY}
           boundaryY={stickyConfig.boundaryY}
+          boundaryX={stickyConfig.boundaryX}
+          horizontal={isHorizLayout}
           headerHeight={stickyConfig.sizeHeight}
           enabled={true}
           type="supplementary"

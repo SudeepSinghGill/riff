@@ -33,10 +33,12 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
 
   // Cached props — read on UI thread in KVO callback.
   CGFloat _boundaryY;
+  CGFloat _boundaryX;
   CGFloat _headerHeight;
   BOOL    _isPush;
   BOOL    _enabled;
   BOOL    _isFooter;
+  BOOL    _isHorizontal;
 }
 
 // ── Fabric registration ──────────────────────────────────────────────────────
@@ -54,10 +56,12 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
     static const auto defaultProps = std::make_shared<const RNScrollCoordinatedViewProps>();
     _props       = defaultProps;
     _boundaryY   = CGFLOAT_MAX;
+    _boundaryX   = CGFLOAT_MAX;
     _headerHeight = 0;
     _isPush      = YES;    // default behavior = push
     _enabled     = YES;
     _isFooter    = NO;
+    _isHorizontal = NO;
     _observing   = NO;
   }
   return self;
@@ -92,10 +96,12 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
   const auto &newProps = *std::static_pointer_cast<const RNScrollCoordinatedViewProps>(props);
 
   _boundaryY    = newProps.boundaryY;
+  _boundaryX    = newProps.boundaryX;
   _headerHeight = newProps.headerHeight;
   _isPush       = isPush(newProps.behavior);
   _enabled      = newProps.enabled;
   _isFooter     = (newProps.kind == "footer");
+  _isHorizontal = newProps.horizontal;
 
   // Re-apply transform immediately with current scroll position.
   [self _applyTransform];
@@ -202,8 +208,43 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
 
   // Skip if Fabric hasn't laid us out yet (bounds are zero on the first frame
   // after mount — applying a transform here would flash the view at (0,0)).
-  if (self.bounds.size.height <= 0) return;
+  if (self.bounds.size.width <= 0 || self.bounds.size.height <= 0) return;
 
+  if (_isHorizontal) {
+    // ── Horizontal path: X-axis sticky/push ────────────────────────────────
+    CGFloat scrollX   = _parentScrollView.contentOffset.x;
+    CGFloat viewportW = _parentScrollView.bounds.size.width;
+    // Derive naturalX from Fabric-managed center (ignores any active transform).
+    CGFloat naturalX  = self.center.x - self.bounds.size.width * 0.5;
+    CGFloat translateX;
+
+    if (_isFooter) {
+      // Footer pins to trailing (right) edge.
+      // desiredLeft: left edge position that places the footer's right edge at viewport right.
+      CGFloat desiredLeft = scrollX + viewportW - _headerHeight; // _headerHeight holds primary-axis size
+      if (_isPush) {
+        // Footer can't move left past section start (boundaryX).
+        CGFloat minTranslate = _boundaryX - naturalX;
+        translateX = MIN(0.0, MAX(desiredLeft - naturalX, minTranslate));
+      } else {
+        translateX = MIN(0.0, desiredLeft - naturalX);
+      }
+    } else {
+      // Header pins to leading (left) edge.
+      if (_isPush) {
+        CGFloat maxTranslate = _boundaryX - naturalX - _headerHeight;
+        translateX = MAX(0.0, MIN(scrollX - naturalX, maxTranslate));
+      } else {
+        translateX = MAX(0.0, scrollX - naturalX);
+      }
+    }
+
+    self.layer.transform = CATransform3DMakeTranslation(translateX, 0, 0);
+    self.layer.zPosition = fabs(translateX) > 0.1 ? 100 : 0;
+    return;
+  }
+
+  // ── Vertical path (unchanged) ────────────────────────────────────────────
   CGFloat scrollY = _parentScrollView.contentOffset.y;
   CGFloat viewportH = _parentScrollView.bounds.size.height;
 
