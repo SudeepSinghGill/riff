@@ -505,7 +505,7 @@ function GridSectionFooter({ color, count }: { color: string; count: number }) {
   );
 }
 
-function GridDemo() {
+export function GridDemo() {
   const [gs0Items, setGs0Items] = useState<GridCell[]>(GS0_DATA);
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
