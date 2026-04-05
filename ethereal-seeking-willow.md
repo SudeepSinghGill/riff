@@ -16,9 +16,15 @@
 | L3.1 – Decoration contentInsets API (frame adjustment like NSCollectionLayoutDecorationItem) | ✅ Done (branch: `cur-decoration-content-insets`, merged to main) |
 | Horizontal grid layout (C++ H-branching + TS delegate + H-Grid demo tab) | ✅ Done (branch: `cur-horizontal-grid`, merged to main) |
 | H-grid adaptive cross-axis (always-adaptive, onContentSizeChange, full scroll events) | ✅ Done (branch: `cur-section-footer-test`) |
-| 5g – Extend ShadowNode to grid/masonry/flow | ⬜ Next |
+| Masonry full feature parity (V+H, multi-section, decorations, MVC, ScrollTo) | ✅ Done (branch: `cur-masonry`, merged to main) |
+| Flow full feature parity (V+H, multi-section, decorations, MVC, ScrollTo) | ✅ Done (branch: `cur-flow`, merged to main) |
+| RiffDemo: all 8 layout tabs wired (List/Grid/Masonry/Flow × V+H) | ✅ Done |
+| API audit across all 4 layouts | ⬜ Next |
+| 5g – Extend ShadowNode to grid/masonry/flow | ⬜ Future |
 | 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
-| Grid rowAlignment – 'top'\|'center'\|'bottom' for uneven heightForItem rows | ⬜ Future (see PLAN.md F3.1) |
+| Grid rowAlignment – 'top'\|'center'\|'bottom' for uneven heightForItem rows | ⬜ Future (see PLAN.md F-Grid.1) |
+| Flow justification (leading/center/trailing/spaceBetween/spaceEvenly) | ⬜ Future (see PLAN.md F-Flow.1) |
+| Flow item weight/stretching | ⬜ Future (see PLAN.md F-Flow.2) |
 
 ---
 
