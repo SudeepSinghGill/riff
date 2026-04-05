@@ -325,6 +325,22 @@ export interface GridLayoutDelegate {
     right?: number;
   };
 
+  // ── Horizontal mode ──
+  /**
+   * When true, the grid scrolls horizontally.
+   * `columns` controls how many items fill the cross axis (Y) per column-group.
+   * Items tile top-to-bottom within a column-group, then advance left-to-right
+   * (column-major order — mirrors UICollectionViewFlowLayout horizontal default).
+   * Yoga measures item widths (primary axis); heights are derived from column count.
+   */
+  horizontal?: boolean;
+  /**
+   * Estimated item width along the scroll axis for horizontal grids.
+   * Used as initial estimate before Yoga measures actual widths.
+   * Default: 200.
+   */
+  estimatedCrossAxisHeight?: number;
+
   // Future: rowAlignment?: 'top' | 'center' | 'bottom'
   // Alignment of shorter items within a row when heightForItem produces uneven heights.
   // 'top' (default) aligns all items to the row's top Y. 'center'/'bottom' offset
