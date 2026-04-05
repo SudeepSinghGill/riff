@@ -6,6 +6,24 @@
  * row width, it wraps to a new line. Row height = tallest item in that row.
  *
  * `sizeForItem` is mandatory — flow layout needs both width and height.
+ *
+ * ─── STABLE KEY RULE (enforce in every layout engine) ────────────────────────
+ * One key per item, used identically in ALL three places:
+ *   1. C++ LayoutCache write  — uses keys[i] when provided, else "flow-{section}-{index}"
+ *   2. TS attributesForItem() — reads from lastSectionKeys[section][index] (same key)
+ *   3. CollectionView.tsx cacheKey — derived from layoutContext.sections[s].itemKeys[i]
+ *
+ * Identity keys from keyExtractor flow as:
+ *   keyExtractor → layoutContext.sections[s].itemKeys → prepare() keys[] → C++ → TS read
+ *
+ * KNOWN VIOLATIONS IN THIS FILE (TODO — fix before multi-section flow):
+ *   - C++ key format is "flow-{i}" (no section index) — must become "flow-{s}-{i}"
+ *   - TS `prepare()` hardcodes keys[i]="flow-{i}", never passes sec.itemKeys
+ *   - attributesForItem() does not use lastSectionKeys
+ *
+ * Violation = silent rendering failures (wrong width, lost measurements, broken sticky).
+ * See docs/COLLECTIONVIEW_INTERNALS.md "RULE: Stable Key Consistency" for full details.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import type {

@@ -588,6 +588,8 @@ Item width = (viewportWidth - insets - spacing) / columns.
 - 3-column grid, 100 items: < 1ms, correct frames
 - Integrates with selfSizing (row height = tallest item)
 
+**Future enhancement:** `rowAlignment: 'top' | 'center' | 'bottom'` — when `heightForItem` produces uneven row heights, align shorter items within the row. Default: `'top'`. Requires C++ change in `GridLayout.cpp` row-end loop (currently always top-aligns). API sketch in `src/types/protocol.ts` GridLayoutDelegate.
+
 **Deps:** M1.5
 
 ---
@@ -788,6 +790,99 @@ Port to React Native Web using the same TS component layer.
 
 ---
 
+## Phase T1 — Testing (Unit + Integration)
+
+UTs and ITs for every component in the list view, UI or otherwise.
+
+### T1.1 — C++ Layout Engine Unit Tests
+
+Pure C++ tests. No RN, no JSI — call layout functions directly, assert frames.
+
+**Scope:** ListLayout, GridLayout, MasonryLayout, FlowLayout, LayoutCache.
+
+**Test cases per engine:**
+- Empty section (0 items) — contentSize = header + footer + insets only
+- Single item
+- Fixed height path vs dynamic height path
+- Multi-section: total contentSize = sum of sections + sectionSpacing
+- Section insets: items offset by insets, contentSize includes insets
+- Sticky supplementary: header/footer frames at correct Y
+- Separator frames: count = itemCount-1 per section, Y = bottom of each item row
+- Section background frame: covers full section content area
+- `getAttributesInRect`: returns only items intersecting the rect
+- `getAttributes(key)`: returns null for unknown key, correct attr for known key
+- Width resize (invalidation): contentSize changes after new width
+- `invalidateSectionsFrom(n)`: only sections ≥ n are recomputed
+
+**Framework:** GoogleTest (or Catch2) — add to `cpp/tests/`. CMake target `rncv_cpp_tests`.
+
+**Deps:** None (pure C++).
+
+---
+
+### T1.2 — TS Layout Engine Unit Tests
+
+Jest tests for the TS layout wrappers (list.ts, grid.ts, masonry.ts, flow.ts). Mock `NativeCollectionViewModule` to capture what is sent to C++.
+
+**Scope:** `src/layouts/list.ts`, `grid.ts`, `masonry.ts`, `flow.ts`.
+
+**Test cases:**
+- `prepare()` sends correct `computeSections` params for each delegate config
+- `attributesForItem(index, section)` uses `lastSectionKeys` when `keyExtractor` keys are present
+- `attributesForItem` falls back to `{type}-{section}-{index}` when no identity keys
+- `attributesForSupplementary(kind, section)` returns correct key lookup
+- `shouldInvalidate`: returns true when width changes > 0.5px, false otherwise
+- `invalidationScope()`: returns `{ type: 'full' }`
+- Stable Key Rule compliance: key passed to C++ == key used in TS read (for all 4 engines)
+
+**Framework:** Jest (already configured in example/).
+
+---
+
+### T1.3 — CollectionView.tsx Unit Tests
+
+Jest + React Test Renderer. Focus on pure-logic functions — no native module instantiation.
+
+**Scope:** `attrToFlatIndex`, `flattenSections`, scroll offset math in `scrollToItem`, key derivation logic.
+
+**Test cases:**
+- `attrToFlatIndex` — item in section 0, item in section 1, header, footer, decoration (returns -1)
+- `flattenSections` — correct flat indices, sectionStartFlatIndices, key set
+- `scrollToItem` position math:
+  - `'top'` without sticky: `targetY = itemY`
+  - `'top'` with sticky header H: `targetY = itemY - H`
+  - `'bottom'` without sticky: `targetY = itemY - vpH + itemH`
+  - `'bottom'` with sticky footer F: `targetY = itemY - (vpH - F) + itemH`
+  - `'center'` with both: `targetY = itemY - H - (vpH - H - F - itemH) / 2`
+  - `'nearest'`: no-op when fully visible, corrects when above, corrects when below
+- Decoration `zIndex`: background renders behind separator (zIndex -1 < 0)
+
+---
+
+### T1.4 — Integration Tests (RN + Native)
+
+End-to-end tests using Detox (or XCUI). Verify that the JS→JSI→C++→native pipeline produces correct visual output.
+
+**Scope:** Core render paths, scrollTo, insert/delete, sticky headers.
+
+**Test cases:**
+- List renders correct number of visible cells in viewport
+- Grid renders N columns at correct widths
+- Insert item: new cell appears at top of list, others shift down
+- Delete item: cell disappears, list reflows
+- ScrollTo `top`: target item visible at viewport top (below sticky header if present)
+- ScrollTo `bottom`: target item visible at viewport bottom (above sticky footer if present)
+- Sticky header: stays pinned at viewport top as user scrolls into a new section
+- Sticky footer: stays pinned at viewport bottom as user scrolls out of a section
+- Section background: covers full section item area (frame check)
+- Separator: visible between rows (frame + visibility check)
+
+**Framework:** Detox (iOS). Add `example/e2e/` directory.
+
+**Deps:** T1.1, T1.2, T1.3 (unit layer green first).
+
+---
+
 ## Phase R1 — Research
 
 ### R0 — Memory Optimization (Future Research)
@@ -969,10 +1064,11 @@ Verify exactly when and why Fabric flattens views inside a custom ShadowNode con
 
 ### R1.10 — Horizontal variants of vertical layouts
 
-All built-in layouts (List, Grid, Masonry, Flow) are currently vertical-only. Each needs a horizontal variant where the primary scroll axis is X instead of Y.
+**ListLayout horizontal: ✅ DONE** (`list({ horizontal: true })` — full feature parity with vertical: sticky headers/footers, section backgrounds, separators, insert/delete/resize, MVC, scrollToItem/scrollToOffset.)
+
+Remaining layouts (Grid, Masonry, Flow):
 
 **Scope per layout:**
-- **ListLayout horizontal:** Items laid out left-to-right, fixed or variable width, scrolls horizontally. Most common use: carousel rows, horizontal pickers.
 - **GridLayout horizontal:** Rows × columns but scrolling horizontally — items fill top-to-bottom first, then wrap to the next column.
 - **MasonryLayout horizontal:** Columns become rows — items pack into the shortest row. Rare but completeness.
 - **FlowLayout horizontal:** Already partially horizontal (items flow left-to-right), but currently wraps to new rows vertically. Horizontal variant: items flow top-to-bottom, wrap to new columns when a column is full, scrolls horizontally.
@@ -1089,6 +1185,37 @@ const listLayout = list({
 `DecorationsTab` and `ListDemo` updated to use the new API once implemented.
 
 **Deps:** F2.1, M1.5 (multi-section layout), ShadowNode Phase 5 (positions from cache)
+
+**✅ Critical bug fixed (2026-04-05): Universal tag-based native positioning**
+
+Root cause confirmed via runtime logs: Fabric's reconciler "last index" optimization leaves native subview ordering inconsistent with ShadowNode child ordering when new children (separators) are inserted before existing non-moved children (section backgrounds). Index-based `positions[i] → subviews[i]` mapping applied wrong frames to wrong views.
+
+Fix: `CollectionViewContainerState` now carries `std::vector<int32_t> childTags` parallel to `positions`. ShadowNode populates `childTags_[i] = children[i]->getTag()` for ALL children in Phase 1. Native `applyPositionsFromState` builds a `tag → UIView*` map and looks up by Fabric tag identity. Universal — covers items, decorations, and supplementaries. Protects against any future layout that generates the same insert-before-non-moved pattern.
+
+Full analysis and design rationale in `docs/COLLECTIONVIEW_INTERNALS.md` → "Two-Layer Identity" section.
+
+---
+
+### R1.13 — scrollToItem with estimated heights (settling loop)
+
+**Problem:** `scrollToItem` uses layout positions from LayoutCache. Before items are measured by Yoga, all positions are based on `estimatedItemHeight`. For items far from the visible viewport, the accumulated error is `(actualHeight - estimatedHeight) × numberOfItemsBefore`. For a list of 100 items with estimated 44px and actual 90px, the last item's estimated Y is ~4400px but its actual Y is ~9000px. The scroll lands 5000px short.
+
+Two compounding issues:
+1. `attrs.frame.y` from the cache is wrong (estimated, not measured)
+2. `contentHeightRef.current` is also underestimated — the `maxY` clamp cuts the target too low
+
+**Current behavior:** First scroll to bottom lands mid-list. After manually scrolling to the end (which triggers measurement of items), scrollTo works correctly because positions are now measured.
+
+**Known approaches:**
+- **Two-phase scroll:** After initial scroll, check `attrs.sizingState`. If not 'measured', schedule a `requestAnimationFrame` retry. Problem: convergence is undefined — retrying once may not be enough; depends on how many items are in the render window after the first scroll.
+- **Settling loop:** After scrollToItem, set `_pendingScrollTarget`. On each `onScroll` event, check if the target item is at the expected viewport position. If not, re-scroll. Stop after N consecutive stable frames or max 10 retries. Problem: complex to implement correctly (handle concurrent scrolls, rapid multi-scrollTo calls, direction reversals).
+- **Force-measure ahead:** Before scrolling far, trigger a virtual layout pass that uses actual measured heights for all items up to the target. Problem: requires items to be measured first, which requires render, which requires scroll.
+
+**UICollectionView approach:** `scrollToItem(at:at:animated:)` in UICollectionView works correctly because the layout engine knows exact heights (via `UICollectionViewDelegateFlowLayout.sizeForItemAt` or `estimatedItemSize`). There is no re-scroll settling — estimates are trusted. For truly dynamic heights, UICollectionView uses `preferredLayoutAttributesFitting:` to self-size, and the layout invalidates+recalculates. The scroll works on the first attempt because the layout already has final heights by the time scroll is triggered (items are pre-measured in the layout pass).
+
+**RN CollectionView parallel:** Our equivalent would be pre-computing the exact position by running `prepare()` with measured heights for all items up to the target before scrolling. This is only possible once Yoga has measured those items — which requires them to be in the render window. A proper solution may require: (a) a "measure ahead" API that renders items off-screen up to the target, (b) using the settling loop, or (c) accepting the limitation and documenting that scrollToItem is approximate until all items between viewport and target are measured.
+
+**Deps:** F1.3 (prefetch callbacks), ShadowNode Phase 4+ (layout invalidation cascade).
 
 ---
 

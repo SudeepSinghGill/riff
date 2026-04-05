@@ -50,6 +50,14 @@ class CollectionViewContainerState final {
   /// Written by ShadowNode::layout(), read by native view for positioning.
   std::vector<Float> positions;
 
+  /// Fabric tags for each child in ShadowNode order, parallel to positions.
+  /// Native view uses tag→UIView lookup instead of index-based subview[i]
+  /// access, because Fabric's reconciler "last index" optimization can leave
+  /// native subview order inconsistent with ShadowNode child order when new
+  /// children are inserted before existing non-moved children.
+  /// Covers ALL children (items, decorations, supplementaries).
+  std::vector<int32_t> childTags;
+
   /// Bumped on every layout revision. Native view uses to detect changes.
   int32_t layoutRevision = 0;
 

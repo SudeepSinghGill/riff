@@ -80,7 +80,11 @@ class CollectionViewContainerShadowNode final
   // Scratch storage for corrected positions [x,y,w,h,...].
   // Stored in state for native view to apply as child frames.
   std::vector<Float> correctedPositions_;
+  // Fabric tags for each child, parallel to correctedPositions_.
+  // Enables tag-based (not index-based) lookup in applyPositionsFromState.
+  std::vector<int32_t> childTags_;
   Float correctedContentHeight_ = 0;
+  Float correctedContentWidth_  = 0;  // populated for horizontal layouts (ContentDimension::Width)
 };
 
 } // namespace facebook::react

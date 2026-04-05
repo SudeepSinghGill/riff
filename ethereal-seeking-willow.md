@@ -9,12 +9,14 @@
 | MVC – insert/delete scroll correction | ✅ Done |
 | MVC – size-change scroll correction | ✅ Done |
 | L5 – Mutation buttons + MVC toggle in ListDemo | ✅ Done (wired in LayoutsTab.tsx) |
-| L4 – ScrollToItem | ✅ Done (branch: `cur-scrollto`, merged to main) |
+| L4 – ScrollToItem (vertical + horizontal) | ✅ Done (branch: `cur-scrollto`, merged; horizontal added in `cur-section-footer-test`) |
 | L3 – Proper Decoration Views | 🔄 In progress (branch: `cur-section-footer-test`, built, fixing 8 bugs) |
-| L3.fix – Decoration bug fixes (stale frames, MVC anchor, fingerprint, demo UI) | ⬜ Next |
-| L3.1 – Decoration contentInsets API (frame adjustment like NSCollectionLayoutDecorationItem) | ⬜ After L3.fix |
+| Horizontal list demo (sticky H/F, section bkg, scrollTo, insert/delete/resize, MVC) | ✅ Done (branch: `cur-section-footer-test`) |
+| L3.fix – Decoration bug fixes (stale frames, MVC anchor, fingerprint, demo UI) | ✅ Done (tag-based native positioning, visible separator color) |
+| L3.1 – Decoration contentInsets API (frame adjustment like NSCollectionLayoutDecorationItem) | ⬜ Next |
 | 5g – Extend ShadowNode to grid/masonry/flow | ⬜ After L3.1 |
 | 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
+| Grid rowAlignment – 'top'\|'center'\|'bottom' for uneven heightForItem rows | ⬜ Future (see PLAN.md F3.1) |
 
 ---
 
@@ -146,12 +148,58 @@ After 5g. Remove `position: 'absolute'`, `left`, `top`, `width`, `height` from c
 | Dynamic height, zero layout shift | ✅ ShadowNode same commit | ❌ JS correction loop |
 | Insert/delete with scroll stability | ✅ MVC prop | ❌ no per-mutation control |
 | Size-change with scroll stability | ✅ snapshotAnchorIfNeeded | ❌ |
+| Horizontal list (sticky H/F, section bkg, scrollTo, mutations, MVC) | ✅ | ❌ no sticky footer, no horiz sticky |
 | Decoration views (arbitrary kinds) | planned L3 | ❌ |
 | Separators (layout-driven) | planned L3 | basic, not layout-driven |
-| scrollToItem by stable key | ✅ L4 | index only |
+| scrollToItem by stable key (vertical + horizontal) | ✅ L4 | index only |
 | Custom layouts (carousel, radial) | ✅ | ❌ list only |
 | C++ window controller on UI thread | ✅ | ❌ JS |
 | Memory pressure adaptation | ✅ | ❌ |
+
+---
+
+---
+
+## ALWAYS READ: Layout-type-agnostic rendering checklist
+
+See **`docs/COLLECTIONVIEW_INTERNALS.md` → "Layout-Type-Agnostic Rendering Checklist"** before implementing or debugging any layout type. This section has the full list of sites in CollectionView.tsx that must stay generic, the grep commands to audit them, and the key format contract for each engine.
+
+Short version: C++ engines always compute correct positions. Rendering bugs are always in CollectionView.tsx wiring. Grep for `'item-`, `listDelegate`, `type === 'list'`, `getAttributes(` after any layout work.
+
+---
+
+## Resolved: Audit CollectionView.tsx for layout-type-agnostic key lookups
+
+**Status:** Partially fixed in `cur-section-footer-test` (session 2026-04-03).
+
+**What was broken:** `CollectionView.tsx` hardcoded the `item-` key prefix (ListLayout's default) in several places:
+- `renderCell` cacheKey derivation for headers/footers → `item-${sk}-header/footer`
+- `renderCell` attr lookup → `nativeMod.layoutCache.getAttributes('item-${sectionIndex}-header/footer')`
+- `stickyConfigMap` building → same hardcoded lookup
+- Boundary Y/X lookups for push-mode headers/footers → same
+
+These all silently returned null for non-list layouts (grid, masonry, flow), causing all grid headers/footers to render at y=0 and sticky behavior to break.
+
+**Fix applied:** All 5 lookup sites now call `effectiveLayout.attributesForSupplementary('header'/'footer', sectionIndex)` — the layout engine returns the correct key regardless of layout type.
+
+**Remaining audit:**
+- Search for any other `nativeMod.layoutCache.getAttributes('item-` calls in CollectionView.tsx that aren't routed through the layout engine's API
+- Once masonry and flow are implemented, run their demos with multi-section to verify no new hardcoding was introduced
+- Consider adding a lint rule or comment warning: "never hardcode layout-specific key prefixes; use `effectiveLayout.attributesFor*`"
+
+---
+
+## Key Architectural Finding: Two-Layer Identity (2026-04-05)
+
+**Root cause of decoration position corruption (confirmed):** Fabric's reconciler uses a "last index" optimization that leaves native subview ordering inconsistent with ShadowNode child ordering when new children are inserted before existing non-moved children. Index-based `positions[i] → subviews[i]` mapping was broken for decorations because SpatialIndex returns them in spatial order, which can interleave new seps before existing bg views.
+
+**Fix:** Universal tag-based lookup in `applyPositionsFromState`. The ShadowNode now records `childTags_[i] = children[i]->getTag()` alongside `correctedPositions_`, stores both in state, and the native view builds a `tag → UIView*` map to apply each position by identity rather than index. Covers ALL child types (items, decorations, supplementaries) — protects against any future layout that produces similar insert-before-non-moved patterns.
+
+**Key principle:** Two orthogonal identity layers:
+- **cacheKey** (stable string) — "What position should this element have?" — domain: C++ engine → cache → ShadowNode Phase 1
+- **Fabric tag** (int32) — "Which native view receives this position?" — domain: ShadowNode → state → native
+
+Full documentation in `docs/COLLECTIONVIEW_INTERNALS.md` → "Two-Layer Identity" section.
 
 ---
 

@@ -44,7 +44,7 @@ if (s.header?.sticky) → stickyHeaderFlatIndices.push(flatIdx)
 if (s.footer?.sticky) → stickyFooterFlatIndices.push(flatIdx)
 ```
 
-The resulting map `stickyConfigMap` maps flatIndex → `{ naturalY, boundaryY, sizeHeight, kind }`.
+The resulting map `stickyConfigMap` maps flatIndex → `{ naturalY, boundaryY, boundaryX, primaryAxisExtent, kind }`.
 
 ### Sticky wrapping (~lines 1530-1552)
 
@@ -52,18 +52,37 @@ At render time, if a cell's flat index is in `stickyConfigMap` AND it's not meas
 
 ```tsx
 <RNScrollCoordinatedView
-  behavior={stickyMode}       // ← 'push' or 'sticky'
+  behavior={stickyMode}                         // ← 'push' or 'sticky'
   naturalY={stickyConfig.naturalY}
   boundaryY={stickyConfig.boundaryY}
-  headerHeight={stickyConfig.sizeHeight}
+  boundaryX={stickyConfig.boundaryX}            // horizontal push boundary
+  headerHeight={stickyConfig.primaryAxisExtent} // primary-axis size (not always a height)
+  horizontal={isHoriz}
   enabled={true}
   type="supplementary"
-  kind={stickyConfig.kind}    // 'header' or 'footer'
+  kind={stickyConfig.kind}                      // 'header' or 'footer'
   ...
 >
   {cellContent}
 </RNScrollCoordinatedView>
 ```
+
+**`primaryAxisExtent`** (renamed from `sizeHeight`): the sticky view's size along the scroll axis. For vertical = `frame.height`; for horizontal = `frame.width`. This is passed as `headerHeight` to the native component where it drives push-boundary capping and footer trailing-edge positioning. Using the cross-axis dimension here causes all three symptoms: footer overlap on load, header un-sticking early, and wrong push boundary.
+
+**Horizontal supplementary `containerStyle`:** For horizontal headers/footers the C++ layout sets `frame.height = viewportHeight` (cross-axis). Without an explicit `height` in `containerStyle`, Yoga measures the cell content (~100px) and ShadowNode Phase 2 creates a delta that overwrites the cached cross-axis height. Fix: inject `height: attr.frame.height` for horizontal supplementary views in `renderCell`:
+
+```typescript
+const isHorizSupp = (effectiveLayout.horizontal ?? false)
+  && (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
+const containerStyle = [{
+  position: 'absolute' as const,
+  left, top,
+  ...(viewportWidth > 0 ? { width: cellWidth } : {}),
+  ...(isHorizSupp && attr ? { height: attr.frame.height } : {}),
+}];
+```
+
+Content inside uses `flex: 1` to fill the pinned frame.
 
 ### stickyMode prop
 
@@ -148,7 +167,7 @@ Decorations are layout-engine-owned visual entries with `isDecoration: true` in 
 - Cells: `zIndex: 1+` (from `LayoutAttributes.zIndex`)
 
 **Rendering:**
-- Separators: flat `<View>` with `backgroundColor` from `listDelegate.separator.color`. Width is `frame.width - insetLeading - insetTrailing`.
+- Separators: flat `<View>` with `backgroundColor` from `listDelegate.separator.color` (defaults to white). Width is `frame.width - insetLeading - insetTrailing`.
 - Section backgrounds: consumer-provided render function via `decorationRenderers.sectionBackground(sectionIndex, frame)` or legacy `renderSectionBackground` prop.
 - Custom decoration kinds: `decorationRenderers[decorationKind](sectionIndex, frame)` for extensibility.
 
@@ -157,6 +176,66 @@ Decorations are layout-engine-owned visual entries with `isDecoration: true` in 
 **applyMeasurements:** Decoration entries are skipped in the primary item-shift loop. A second pass updates bg frames using `entryShift` / `exitShift` per section (cumulative shift before/after each section's items). This preserves inset padding in the bg frame after Yoga measurement corrections.
 
 **MVC anchor exclusion:** `_snapshotAnchorLocked()` in `LayoutCache.cpp` skips entries where `isDecoration == true`. Without this, a section background (large frame, low Y) would be selected as the MVC anchor, causing incorrect scroll offset corrections on insert/delete.
+
+---
+
+## Two-Layer Identity: cacheKey + Fabric Tag
+
+**CRITICAL — read before touching decoration rendering, applyPositionsFromState, or any code that maps layout positions to native views.**
+
+The position pipeline uses two orthogonal identity systems, each covering a distinct domain.
+
+### Layer 1: cacheKey (stable string) — "What position?"
+
+```
+C++ layout engine  →  LayoutCache  →  SpatialIndex  →  JS getAttributesInRect
+                                                         →  React render (cacheKey prop)
+                                                            →  ShadowNode Phase 1 (cache lookup)
+```
+
+The layout engine writes `cache["decoration-0-sectionBackground"] = {x:8, y:44, w:377, h:588}`. The ShadowNode reads `cache[child.props.cacheKey]` to get the position for each child. This is a hashmap lookup — order-independent, deterministic, and entirely our code. The cacheKey is discarded after Phase 1 (it's not propagated to state).
+
+### Layer 2: Fabric tag (int32) — "Which native view?"
+
+```
+ShadowNode (children[i]->getTag())  →  state.childTags  →  native applyPositionsFromState
+                                                             (tag → UIView* lookup)
+```
+
+After Phase 1, `correctedPositions_[i]` holds the frame for `children[i]`. The child's Fabric tag is recorded in parallel: `childTags_[i] = children[i]->getTag()`. Both are stored in state. The native view builds a `tag → UIView*` map from `_contentView.subviews` and applies each position to the matching view by tag.
+
+### Why index-based mapping fails (confirmed in production logs, 2026-04)
+
+Fabric's reconciler uses a **"last index" optimization** to minimize move operations: when processing a new children list left-to-right, if an existing child's old index is ≥ the highest old-index seen so far (`lastIndex`), Fabric doesn't generate a MOVE for it — it stays at its current native position.
+
+This is correct for relative ordering, but breaks **absolute positioning** when new children are inserted before existing non-moved children. Example:
+
+```
+Old children: [bg0@native0, bg1@native1, bg2@native2, items...]
+Toggle separators ON:
+New ShadowNode: [sep0, bg0, sep1, bg1, sep2, bg2, items...]  ← seps interleaved
+
+Fabric sees bg0's old index (0) >= lastIndex → no move needed
+Fabric inserts sep0, sep1, sep2 starting at native index 1 (after bg0)
+
+Native result: [bg0@native0, sep0@native1, sep1@native2, ..., bg1@native23, ...]
+ShadowNode:    [sep0, bg0, sep1, ...]
+
+Index-based: positions[0] = sep0 frame → applied to native[0] = bg0 → WRONG
+Tag-based:   positions[0] has tag=sep0.tag → looks up sep0 by tag → CORRECT
+```
+
+Confirmed via runtime logs: `apply[0] tag=3942 target=(28.0,125.7,353.0,0.5) current=(12.0,56.0,369.0,1979.0)` — the bg view (current: section-spanning 1979px tall) received a separator's frame (0.5px tall).
+
+### Why decorations trigger this but items usually don't
+
+Decorations are returned by `SpatialIndex.getAttributesInRect()` in **spatial bucket order**, which can interleave new seps between existing bgs as new decorations are added. Items are rendered in **flat data order** (slice of `flatItems`), so new items don't interleave with existing items in the React tree.
+
+Future scenarios where items could also be affected: custom layouts with dynamic grouping, spatial-order rendering optimization, or section reordering. Using universal tag-based lookup protects against all of these.
+
+### Why tag identity is Fabric's most fundamental guarantee
+
+`children[i]->getTag()` and `UIView.tag` are set by the Fabric runtime when it creates the ShadowNode↔native view pair. They're guaranteed to match for the lifetime of that pair. This is the identity mechanism used by event dispatch, accessibility, and every Fabric component — if it broke, all of React Native would break, not just our component.
 
 ---
 
@@ -203,15 +282,18 @@ Exposed via `RiffHandle` (useImperativeHandle):
 const ref = useRef<RiffHandle<MyItem>>(null);
 <Riff handle={ref} ... />
 
-ref.current?.scrollToItem('sectionKey:itemId', { position: 'top' | 'center' | 'bottom' | 'nearest', animated: true });
-ref.current?.scrollToOffset({ x: 0, y: 400 }, { animated: true });
+ref.current?.scrollToItem('sectionKey:itemId', { position: 'top' | 'center' | 'bottom' | 'nearest' | 'start' | 'end', animated: true });
+ref.current?.scrollToOffset({ x: 400 });   // horizontal — y defaults to 0
+ref.current?.scrollToOffset({ y: 400 });   // vertical — x defaults to 0
 ```
 
 **Key format:** Same stable key used by the layout cache — `"sectionKey:itemId"` (e.g. `"cell-animation:s1-17"`). This is the concatenation of `SectionConfig.key` and the item key from `keyExtractor`. No index needed.
 
-**`contentHeightRef` pattern:** `useImperativeHandle` doesn't include `contentHeight` in its deps array — adding it would recreate the handle on every layout pass (O(cells) re-render). Instead, a `contentHeightRef` ref mirrors the `contentHeight` state value. The scroll offset clamping reads `contentHeightRef.current`, not the stale closure. Same pattern as `viewportHeightRef`.
+**Horizontal support:** `scrollToItem` detects `effectiveLayout.horizontal` and switches axis: reads `frame.x`/`frame.width`, uses `viewportWidthRef`/`layoutContentSizeRef` for clamping, calls `nativeMod.scrollTo(id, targetX, 0, animated)`. Position values `'start'`/`'end'` are direction-agnostic aliases for `'top'`/`'bottom'`. Both `x` and `y` in `ScrollToOffsetOptions` are optional (default 0).
 
-**Dispatch:** JS computes target offset → calls `nativeMod.scrollTo({ x, y, animated })` → C++ looks up the registered scroll handler for this `layoutCacheId` → calls `_scrollToX:y:animated:` on the `UIScrollView`.
+**`contentHeightRef` / `layoutContentSizeRef` pattern:** `useImperativeHandle` doesn't include these in its deps array — adding them would recreate the handle on every layout pass (O(cells) re-render). Refs mirror the live values and are read in the closure without triggering re-creation. `layoutContentSizeRef` is synced in the same `useLayoutEffect` that syncs `contentHeightRef`.
+
+**Dispatch:** JS computes target offset → calls `nativeMod.scrollTo(layoutCacheId, x, y, animated)` → C++ looks up the registered scroll handler for this `layoutCacheId` → calls `_scrollToX:y:animated:` on the `UIScrollView`.
 
 ---
 
@@ -227,6 +309,125 @@ ref.current?.scrollToOffset({ x: 0, y: 400 }, { animated: true });
 | `LayoutContext` | `src/types/protocol.ts` | — |
 | `ListLayoutDelegate` (incl. `separator`, `sectionBackground`, `sectionSpacing`) | `src/types/protocol.ts` | — |
 | `GridLayoutDelegate`, `MasonryLayoutDelegate`, `FlowLayoutDelegate` | `src/types/protocol.ts` | — |
+
+---
+
+## RULE: Stable Key Consistency (CRITICAL — read before touching ANY layout engine)
+
+**Every key used to store a LayoutAttributes entry in C++ LayoutCache MUST be the same key used to read it in TS, AND the same key passed as `cacheKey` to the ShadowNode.**
+
+There is exactly ONE key per item. It flows through the entire pipeline:
+
+```
+keyExtractor(item)
+  → layoutContext.sections[s].itemKeys[i]          (CollectionView.tsx)
+  → TS layout engine prepare() passes as keys[]    ({type}.ts)
+  → C++ stores LayoutAttributes under keys[i]      ({Type}Layout.cpp)
+  → TS attributesForItem() looks up using same key  ({type}.ts)
+  → renderCell derives cacheKey = same key          (CollectionView.tsx)
+  → ShadowNode receives cacheKey, writes measurement back under same key
+```
+
+**If any link in this chain uses a different key, the entire measurement feedback loop breaks silently.**
+
+### How to implement in every TS layout engine (`{type}.ts`)
+
+1. **Store section keys in `prepare()`:**
+   ```typescript
+   private lastSectionKeys: (readonly string[])[] = [];
+   prepare(context: LayoutContext): void {
+     this.lastSectionKeys = context.sections.map(s => s.itemKeys ?? []);
+     // ... build keys array: use sec.itemKeys when available, else positional fallback ...
+   }
+   ```
+
+2. **Use stored keys in `attributesForItem()`:**
+   ```typescript
+   attributesForItem(index: number, section: number): LayoutAttributes | null {
+     const sectionKeys = this.lastSectionKeys[section];
+     const key = sectionKeys?.[index] ?? `${this.type}-${section}-${index}`;
+     return nativeMod.layoutCache.getAttributes(key);
+   }
+   ```
+
+3. **Pass identity keys to C++ when available (never hardcode positional-only):**
+   ```typescript
+   const keys = sec.itemKeys
+     ? Array.from(sec.itemKeys)
+     : Array.from({ length: sec.itemCount }, (_, i) => `${type}-${sectionIndex}-${i}`);
+   ```
+
+4. **Default key format MUST be `{type}-{section}-{index}`** (section-aware). Single-section engines must still include section index 0. This matches CollectionView.tsx's cacheKey fallback: `${effectiveLayout.type}-${sk}-${ik}`.
+
+### Verification checklist per engine
+
+| Check | Command |
+|---|---|
+| C++ uses `keys[i]` when provided | grep for key construction in `{Type}Layout.cpp` |
+| TS `prepare()` stores `lastSectionKeys` | grep `lastSectionKeys` in `{type}.ts` |
+| TS `attributesForItem` uses stored keys | read the method — must NOT hardcode a key format |
+| TS passes `sec.itemKeys` to C++ | grep `itemKeys` in `{type}.ts` prepare() |
+| Default key format is `{type}-{section}-{index}` | check both C++ prefix and TS fallback |
+
+### Current compliance (2026-04-03)
+
+| Engine | Compliant? | Issue |
+|---|---|---|
+| List | YES | Reference implementation |
+| Grid | YES | `lastSectionKeys` added; identity keys flow end-to-end |
+| Masonry | NO | Keys are `masonry-{i}` (no section index), identity keys never passed — fix when multi-section masonry is implemented |
+| Flow | NO | Keys are `flow-{i}` (no section index), identity keys never passed — fix when multi-section flow is implemented |
+
+---
+
+## Layout-Type-Agnostic Rendering Checklist (PRIVATE — remove before release)
+
+CollectionView.tsx bridges LayoutCache → React elements. The C++ layout engines compute correct positions for every layout type. Rendering bugs arise when the bridge code assumes a specific layout's key format or delegate shape. This section catalogues every site that must be layout-generic.
+
+### Key format contract
+
+Each C++ layout engine writes LayoutAttributes with its own key prefix:
+- ListLayout: `item-{section}-{index}`, `item-{section}-header`, `item-{section}-footer`
+- GridLayout: `grid-{section}-{index}`, `grid-{section}-header`, `grid-{section}-footer`
+- MasonryLayout: `masonry-{section}-{index}`, etc.
+- When `keyExtractor` is provided: both engines use the stable key from `layoutContext.sections[s].itemKeys` (format: `sectionKey:itemId`)
+
+**Rule:** CollectionView.tsx must NEVER hardcode a key prefix. Always go through the layout protocol:
+- Item attrs: `effectiveLayout.attributesForItem(index, section)`
+- Supplementary attrs: `effectiveLayout.attributesForSupplementary('header'/'footer', section)`
+- Decoration attrs: `attributesForElements(rect).filter(a => a.isDecoration)` (already generic)
+
+### Sites that must be layout-generic
+
+| # | Location | What it does | How to keep generic |
+|---|---|---|---|
+| 1 | `flattenSections` → `keyToFlatIndex` | Maps cache key → flat index for render-range lookup | Use `attrToFlatIndex()` helper (section+index math) instead of key string lookup |
+| 2 | `renderCell` → cacheKey | Derives the React key / ShadowNode measurement key | Use `effectiveLayout.attributesForSupplementary(...).key` for headers/footers; `sectionKeys[ik]` or `${type}-${s}-${i}` fallback for items |
+| 3 | `renderCell` → attr lookup | Gets LayoutAttributes for positioning | Use `effectiveLayout.attributesForSupplementary(...)` for headers/footers |
+| 4 | `stickyConfigMap` → attr lookup | Gets natural position for sticky computation | Same as #3 |
+| 5 | Boundary Y/X lookups | Push-mode boundary for sticky headers/footers | Same as #3 |
+| 6 | Separator color / `hasSeparators` | Gates separator rendering and reads color | Read from `(effectiveLayout as any).delegate?.separator`, not `listDelegate` |
+| 7 | Stable key insertion block | Re-registers `sectionKey:itemId` in `keyToFlatIndex` | Unnecessary after `attrToFlatIndex()` — remove |
+
+### Grep audit commands
+
+Run these after adding any new layout type to find remaining assumptions:
+
+```bash
+# Hardcoded key prefixes
+rg "'item-" example/components/CollectionView.tsx
+rg '"item-' example/components/CollectionView.tsx
+
+# List-specific delegate access
+rg 'listDelegate' example/components/CollectionView.tsx
+
+# Layout type checks
+rg "type === 'list'" example/components/CollectionView.tsx
+rg "type !== 'list'" example/components/CollectionView.tsx
+
+# Direct cache access bypassing layout protocol
+rg 'getAttributes\(' example/components/CollectionView.tsx
+```
 
 ---
 

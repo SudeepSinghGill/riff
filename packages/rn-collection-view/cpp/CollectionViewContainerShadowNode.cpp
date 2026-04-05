@@ -118,6 +118,8 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
 
   correctedPositions_.clear();
   correctedPositions_.reserve(children.size() * 4);
+  childTags_.clear();
+  childTags_.reserve(children.size());
 
   for (size_t i = 0; i < children.size(); ++i) {
     // Read the cache key from the child's props (same logic as Phase 2).
@@ -190,9 +192,16 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
     correctedPositions_.push_back(effectiveY);
     correctedPositions_.push_back(effectiveWidth);
     correctedPositions_.push_back(effectiveHeight);
+    // Record Fabric tag so native view can look up the correct subview by identity
+    // rather than by index. Fabric's reconciler "last index" optimization can leave
+    // native subview order inconsistent with ShadowNode child order (confirmed bug
+    // when decorations are inserted before existing non-moved views). Tag identity
+    // is Fabric's core contract — covers ALL child types universally.
+    childTags_.push_back(static_cast<int32_t>(children[i]->getTag()));
 
-    // Log first 5 children: cache position vs what we'll store
-    if (i < 8 || propKind == "header" || key.find("header") != std::string::npos) {
+    // Log first 8 children + ALL decoration children (to diagnose bg origin corruption)
+    if (i < 8 || propKind == "header" || key.find("header") != std::string::npos ||
+        propType == "decoration") {
       const auto& childMetrics = children[i]->getLayoutMetrics();
       RNCV_SN_LOG("  child[%zu] component=%s type=%s kind=%s index=%d propCacheKey=%s fallbackKey=%s finalKey=%s cacheHit=%s cache=(%.1f,%.1f,%.1f,%.1f) yoga=(%.1f,%.1f,%.1f,%.1f)",
                   i, component.c_str(), propType.c_str(), propKind.c_str(), propIndex,
@@ -263,9 +272,15 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
       }
     }
 
-    // TODO: Check width delta for Flow layout (ContentDimension::Both/Width).
-    // For now, width deltas are deferred — flow layout handles them via
-    // applyMeasurements full re-layout.
+    // Check width delta (for Width — horizontal list — and Both — flow layout).
+    if (contentDim == rncv::ContentDimension::Width ||
+        contentDim == rncv::ContentDimension::Both) {
+      Float cachedWidth = correctedPositions_[i * 4 + 2];
+      if (yogaWidth > 0 && std::abs(yogaWidth - cachedWidth) > 0.5f) {
+        deltas.push_back({key, dataIndex, cachedWidth, yogaWidth});
+        correctedPositions_[i * 4 + 2] = yogaWidth;
+      }
+    }
   }
 
   // ── Phase 3: Apply deltas via layout engine ────────────────────────────
@@ -317,7 +332,8 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
         
         // No legacy key remap: preserve canonical cache keys end-to-end.
         const std::string keyBeforeRemap = key;
-        if (i < 8 || kind == "header" || key.find("header") != std::string::npos) {
+        if (i < 8 || kind == "header" || key.find("header") != std::string::npos ||
+            type == "decoration") {
           RNCV_SN_LOG("  reread[%zu] type=%s kind=%s index=%d keyBefore=%s keyAfter=%s",
                       i, type.c_str(), kind.c_str(), dataIndex, keyBeforeRemap.c_str(), key.c_str());
         }
@@ -328,7 +344,8 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
           correctedPositions_[i * 4 + 1] = static_cast<Float>(cached->frame.y);
           correctedPositions_[i * 4 + 2] = static_cast<Float>(cached->frame.width);
           correctedPositions_[i * 4 + 3] = static_cast<Float>(cached->frame.height);
-          if (i < 8 || kind == "header" || key.find("header") != std::string::npos) {
+          if (i < 8 || kind == "header" || key.find("header") != std::string::npos ||
+              type == "decoration") {
             RNCV_SN_LOG("  rereadHit[%zu] key=%s frame=(%.1f,%.1f,%.1f,%.1f)",
                         i, key.c_str(), cached->frame.x, cached->frame.y,
                         cached->frame.width, cached->frame.height);
@@ -351,19 +368,26 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
     }
   }
 
-  // ── Phase 4: Compute content height from cache ─────────────────────────
+  // ── Phase 4: Compute content size from cache ──────────────────────────────
+  // For vertical (Height): contentSize = {containerWidth, correctedContentHeight_}.
+  // For horizontal (Width): contentSize = {correctedContentWidth_, containerHeight}.
 
   if (cache) {
-    auto contentSize = cache->getTotalContentSize();
-    correctedContentHeight_ = static_cast<Float>(contentSize.height);
+    auto cs = cache->getTotalContentSize();
+    correctedContentHeight_ = static_cast<Float>(cs.height);
+    correctedContentWidth_  = static_cast<Float>(cs.width);
   } else {
     // Fallback: compute from positions.
+    Float maxRight  = 0;
     Float maxBottom = 0;
     for (size_t i = 0; i < children.size(); ++i) {
+      Float right  = correctedPositions_[i * 4 + 0] + correctedPositions_[i * 4 + 2];
       Float bottom = correctedPositions_[i * 4 + 1] + correctedPositions_[i * 4 + 3];
+      if (right  > maxRight)  maxRight  = right;
       if (bottom > maxBottom) maxBottom = bottom;
     }
     correctedContentHeight_ = maxBottom;
+    correctedContentWidth_  = maxRight;
   }
 }
 
@@ -371,8 +395,18 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
 void CollectionViewContainerShadowNode::updateStateIfNeeded() {
   auto state = getStateData();
 
-  const auto containerWidth = getLayoutMetrics().frame.size.width;
-  auto contentSize = Size{containerWidth, correctedContentHeight_};
+  const auto& props =
+      *std::static_pointer_cast<const RNCollectionViewContainerProps>(getProps());
+  const auto containerWidth  = getLayoutMetrics().frame.size.width;
+  const auto containerHeight = getLayoutMetrics().frame.size.height;
+
+  // For horizontal layouts, content scrolls along X: width = computed, height = max item height.
+  // For vertical layouts, content scrolls along Y: width = viewport, height = computed.
+  // Both dimensions come from the LayoutCache for horizontal (content-determined on both axes).
+  const bool isHorizontal = props.horizontal;
+  auto contentSize = isHorizontal
+      ? Size{correctedContentWidth_, correctedContentHeight_}
+      : Size{containerWidth, correctedContentHeight_};
 
   // Compute content bounding rect from corrected positions.
   auto contentBoundingRect = Rect{};
@@ -403,6 +437,7 @@ void CollectionViewContainerShadowNode::updateStateIfNeeded() {
     // The ShadowNode just forwards positions; the native view reads the
     // pending correction directly from LayoutCache in updateState:.
     state.positions = correctedPositions_;
+    state.childTags = childTags_;
     state.layoutRevision++;
     changed = true;
   }

@@ -4,6 +4,22 @@
 #include <limits>
 #include <stdexcept>
 
+#ifndef RNCV_ENABLE_NATIVE_LOGS
+#define RNCV_ENABLE_NATIVE_LOGS 0
+#endif
+
+#if DEBUG && RNCV_ENABLE_NATIVE_LOGS
+  #ifdef __APPLE__
+    #include <os/log.h>
+    #define RNCV_MVC_LOG(fmt, ...) os_log_info(os_log_create("com.rncv", "mvc"), "[RNCV-MVC] " fmt, ##__VA_ARGS__)
+  #else
+    #include <android/log.h>
+    #define RNCV_MVC_LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "RNCV-MVC", fmt, ##__VA_ARGS__)
+  #endif
+#else
+  #define RNCV_MVC_LOG(fmt, ...) ((void)0)
+#endif
+
 namespace rncv {
 
 using namespace facebook;
@@ -156,34 +172,41 @@ Point LayoutCache::getScrollOffset() const {
 
 void LayoutCache::_snapshotAnchorLocked() {
   // Caller must already hold _mutex.
-  const double scrollY = _scrollOffset.y;
+  // For vertical: anchor = smallest Y at-or-below scrollOffset.y.
+  // For horizontal: anchor = smallest X at-or-below scrollOffset.x.
+  const double scrollPrimary = _horizontal ? _scrollOffset.x : _scrollOffset.y;
   std::string bestKey;
-  double bestY = std::numeric_limits<double>::max();
+  double bestPrimary = std::numeric_limits<double>::max();
   bool found = false;
   for (const auto& [key, attrs] : _map) {
     if (attrs.isDecoration) continue;
-    const double y = attrs.frame.y;
-    if (y >= scrollY && y < bestY) {
-      bestKey = key; bestY = y; found = true;
+    const double pos = _horizontal ? attrs.frame.x : attrs.frame.y;
+    if (pos >= scrollPrimary && pos < bestPrimary) {
+      bestKey = key; bestPrimary = pos; found = true;
     }
   }
   if (!found) {
-    // Fallback: topmost item partially visible (bottom > scrollY)
+    // Fallback: first item partially visible (trailing edge > scroll position)
     for (const auto& [key, attrs] : _map) {
       if (attrs.isDecoration) continue;
-      const double y = attrs.frame.y;
-      const double bottom = y + attrs.frame.height;
-      if (bottom > scrollY && y < bestY) {
-        bestKey = key; bestY = y; found = true;
+      const double pos = _horizontal ? attrs.frame.x : attrs.frame.y;
+      const double trailing = pos + (_horizontal ? attrs.frame.width : attrs.frame.height);
+      if (trailing > scrollPrimary && pos < bestPrimary) {
+        bestKey = key; bestPrimary = pos; found = true;
       }
     }
   }
   if (found) {
     _anchorKey = std::move(bestKey);
-    _anchorY   = bestY;
+    _anchorY   = bestPrimary;  // always stored in _anchorY for simplicity
+    _anchorX   = bestPrimary;  // same value; caller uses _horizontal to pick
     _hasAnchor = true;
+    RNCV_MVC_LOG("snapshotAnchor: key=%s oldY=%.1f scrollOffset=%.1f",
+                 _anchorKey.c_str(), bestPrimary, scrollPrimary);
   } else {
     _hasAnchor = false;
+    RNCV_MVC_LOG("snapshotAnchor: no anchor found (scrollOffset=%.1f mapSize=%zu)",
+                 scrollPrimary, _map.size());
   }
 }
 
@@ -195,6 +218,11 @@ void LayoutCache::snapshotAnchor() {
 void LayoutCache::setMVCEnabled(bool enabled) {
   std::lock_guard<std::mutex> lock(_mutex);
   _mvcEnabled = enabled;
+}
+
+void LayoutCache::setHorizontal(bool horizontal) {
+  std::lock_guard<std::mutex> lock(_mutex);
+  _horizontal = horizontal;
 }
 
 void LayoutCache::snapshotAnchorIfNeeded() {
@@ -213,7 +241,11 @@ double LayoutCache::computeCorrection() {
     // Anchor was deleted — no correction
     return 0;
   }
-  const double correction = it->second.frame.y - _anchorY;
+  const double newPos = _horizontal ? it->second.frame.x : it->second.frame.y;
+  const double oldPos = _horizontal ? _anchorX : _anchorY;
+  const double correction = newPos - oldPos;
+  RNCV_MVC_LOG("computeCorrection: key=%s oldY=%.1f newY=%.1f correction=%.1f",
+               _anchorKey.c_str(), oldPos, newPos, correction);
   _pendingCorrectionY   = correction;
   _hasPendingCorrection = true;
   return correction;
@@ -526,6 +558,17 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
       [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
         if (count > 0) {
           setMVCEnabled(args[0].getBool());
+        }
+        return Value::undefined();
+      }));
+
+  // setHorizontal(bool) → undefined
+  target.setProperty(rt, "setHorizontal",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "setHorizontal"), 1,
+      [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count > 0) {
+          setHorizontal(args[0].isBool() ? args[0].getBool() : false);
         }
         return Value::undefined();
       }));

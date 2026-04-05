@@ -8,6 +8,24 @@
  * not a bulk array. The factory calls it only for items in the compute range,
  * then passes a slice to C++. This enables O(window) computation per frame
  * during container resize.
+ *
+ * ─── STABLE KEY RULE (enforce in every layout engine) ────────────────────────
+ * One key per item, used identically in ALL three places:
+ *   1. C++ LayoutCache write  — uses keys[i] when provided, else "masonry-{section}-{index}"
+ *   2. TS attributesForItem() — reads from lastSectionKeys[section][index] (same key)
+ *   3. CollectionView.tsx cacheKey — derived from layoutContext.sections[s].itemKeys[i]
+ *
+ * Identity keys from keyExtractor flow as:
+ *   keyExtractor → layoutContext.sections[s].itemKeys → prepare() keys[] → C++ → TS read
+ *
+ * KNOWN VIOLATIONS IN THIS FILE (TODO — fix before multi-section masonry):
+ *   - C++ key format is "masonry-{i}" (no section index) — must become "masonry-{s}-{i}"
+ *   - TS `prepare()` hardcodes keys[i]="masonry-{i}", never passes sec.itemKeys
+ *   - attributesForItem() does not use lastSectionKeys
+ *
+ * Violation = silent rendering failures (wrong width, lost measurements, broken sticky).
+ * See docs/COLLECTIONVIEW_INTERNALS.md "RULE: Stable Key Consistency" for full details.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import type {

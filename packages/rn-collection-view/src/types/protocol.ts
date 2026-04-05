@@ -32,6 +32,13 @@ export interface CollectionViewLayout {
   readonly type: string;
 
   /**
+   * When true, the layout scrolls horizontally (primary axis = X).
+   * CollectionView uses this to orient its scroll handler and render window query.
+   * Defaults to false (vertical scroll).
+   */
+  readonly horizontal?: boolean;
+
+  /**
    * Called before any queries. Compute and cache positions.
    * For C++ layouts: calls into JSI. For TS layouts: runs in JS.
    */
@@ -147,8 +154,25 @@ export interface InvalidationScope {
  * Header/footer sizing follows the same pattern as item sizing.
  */
 export interface ListLayoutDelegate {
+  /**
+   * When true, items flow horizontally (primary axis = X).
+   * `itemHeight` is the estimated item width (primary axis). Yoga measures final width.
+   * `estimatedCrossAxisHeight` is the estimated item height (cross axis). Yoga measures final height.
+   * The list's cross-axis height = max(all measured item heights) + vertical insets.
+   */
+  horizontal?: boolean;
+
+  /**
+   * Initial estimate for item height in horizontal mode (cross-axis size).
+   * Yoga measures the actual height after render. The list adjusts its height
+   * to the max of all measured item heights. Default: 200.
+   * Has no effect in vertical mode.
+   */
+  estimatedCrossAxisHeight?: number;
+
   // ── Item sizing (one of these) ──
-  /** Fixed height for all items, or a function of container width. Fast path — no measurement needed. */
+  /** Fixed height for all items, or a function of container width. Fast path — no measurement needed.
+   *  In horizontal mode: item size along the scroll axis (X). */
   itemHeight?: number | ((containerWidth: number) => number);
   /** Estimated height for variable-height items. Items will be measured after render. */
   estimatedItemHeight?: number;
@@ -252,7 +276,30 @@ export interface GridLayoutDelegate {
   columnSpacing?: number;
   rowSpacing?: number;
 
+  /**
+   * Vertical gap inserted after each section's footer (or last row if no footer),
+   * before the next section's header. Analogous to NSCollectionLayoutSection.interSectionSpacing.
+   */
+  sectionSpacing?: number;
+
   stickyMode?: StickyMode;
+
+  // ── Decoration views ──
+  /** Row separators between rows in the grid. */
+  separator?: {
+    color?: string;
+    height?: number;
+    insetLeading?: number;
+    insetTrailing?: number;
+  };
+  /** When true, the layout engine emits a sectionBackground decoration attribute
+   *  covering the items area. Render via decorationRenderers on the component. */
+  sectionBackground?: boolean;
+
+  // Future: rowAlignment?: 'top' | 'center' | 'bottom'
+  // Alignment of shorter items within a row when heightForItem produces uneven heights.
+  // 'top' (default) aligns all items to the row's top Y. 'center'/'bottom' offset
+  // shorter items downward. See PLAN.md F3.1 for implementation details.
 }
 
 /**

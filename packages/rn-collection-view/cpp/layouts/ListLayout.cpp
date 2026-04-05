@@ -121,12 +121,189 @@ bool ListLayout::applyMeasurements(
     LayoutCache& cache) {
   if (deltas.empty()) return true;
 
+  if (_horizontal) {
+    // ── Horizontal path ──────────────────────────────────────────────────────
+    //
+    // ShadowNode sends ContentDimension::Both deltas:
+    //   Width deltas  → primary axis → cascade X positions (aggregateShift)
+    //   Height deltas → cross axis   → update frame.height per item; NO X cascade
+    //
+    // After processing, recompute per-section max cross height and update
+    // supplementary views (headers, footers) and decorations (backgrounds,
+    // separators) to match.
+
+    // Build lookup maps for both delta types.
+    // The ShadowNode sends one delta per changed dimension for each key:
+    //   height delta: d.oldValue ≈ cached frame.height
+    //   width delta:  d.oldValue ≈ cached frame.width
+    // We use oldValue to identify which dimension each delta applies to.
+    std::unordered_map<std::string, double> newWidths;   // primary axis deltas
+    std::unordered_map<std::string, double> newCrossH;   // cross axis deltas
+    for (const auto& d : deltas) {
+      auto existing = cache.getAttributes(d.key);
+      if (!existing) continue;
+      const bool matchesHeight = std::abs(existing->frame.height - d.oldValue) < 1.0;
+      const bool matchesWidth  = std::abs(existing->frame.width  - d.oldValue) < 1.0;
+      if (matchesHeight && !matchesWidth) {
+        newCrossH[d.key] = d.newValue;
+      } else if (matchesWidth && !matchesHeight) {
+        newWidths[d.key] = d.newValue;
+      } else if (matchesHeight && matchesWidth) {
+        // Both axes have the same cached value — use newValue to guess dimension.
+        // Primary axis (width) changes affect scroll extent; cross (height) affects list height.
+        // Conservative: emit to both maps.
+        newWidths[d.key] = d.newValue;
+        newCrossH[d.key] = d.newValue;
+      }
+      // If neither matches, delta may be stale — skip.
+    }
+
+    auto all = cache.getAll();
+    if (all.empty()) return true;
+
+    // Sort by X for primary-axis cascade.
+    std::sort(all.begin(), all.end(), [](const LayoutAttributes& a, const LayoutAttributes& b) {
+      return a.frame.x < b.frame.x;
+    });
+
+    double aggregateShift = 0.0;
+    struct SectionShifts { double entryShift = 0; double exitShift = 0; bool entered = false; };
+    std::unordered_map<int, SectionShifts> sectionShifts;
+
+    // Pass 1: Primary-axis cascade (width deltas → X shifts) + height updates.
+    for (auto& attr : all) {
+      if (attr.isDecoration && attr.decorationKind == "sectionBackground") continue;
+      bool changed = false;
+
+      // Apply accumulated primary-axis shift.
+      if (aggregateShift != 0.0) {
+        attr.frame.x += aggregateShift;
+        changed = true;
+      }
+
+      if (attr.isDecoration) {
+        // Separators: shift X only.
+        if (changed) cache.setAttributes(attr);
+        continue;
+      }
+
+      if (!attr.isSupplementary) {
+        auto& ss = sectionShifts[attr.section];
+        if (!ss.entered) { ss.entryShift = aggregateShift; ss.entered = true; }
+      }
+
+      // Width delta → primary axis cascade.
+      auto wit = newWidths.find(attr.key);
+      if (wit != newWidths.end()) {
+        const double sizeDiff = wit->second - attr.frame.width;
+        if (std::abs(sizeDiff) > 0.01) {
+          attr.frame.width = wit->second;
+          aggregateShift += sizeDiff;
+          changed = true;
+        }
+      }
+
+      // Height delta → update cross-axis size (no cascade).
+      auto hit = newCrossH.find(attr.key);
+      if (hit != newCrossH.end()) {
+        if (std::abs(hit->second - attr.frame.height) > 0.01) {
+          attr.frame.height = hit->second;
+          changed = true;
+        }
+      }
+
+      if ((newWidths.count(attr.key) || newCrossH.count(attr.key)) &&
+          attr.sizingState != SizingState::Measured) {
+        attr.sizingState = SizingState::Measured;
+        changed = true;
+      }
+
+      if (!attr.isSupplementary) {
+        sectionShifts[attr.section].exitShift = aggregateShift;
+      }
+
+      if (changed) cache.setAttributes(attr);
+    }
+
+    // Pass 2: Update section bg X positions from primary-axis shifts.
+    for (auto& attr : all) {
+      if (!attr.isDecoration || attr.decorationKind != "sectionBackground") continue;
+      auto sit = sectionShifts.find(attr.section);
+      if (sit == sectionShifts.end() || !sit->second.entered) continue;
+      const double shiftX   = sit->second.entryShift;
+      const double widthDlt = sit->second.exitShift - sit->second.entryShift;
+      if (std::abs(shiftX) > 0.01 || std::abs(widthDlt) > 0.01) {
+        attr.frame.x     += shiftX;
+        attr.frame.width += widthDlt;
+        cache.setAttributes(attr);
+      }
+    }
+
+    // Pass 3: Recompute per-section max cross height from all items (including
+    // items that were just updated AND items measured in prior render passes).
+    // Then update headers, footers, section backgrounds, and separators.
+    if (!newCrossH.empty()) {
+      std::unordered_map<int, double> sectionMaxH;  // section → max item height
+      auto allNow = cache.getAll();
+      for (const auto& attr : allNow) {
+        if (attr.isDecoration || attr.isSupplementary) continue;
+        auto& mx = sectionMaxH[attr.section];
+        mx = std::max(mx, attr.frame.height);
+      }
+
+      // Update supplementaries and decorations.
+      // We need section insets to compute header/footer height spans.
+      // Read crossStart (sectionInsetTop) from any item in the section.
+      std::unordered_map<int, double> sectionCrossStart;
+      for (const auto& attr : allNow) {
+        if (attr.isDecoration || attr.isSupplementary) continue;
+        if (!sectionCrossStart.count(attr.section)) {
+          sectionCrossStart[attr.section] = attr.frame.y;  // crossStart = y position of items
+        }
+      }
+
+      for (auto& attr : allNow) {
+        if (!attr.isDecoration && !attr.isSupplementary) continue;
+        auto maxIt = sectionMaxH.find(attr.section);
+        if (maxIt == sectionMaxH.end()) continue;
+        const double maxH      = maxIt->second;
+        const double crossStart = sectionCrossStart.count(attr.section) ? sectionCrossStart[attr.section] : 0;
+
+        bool changed = false;
+        if (attr.isSupplementary) {
+          // Horizontal: supplementary views span the full viewport height.
+          // Vertical: supplementary views span crossStart + maxH + crossStart (symmetric insets).
+          const double hdrH = (_horizontal && _viewportHeight > 0)
+              ? _viewportHeight
+              : crossStart + maxH + crossStart;
+          if (std::abs(attr.frame.height - hdrH) > 0.01) {
+            attr.frame.height = hdrH;
+            changed = true;
+          }
+        } else if (attr.isDecoration && attr.decorationKind == "sectionBackground") {
+          if (std::abs(attr.frame.height - maxH) > 0.01) {
+            attr.frame.height = maxH;
+            changed = true;
+          }
+        } else if (attr.isDecoration && attr.decorationKind == "separator") {
+          if (std::abs(attr.frame.height - maxH) > 0.01) {
+            attr.frame.height = maxH;
+            changed = true;
+          }
+        }
+        if (changed) cache.setAttributes(attr);
+      }
+    }
+
+    return true;
+  }
+
+  // ── Vertical path (unchanged) ────────────────────────────────────────────────
+  //
   // For a 1D list layout, changing item heights simply shifts everything below them.
   // Instead of recalculating Y from scratch (which loses section insets and headers),
   // we accumulate a rolling `aggregateShift` and apply it sequentially.
 
-  // 1. Convert deltas to a fast lookup map: key -> delta height.
-  // d.newValue is the new height. We need to know (new - old) later.
   std::unordered_map<std::string, double> newHeights;
   for (const auto& d : deltas) {
     newHeights[d.key] = d.newValue;
@@ -135,39 +312,30 @@ bool ListLayout::applyMeasurements(
   auto all = cache.getAll();
   if (all.empty()) return true;
 
-  // Sort by strictly increasing Y to process top-to-bottom.
   std::sort(all.begin(), all.end(), [](const LayoutAttributes& a, const LayoutAttributes& b) {
     return a.frame.y < b.frame.y;
   });
 
   double aggregateShift = 0.0;
 
-  // Track per-section aggregateShift at entry (first item) and exit (last item).
-  // Used in the second pass to shift section backgrounds while preserving their
-  // original frame structure (inset gaps, header/footer padding).
   struct SectionShifts { double entryShift = 0; double exitShift = 0; bool entered = false; };
   std::unordered_map<int, SectionShifts> sectionShifts;
 
   for (auto& attr : all) {
-    // Section backgrounds are updated in a second pass below.
     if (attr.isDecoration && attr.decorationKind == "sectionBackground") continue;
 
     bool changed = false;
 
-    // Apply any accumulated shift from items above us
     if (aggregateShift != 0.0) {
       attr.frame.y += aggregateShift;
       changed = true;
     }
 
     if (attr.isDecoration) {
-      // Separator — just shifts, no height change.
       if (changed) cache.setAttributes(attr);
       continue;
     }
 
-    // Track entry shift for section background: shift BEFORE this item's own delta.
-    // Only track items (not supplementaries) — bg frame is anchored to items area start.
     if (!attr.isSupplementary) {
       auto& ss = sectionShifts[attr.section];
       if (!ss.entered) {
@@ -176,15 +344,13 @@ bool ListLayout::applyMeasurements(
       }
     }
 
-    // If this item itself has a new measurement, update it and add to rolling shift
     auto it = newHeights.find(attr.key);
     if (it != newHeights.end()) {
-      double newHeight = it->second;
-      double heightDiff = newHeight - attr.frame.height;
-
-      if (heightDiff != 0.0) {
-        attr.frame.height = newHeight;
-        aggregateShift += heightDiff;
+      double newSz    = it->second;
+      double sizeDiff = newSz - attr.frame.height;
+      if (sizeDiff != 0.0) {
+        attr.frame.height = newSz;
+        aggregateShift += sizeDiff;
         changed = true;
       }
       if (attr.sizingState != SizingState::Measured) {
@@ -193,29 +359,23 @@ bool ListLayout::applyMeasurements(
       }
     }
 
-    // Track exit shift: shift AFTER this item's own delta.
     if (!attr.isSupplementary) {
       sectionShifts[attr.section].exitShift = aggregateShift;
     }
 
-    // Write back to cache if modified
-    if (changed) {
-      cache.setAttributes(attr);
-    }
+    if (changed) cache.setAttributes(attr);
   }
 
-  // Second pass: adjust section background frames using per-section shift deltas.
-  // This preserves the original bg frame (inset gaps, header/footer padding) and
-  // only applies the effect of measurement changes.
+  // Second pass: adjust section background frames.
   for (auto& attr : all) {
     if (!attr.isDecoration || attr.decorationKind != "sectionBackground") continue;
     auto sit = sectionShifts.find(attr.section);
     if (sit == sectionShifts.end() || !sit->second.entered) continue;
-    const double shiftY      = sit->second.entryShift;
-    const double heightDelta = sit->second.exitShift - sit->second.entryShift;
-    if (std::abs(shiftY) > 0.01 || std::abs(heightDelta) > 0.01) {
-      attr.frame.y      += shiftY;
-      attr.frame.height += heightDelta;
+    const double shiftPrimary = sit->second.entryShift;
+    const double sizeDelta    = sit->second.exitShift - sit->second.entryShift;
+    if (std::abs(shiftPrimary) > 0.01 || std::abs(sizeDelta) > 0.01) {
+      attr.frame.y      += shiftPrimary;
+      attr.frame.height += sizeDelta;
       cache.setAttributes(attr);
     }
   }
@@ -228,44 +388,65 @@ bool ListLayout::applyMeasurements(
 void ListLayout::invalidateFrom(
     const std::string& startKey,
     const ListLayoutParams& p) {
-  // Find the starting item's current Y so we can reflow from there.
+  // Find the starting item's current position so we can reflow from there.
   auto startAttrs = _cache->getAttributes(startKey);
   if (!startAttrs) return;
 
-  const double contentWidth = p.viewportWidth
-                              - p.sectionInsetLeft
-                              - p.sectionInsetRight;
-  const std::string prefix  = p.keyPrefix.empty()
-                              ? "item-" + std::to_string(p.section) + "-"
-                              : p.keyPrefix;
+  const bool H = _horizontal;
+  const std::string prefix = p.keyPrefix.empty()
+                             ? "item-" + std::to_string(p.section) + "-"
+                             : p.keyPrefix;
 
-  // Determine start index from the stored attrs.
   const int startIndex = startAttrs->index;
 
-  _scratch.section     = p.section;
-  _scratch.frame.x     = p.sectionInsetLeft;
-  _scratch.frame.width = contentWidth;
+  _scratch.section = p.section;
 
-  double y = startAttrs->frame.y;
+  if (H) {
+    // Horizontal: primary axis = X. Reflow X positions from startKey onward.
+    // Cross axis (height) for each item is read from cache (preserved from Yoga measurement).
+    const double crossStart = p.sectionInsetTop;
+    _scratch.frame.y = crossStart;
 
-  // invalidateFrom always reads heights from the cache — the cache is the
-  // single source of truth. The caller updates the corrected item's attrs
-  // (via layoutCache.setAttributes) BEFORE calling invalidateFrom, so the
-  // new height is already present in the cache at startKey.
-  for (int i = startIndex; i < p.itemCount; ++i) {
-    const std::string key = itemKey(p, i, prefix);
+    double x = startAttrs->frame.x;
 
-    auto existing = _cache->getAttributes(key);
-    const double h = existing ? existing->frame.height : p.itemHeight;
-    _scratch.sizingState  = existing ? existing->sizingState
-                                     : SizingState::Placeholder;
+    for (int i = startIndex; i < p.itemCount; ++i) {
+      const std::string key = itemKey(p, i, prefix);
+      auto existing = _cache->getAttributes(key);
+      const double w    = existing ? existing->frame.width  : p.itemHeight;  // itemHeight = primary estimate
+      const double h    = existing ? existing->frame.height : p.estimatedCrossAxisHeight;
+      _scratch.sizingState  = existing ? existing->sizingState : SizingState::Placeholder;
+      _scratch.key          = key;
+      _scratch.index        = i;
+      _scratch.frame.x      = x;
+      _scratch.frame.width  = w;
+      _scratch.frame.height = h;
+      _cache->setAttributes(_scratch);
+      x += w + p.itemSpacing;
+    }
+  } else {
+    // Vertical: primary axis = Y. Reflow Y positions from startKey onward.
+    // invalidateFrom always reads heights from the cache — the cache is the
+    // single source of truth. The caller updates the corrected item's attrs
+    // (via layoutCache.setAttributes) BEFORE calling invalidateFrom, so the
+    // new height is already present in the cache at startKey.
+    const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
+    _scratch.frame.x     = p.sectionInsetLeft;
+    _scratch.frame.width = contentWidth;
 
-    _scratch.key          = key;
-    _scratch.index        = i;
-    _scratch.frame.y      = y;
-    _scratch.frame.height = h;
-    _cache->setAttributes(_scratch);
-    y += h + p.itemSpacing;
+    double y = startAttrs->frame.y;
+
+    for (int i = startIndex; i < p.itemCount; ++i) {
+      const std::string key = itemKey(p, i, prefix);
+      auto existing = _cache->getAttributes(key);
+      const double h = existing ? existing->frame.height : p.itemHeight;
+      _scratch.sizingState  = existing ? existing->sizingState : SizingState::Placeholder;
+      _scratch.key          = key;
+      _scratch.index        = i;
+      _scratch.frame.y      = y;
+      _scratch.frame.height = h;
+      _cache->setAttributes(_scratch);
+      y += h + p.itemSpacing;
+    }
   }
 }
 
@@ -308,6 +489,9 @@ ListLayoutParams ListLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.separatorInsetLeading   = dbl(rt, obj, "separatorInsetLeading");
   p.separatorInsetTrailing  = dbl(rt, obj, "separatorInsetTrailing");
   p.sectionSpacing          = dbl(rt, obj, "sectionSpacing");
+  p.horizontal               = bln(rt, obj, "horizontal");
+  p.viewportHeight           = dbl(rt, obj, "viewportHeight");
+  p.estimatedCrossAxisHeight = dbl(rt, obj, "estimatedCrossAxisHeight", 200.0);
 
   // Optional per-item heights array (estimated mode)
   Value heights = obj.getProperty(rt, "itemHeights");
@@ -354,255 +538,189 @@ std::vector<ListLayoutParams> ListLayout::sectionsFromJSI(Runtime& rt, const Arr
 
 double ListLayout::computeSection(const ListLayoutParams& p,
                                    int sectionIndex,
-                                   double startY) {
+                                   double startPrimary) {
+  const bool H = p.horizontal;
   const std::string prefix = p.keyPrefix.empty()
       ? "item-" + std::to_string(sectionIndex) + "-"
       : p.keyPrefix;
-  const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
-  const double sectionStartY = startY; // saved for section background frame
-  double bgStartY = startY; // updated to after-header once header is emitted
 
-  double y = startY;
+  // ── Axis setup ────────────────────────────────────────────────────────────
+  // For vertical (H=false): primary axis = Y, cross axis = X.
+  //   crossContent = viewport width minus left/right insets (item fill width)
+  //   crossStart   = sectionInsetLeft (item x position)
+  //   primaryInsetStart = sectionInsetTop
+  //   primaryInsetEnd   = sectionInsetBottom
+  //
+  // For horizontal (H=true): primary axis = X, cross axis = Y.
+  //   crossStart   = sectionInsetTop (item y position)
+  //   primaryInsetStart = sectionInsetLeft
+  //   primaryInsetEnd   = sectionInsetRight
+  //   Item heights = estimatedCrossAxisHeight (Yoga measures final height; applyMeasurements corrects).
+  //   Headers/footers height = estimatedCrossAxisHeight + insets (applyMeasurements corrects to max).
+  //
+  // IMPORTANT: For horizontal, we do NOT use viewportHeight to size items.
+  // Items are content-sized (Yoga determines final height). estimatedCrossAxisHeight
+  // is only an initial estimate so the cache has a plausible frame before measurement.
 
-  // Separator prototype — reused for each inter-item separator.
-  // Constructed once outside the item loop so only key/frame.y change per separator.
+  const double crossContent = H
+      ? 0  // unused for horizontal item sizing
+      : (p.viewportWidth  - p.sectionInsetLeft - p.sectionInsetRight);
+  const double crossStart = H ? p.sectionInsetTop : p.sectionInsetLeft;
+  const double primaryInsetStart = H ? p.sectionInsetLeft : p.sectionInsetTop;
+  const double primaryInsetEnd   = H ? p.sectionInsetRight : p.sectionInsetBottom;
+
+  // For horizontal: estimated cross-axis height for items; headers/footers span full cross extent.
+  const double hEstH  = p.estimatedCrossAxisHeight;               // item cross estimate
+  const double hHdrH  = hEstH + p.sectionInsetTop + p.sectionInsetBottom; // header/footer cross span
+
+  double primary = startPrimary;
+  double bgStartPrimary = startPrimary; // updated to after-header once header is emitted
+
+  // ── Separator prototype ───────────────────────────────────────────────────
   LayoutAttributes sep;
   if (p.emitSeparators) {
-    sep.section         = sectionIndex;
-    sep.index           = -1;
-    sep.isDecoration    = true;
-    sep.decorationKind  = "separator";
-    sep.zIndex          = 0;
-    sep.sizingState     = SizingState::Measured;
-    sep.isDirty         = false;
-    sep.alpha           = 1.0;
-    sep.frame.x         = p.sectionInsetLeft + p.separatorInsetLeading;
-    sep.frame.width     = contentWidth - p.separatorInsetLeading - p.separatorInsetTrailing;
-    sep.frame.height    = p.separatorHeight;
-  }
-  RNCV_LIST_LOG("computeSection start section=%d p.section=%d prefix=%s itemCount=%d headerH=%.1f footerH=%.1f startY=%.1f keysCount=%zu",
-                sectionIndex, p.section, prefix.c_str(), p.itemCount, p.headerHeight, p.footerHeight,
-                startY, p.keys.size());
-
-  // ── Header ────────────────────────────────────────────────────────────────
-  if (p.headerHeight > 0) {
-    _scratch.key              = prefix + "header";
-    _scratch.section          = sectionIndex;
-    _scratch.index            = -1;
-    _scratch.frame            = { p.sectionInsetLeft, y, contentWidth, p.headerHeight };
-    _scratch.isSupplementary  = true;
-    _scratch.supplementaryKind = "header";
-    _scratch.sizingState      = SizingState::Measured;
-    _scratch.isDirty          = false;
-    _cache->setAttributes(_scratch);
-    RNCV_LIST_LOG("write key=%s kind=%s section=%d index=%d frame=(%.1f,%.1f,%.1f,%.1f)",
-                  _scratch.key.c_str(), _scratch.supplementaryKind.c_str(), _scratch.section, _scratch.index,
-                  _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
-    y += p.headerHeight;
-    bgStartY = y; // bg starts after header so top rounded corners are exposed
-  }
-
-  // Gap between header bottom (or section start) and first item
-  y += p.sectionInsetTop;
-  // y is now sectionOffsets[sectionIndex] — first item starts here
-
-  // ── Items ─────────────────────────────────────────────────────────────────
-  _scratch.isSupplementary   = false;
-  _scratch.supplementaryKind.clear();
-  _scratch.section           = sectionIndex;
-  _scratch.frame.x           = p.sectionInsetLeft;
-  _scratch.frame.width       = contentWidth;
-
-  if (p.itemHeights.empty()) {
-    // Fixed height
-    _scratch.sizingState  = SizingState::Measured;
-    _scratch.frame.height = p.itemHeight;
-    for (int i = 0; i < p.itemCount; ++i) {
-      _scratch.key    = itemKey(p, i, prefix);
-      _scratch.index  = i;
-      _scratch.frame.y = y;
-      _cache->setAttributes(_scratch);
-      if (i < 5 || i == p.itemCount - 1) {
-        RNCV_LIST_LOG("write key=%s kind=item section=%d index=%d frame=(%.1f,%.1f,%.1f,%.1f)",
-                      _scratch.key.c_str(), _scratch.section, _scratch.index,
-                      _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
-      }
-      y += p.itemHeight + p.itemSpacing;
-      if (p.emitSeparators && i < p.itemCount - 1) {
-        sep.key      = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
-        sep.frame.y  = y - p.itemSpacing; // item bottom (before spacing gap)
-        _cache->setAttributes(sep);
-      }
-    }
-  } else {
-    // Estimated heights
-    _scratch.sizingState = SizingState::Placeholder;
-    int count = std::min(p.itemCount, static_cast<int>(p.itemHeights.size()));
-    for (int i = 0; i < count; ++i) {
-      double h            = p.itemHeights[i];
-      _scratch.key        = itemKey(p, i, prefix);
-      _scratch.index      = i;
-      _scratch.frame.y    = y;
-      _scratch.frame.height = h;
-      _cache->setAttributes(_scratch);
-      if (i < 5 || i == count - 1) {
-        RNCV_LIST_LOG("write key=%s kind=item section=%d index=%d frame=(%.1f,%.1f,%.1f,%.1f)",
-                      _scratch.key.c_str(), _scratch.section, _scratch.index,
-                      _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
-      }
-      y += h + p.itemSpacing;
-      if (p.emitSeparators && i < count - 1) {
-        sep.key      = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
-        sep.frame.y  = y - p.itemSpacing; // item bottom (before spacing gap)
-        _cache->setAttributes(sep);
-      }
+    sep.section        = sectionIndex;
+    sep.index          = -1;
+    sep.isDecoration   = true;
+    sep.decorationKind = "separator";
+    sep.zIndex         = 0;
+    sep.sizingState    = SizingState::Measured;
+    sep.isDirty        = false;
+    sep.alpha          = 1.0;
+    if (H) {
+      // Vertical separator line between items in a horizontal list.
+      // Height is estimated; applyMeasurements will update to section max height.
+      sep.frame.x      = 0;  // updated per-separator
+      sep.frame.y      = crossStart;
+      sep.frame.width  = p.separatorHeight;  // separator thickness along scroll axis
+      sep.frame.height = hEstH;
+    } else {
+      // Horizontal separator line between items in a vertical list
+      sep.frame.x      = crossStart + p.separatorInsetLeading;
+      sep.frame.y      = 0;  // updated per-separator
+      sep.frame.width  = crossContent - p.separatorInsetLeading - p.separatorInsetTrailing;
+      sep.frame.height = p.separatorHeight;
     }
   }
 
-  // Undo trailing itemSpacing after last item (spacing is between items, not after)
-  if (p.itemCount > 0) y -= p.itemSpacing;
-
-  // Bottom inset: padding between last item and footer (UIKit-correct)
-  y += p.sectionInsetBottom;
-
-  // ── Section background (decoration) ──────────────────────────────────────
-  // Frame: after-header to before-footer — rows area only.
-  // Header sits above, footer sits below; both have full rounded corners exposed.
-  if (p.emitSectionBackground) {
-    LayoutAttributes bg;
-    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
-    bg.section        = sectionIndex;
-    bg.index          = -1;
-    bg.frame          = { p.sectionInsetLeft, bgStartY, contentWidth, y - bgStartY };
-    bg.isDecoration   = true;
-    bg.decorationKind = "sectionBackground";
-    bg.zIndex         = -1;
-    bg.sizingState    = SizingState::Measured;
-    bg.isDirty        = false;
-    bg.alpha          = 1.0;
-    _cache->setAttributes(bg);
-  }
-
-  // ── Footer ────────────────────────────────────────────────────────────────
-  if (p.footerHeight > 0) {
-    _scratch.key              = prefix + "footer";
-    _scratch.section          = sectionIndex;
-    _scratch.index            = -1;
-    _scratch.frame            = { p.sectionInsetLeft, y, contentWidth, p.footerHeight };
-    _scratch.isSupplementary  = true;
-    _scratch.supplementaryKind = "footer";
-    _scratch.sizingState      = SizingState::Measured;
-    _scratch.isDirty          = false;
-    _cache->setAttributes(_scratch);
-    RNCV_LIST_LOG("write key=%s kind=%s section=%d index=%d frame=(%.1f,%.1f,%.1f,%.1f)",
-                  _scratch.key.c_str(), _scratch.supplementaryKind.c_str(), _scratch.section, _scratch.index,
-                  _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
-    y += p.footerHeight;
-  }
-
-  // Inter-section gap: sits after footer, before the next section's header.
-  y += p.sectionSpacing;
-
-  RNCV_LIST_LOG("computeSection end section=%d endY=%.1f", sectionIndex, y);
-  return y; // Y where next section starts
-}
-
-// ─── computeSections ──────────────────────────────────────────────────────────
-
-void ListLayout::computeSections(const std::vector<ListLayoutParams>& sections) {
-  double y = 0.0;
-  RNCV_LIST_LOG("computeSections begin sections=%zu", sections.size());
-  for (int s = 0; s < static_cast<int>(sections.size()); ++s) {
-    y = computeSection(sections[s], s, y);
-  }
-  RNCV_LIST_LOG("computeSections end totalContentHeight=%.1f", y);
-}
-
-// ─── computeSectionFromCache ──────────────────────────────────────────────────
-
-double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
-                                            int sectionIndex,
-                                            double startY) {
-  const std::string prefix = p.keyPrefix.empty()
-      ? "item-" + std::to_string(sectionIndex) + "-"
-      : p.keyPrefix;
-  const double contentWidth = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
-  const double sectionStartY = startY;
-  double bgStartY = startY; // updated to after-header once header is emitted
-
-  double y = startY;
-
-  LayoutAttributes sep;
-  if (p.emitSeparators) {
-    sep.section         = sectionIndex;
-    sep.index           = -1;
-    sep.isDecoration    = true;
-    sep.decorationKind  = "separator";
-    sep.zIndex          = 0;
-    sep.sizingState     = SizingState::Measured;
-    sep.isDirty         = false;
-    sep.alpha           = 1.0;
-    sep.frame.x         = p.sectionInsetLeft + p.separatorInsetLeading;
-    sep.frame.width     = contentWidth - p.separatorInsetLeading - p.separatorInsetTrailing;
-    sep.frame.height    = p.separatorHeight;
-  }
+  RNCV_LIST_LOG("computeSection start section=%d prefix=%s itemCount=%d headerH=%.1f footerH=%.1f startPrimary=%.1f H=%d",
+                sectionIndex, prefix.c_str(), p.itemCount, p.headerHeight, p.footerHeight, startPrimary, (int)H);
 
   // ── Header ────────────────────────────────────────────────────────────────
   if (p.headerHeight > 0) {
     _scratch.key               = prefix + "header";
     _scratch.section           = sectionIndex;
     _scratch.index             = -1;
-    _scratch.frame             = { p.sectionInsetLeft, y, contentWidth, p.headerHeight };
     _scratch.isSupplementary   = true;
     _scratch.supplementaryKind = "header";
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
+    if (H) {
+      // Horizontal: header is a vertical strip at the left of the section.
+      // Height = full viewport height so it fills the list top-to-bottom.
+      // applyMeasurements may refine further, but viewport height is the correct target.
+      _scratch.frame = { primary, 0, p.headerHeight, p.viewportHeight };
+    } else {
+      // Vertical: header is a full-width horizontal strip at the top of the section
+      _scratch.frame = { crossStart, primary, crossContent, p.headerHeight };
+    }
     _cache->setAttributes(_scratch);
-    y += p.headerHeight;
-    bgStartY = y; // bg starts after header so top rounded corners are exposed
+    RNCV_LIST_LOG("write key=%s kind=%s section=%d frame=(%.1f,%.1f,%.1f,%.1f)",
+                  _scratch.key.c_str(), _scratch.supplementaryKind.c_str(), _scratch.section,
+                  _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
+    primary += p.headerHeight;
+    bgStartPrimary = primary; // bg starts after header so rounded corners are exposed
   }
 
-  y += p.sectionInsetTop;
+  // Gap: primary inset start (between header edge and first item edge)
+  primary += primaryInsetStart;
 
-  // ── Items — read heights from cache ───────────────────────────────────────
+  // ── Items ─────────────────────────────────────────────────────────────────
   _scratch.isSupplementary   = false;
   _scratch.supplementaryKind.clear();
   _scratch.section           = sectionIndex;
-  _scratch.frame.x           = p.sectionInsetLeft;
-  _scratch.frame.width       = contentWidth;
 
-  for (int i = 0; i < p.itemCount; ++i) {
-    const std::string key = itemKey(p, i, prefix);
-    auto existing = _cache->getAttributes(key);
-    const double h = existing ? existing->frame.height : p.itemHeight;
-    _scratch.sizingState  = existing ? existing->sizingState : SizingState::Measured;
-    _scratch.key          = key;
-    _scratch.index        = i;
-    _scratch.frame.y      = y;
-    _scratch.frame.height = h;
-    _cache->setAttributes(_scratch);
-    y += h + p.itemSpacing;
-    if (p.emitSeparators && i < p.itemCount - 1) {
-      sep.key     = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
-      sep.frame.y = y - p.itemSpacing;
-      _cache->setAttributes(sep);
+  if (p.itemHeights.empty()) {
+    // Uniform item size along primary axis (itemHeight param).
+    // For horizontal: height is an estimate; Yoga measures final height.
+    // For vertical: width = crossContent (full container minus insets); height = itemHeight estimate.
+    _scratch.sizingState = H ? SizingState::Placeholder : SizingState::Measured;
+    for (int i = 0; i < p.itemCount; ++i) {
+      _scratch.key   = itemKey(p, i, prefix);
+      _scratch.index = i;
+      if (H) {
+        _scratch.frame = { primary, crossStart, p.itemHeight, hEstH };
+      } else {
+        _scratch.frame = { crossStart, primary, crossContent, p.itemHeight };
+      }
+      _cache->setAttributes(_scratch);
+      if (i < 5 || i == p.itemCount - 1) {
+        RNCV_LIST_LOG("write key=%s kind=item section=%d index=%d frame=(%.1f,%.1f,%.1f,%.1f)",
+                      _scratch.key.c_str(), _scratch.section, _scratch.index,
+                      _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
+      }
+      primary += p.itemHeight + p.itemSpacing;
+      if (p.emitSeparators && i < p.itemCount - 1) {
+        sep.key = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
+        if (H) {
+          sep.frame.x = primary - p.itemSpacing; // item trailing edge (before spacing gap)
+        } else {
+          sep.frame.y = primary - p.itemSpacing; // item bottom edge (before spacing gap)
+        }
+        _cache->setAttributes(sep);
+      }
+    }
+  } else {
+    // Per-item estimated sizes along primary axis (itemHeights[i] = primary estimate).
+    // For horizontal: height is also an estimate (hEstH); Yoga measures both.
+    _scratch.sizingState = SizingState::Placeholder;
+    int count = std::min(p.itemCount, static_cast<int>(p.itemHeights.size()));
+    for (int i = 0; i < count; ++i) {
+      double sz = p.itemHeights[i];
+      _scratch.key   = itemKey(p, i, prefix);
+      _scratch.index = i;
+      if (H) {
+        _scratch.frame = { primary, crossStart, sz, hEstH };
+      } else {
+        _scratch.frame = { crossStart, primary, crossContent, sz };
+      }
+      _cache->setAttributes(_scratch);
+      if (i < 5 || i == count - 1) {
+        RNCV_LIST_LOG("write key=%s kind=item section=%d index=%d frame=(%.1f,%.1f,%.1f,%.1f)",
+                      _scratch.key.c_str(), _scratch.section, _scratch.index,
+                      _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
+      }
+      primary += sz + p.itemSpacing;
+      if (p.emitSeparators && i < count - 1) {
+        sep.key = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
+        if (H) {
+          sep.frame.x = primary - p.itemSpacing;
+        } else {
+          sep.frame.y = primary - p.itemSpacing;
+        }
+        _cache->setAttributes(sep);
+      }
     }
   }
 
-  if (p.itemCount > 0) y -= p.itemSpacing;
+  // Undo trailing itemSpacing after last item (spacing is between items, not after)
+  if (p.itemCount > 0) primary -= p.itemSpacing;
 
-  // Bottom inset: padding between last item and footer (UIKit-correct)
-  y += p.sectionInsetBottom;
+  // Primary inset end: gap between last item edge and footer edge
+  primary += primaryInsetEnd;
 
-  // ── Section background ─────────────────────────────────────────────────
-  // Emitted before footer — bg covers items area only (bgStartY to before footer),
-  // matching NSCollectionLayoutDecorationItem.background behavior.
+  // ── Section background (decoration) ──────────────────────────────────────
+  // Frame covers the items area only (between header and footer).
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
     bg.section        = sectionIndex;
     bg.index          = -1;
-    bg.frame          = { p.sectionInsetLeft, bgStartY, contentWidth, y - bgStartY };
+    if (H) {
+      bg.frame = { bgStartPrimary, crossStart, primary - bgStartPrimary, crossContent };
+    } else {
+      bg.frame = { crossStart, bgStartPrimary, crossContent, primary - bgStartPrimary };
+    }
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
     bg.zIndex         = -1;
@@ -617,19 +735,197 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.key               = prefix + "footer";
     _scratch.section           = sectionIndex;
     _scratch.index             = -1;
-    _scratch.frame             = { p.sectionInsetLeft, y, contentWidth, p.footerHeight };
     _scratch.isSupplementary   = true;
     _scratch.supplementaryKind = "footer";
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
+    if (H) {
+      _scratch.frame = { primary, 0, p.footerHeight, p.viewportHeight };
+    } else {
+      _scratch.frame = { crossStart, primary, crossContent, p.footerHeight };
+    }
     _cache->setAttributes(_scratch);
-    y += p.footerHeight;
+    RNCV_LIST_LOG("write key=%s kind=%s section=%d frame=(%.1f,%.1f,%.1f,%.1f)",
+                  _scratch.key.c_str(), _scratch.supplementaryKind.c_str(), _scratch.section,
+                  _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
+    primary += p.footerHeight;
   }
 
-  // Inter-section gap: sits after footer, before the next section's header.
-  y += p.sectionSpacing;
+  // Inter-section gap: sits after footer, before the next section's leading strip.
+  primary += p.sectionSpacing;
 
-  return y;
+  RNCV_LIST_LOG("computeSection end section=%d endPrimary=%.1f", sectionIndex, primary);
+  return primary;
+}
+
+// ─── computeSections ──────────────────────────────────────────────────────────
+
+void ListLayout::computeSections(const std::vector<ListLayoutParams>& sections) {
+  _horizontal = !sections.empty() && sections[0].horizontal;
+  _viewportHeight = !sections.empty() ? sections[0].viewportHeight : 0.0;
+  double primary = 0.0;
+  RNCV_LIST_LOG("computeSections begin sections=%zu horizontal=%d", sections.size(), (int)_horizontal);
+  for (int s = 0; s < static_cast<int>(sections.size()); ++s) {
+    primary = computeSection(sections[s], s, primary);
+  }
+  RNCV_LIST_LOG("computeSections end totalContentPrimary=%.1f", primary);
+}
+
+// ─── computeSectionFromCache ──────────────────────────────────────────────────
+
+double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
+                                            int sectionIndex,
+                                            double startPrimary) {
+  const bool H = p.horizontal;
+  const std::string prefix = p.keyPrefix.empty()
+      ? "item-" + std::to_string(sectionIndex) + "-"
+      : p.keyPrefix;
+
+  const double crossContent = H
+      ? 0  // unused for horizontal item sizing
+      : (p.viewportWidth  - p.sectionInsetLeft - p.sectionInsetRight);
+  const double crossStart = H ? p.sectionInsetTop : p.sectionInsetLeft;
+  const double primaryInsetStart = H ? p.sectionInsetLeft : p.sectionInsetTop;
+  const double primaryInsetEnd   = H ? p.sectionInsetRight : p.sectionInsetBottom;
+  const double hEstH  = p.estimatedCrossAxisHeight;
+  const double hHdrH  = hEstH + p.sectionInsetTop + p.sectionInsetBottom;
+
+  double primary = startPrimary;
+  double bgStartPrimary = startPrimary;
+
+  LayoutAttributes sep;
+  if (p.emitSeparators) {
+    sep.section        = sectionIndex;
+    sep.index          = -1;
+    sep.isDecoration   = true;
+    sep.decorationKind = "separator";
+    sep.zIndex         = 0;
+    sep.sizingState    = SizingState::Measured;
+    sep.isDirty        = false;
+    sep.alpha          = 1.0;
+    if (H) {
+      sep.frame.x      = 0;
+      sep.frame.y      = crossStart;
+      sep.frame.width  = p.separatorHeight;
+      sep.frame.height = hEstH;  // estimated; applyMeasurements updates
+    } else {
+      sep.frame.x      = crossStart + p.separatorInsetLeading;
+      sep.frame.y      = 0;
+      sep.frame.width  = crossContent - p.separatorInsetLeading - p.separatorInsetTrailing;
+      sep.frame.height = p.separatorHeight;
+    }
+  }
+
+  // ── Header ────────────────────────────────────────────────────────────────
+  if (p.headerHeight > 0) {
+    const std::string hdrKey = prefix + "header";
+    auto existingHdr = _cache->getAttributes(hdrKey);
+    _scratch.key               = hdrKey;
+    _scratch.section           = sectionIndex;
+    _scratch.index             = -1;
+    _scratch.isSupplementary   = true;
+    _scratch.supplementaryKind = "header";
+    _scratch.sizingState       = SizingState::Measured;
+    _scratch.isDirty           = false;
+    if (H) {
+      // Preserve measured cross height if available; otherwise use viewportHeight.
+      const double hH = (existingHdr && existingHdr->frame.height > 0) ? existingHdr->frame.height : p.viewportHeight;
+      _scratch.frame = { primary, 0, p.headerHeight, hH };
+    } else {
+      _scratch.frame = { crossStart, primary, crossContent, p.headerHeight };
+    }
+    _cache->setAttributes(_scratch);
+    primary += p.headerHeight;
+    bgStartPrimary = primary;
+  }
+
+  primary += primaryInsetStart;
+
+  // ── Items — read primary-axis sizes from cache ────────────────────────────
+  _scratch.isSupplementary   = false;
+  _scratch.supplementaryKind.clear();
+  _scratch.section           = sectionIndex;
+
+  for (int i = 0; i < p.itemCount; ++i) {
+    const std::string key = itemKey(p, i, prefix);
+    auto existing = _cache->getAttributes(key);
+    // Primary-axis size: cached width for horizontal, cached height for vertical.
+    const double sz = existing
+        ? (H ? existing->frame.width : existing->frame.height)
+        : p.itemHeight;
+    // Cross-axis size: preserve cached height for horizontal, use crossContent for vertical.
+    const double crossSz = H
+        ? (existing && existing->frame.height > 0 ? existing->frame.height : hEstH)
+        : crossContent;
+    _scratch.sizingState = existing ? existing->sizingState : SizingState::Placeholder;
+    _scratch.key         = key;
+    _scratch.index       = i;
+    if (H) {
+      _scratch.frame = { primary, crossStart, sz, crossSz };
+    } else {
+      _scratch.frame = { crossStart, primary, crossContent, sz };
+    }
+    _cache->setAttributes(_scratch);
+    primary += sz + p.itemSpacing;
+    if (p.emitSeparators && i < p.itemCount - 1) {
+      sep.key = "separator-" + std::to_string(sectionIndex) + "-" + std::to_string(i);
+      if (H) {
+        sep.frame.x = primary - p.itemSpacing;
+      } else {
+        sep.frame.y = primary - p.itemSpacing;
+      }
+      _cache->setAttributes(sep);
+    }
+  }
+
+  if (p.itemCount > 0) primary -= p.itemSpacing;
+
+  primary += primaryInsetEnd;
+
+  // ── Section background ─────────────────────────────────────────────────
+  if (p.emitSectionBackground) {
+    LayoutAttributes bg;
+    bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
+    bg.section        = sectionIndex;
+    bg.index          = -1;
+    if (H) {
+      // Use cached height if available (preserves measured values); else estimate.
+      auto existingBg = _cache->getAttributes(bg.key);
+      const double bgH = (existingBg && existingBg->frame.height > 0) ? existingBg->frame.height : hEstH;
+      bg.frame = { bgStartPrimary, crossStart, primary - bgStartPrimary, bgH };
+    } else {
+      bg.frame = { crossStart, bgStartPrimary, crossContent, primary - bgStartPrimary };
+    }
+    bg.isDecoration   = true;
+    bg.decorationKind = "sectionBackground";
+    bg.zIndex         = -1;
+    bg.sizingState    = SizingState::Measured;
+    bg.isDirty        = false;
+    bg.alpha          = 1.0;
+    _cache->setAttributes(bg);
+  }
+
+  // ── Footer ────────────────────────────────────────────────────────────────
+  if (p.footerHeight > 0) {
+    _scratch.key               = prefix + "footer";
+    _scratch.section           = sectionIndex;
+    _scratch.index             = -1;
+    _scratch.isSupplementary   = true;
+    _scratch.supplementaryKind = "footer";
+    _scratch.sizingState       = SizingState::Measured;
+    _scratch.isDirty           = false;
+    if (H) {
+      _scratch.frame = { primary, 0, p.footerHeight, p.viewportHeight };
+    } else {
+      _scratch.frame = { crossStart, primary, crossContent, p.footerHeight };
+    }
+    _cache->setAttributes(_scratch);
+    primary += p.footerHeight;
+  }
+
+  primary += p.sectionSpacing;
+
+  return primary;
 }
 
 // ─── invalidateSectionsFrom ───────────────────────────────────────────────────
@@ -644,20 +940,27 @@ void ListLayout::invalidateSectionsFrom(int fromSection,
       ? "item-" + std::to_string(fromSection) + "-"
       : p0.keyPrefix;
 
-  double startY = 0.0;
+  const bool H = p0.horizontal;
+
+  double startPrimary = 0.0;
   if (p0.headerHeight > 0) {
     auto header = _cache->getAttributes(prefix0 + "header");
-    if (header) startY = header->frame.y;
+    if (header) startPrimary = H ? header->frame.x : header->frame.y;
   } else {
     auto firstItem = _cache->getAttributes(itemKey(p0, 0, prefix0));
-    if (firstItem) startY = firstItem->frame.y - p0.sectionInsetTop;
+    if (firstItem) {
+      // Subtract the primary inset start to get the section's leading edge.
+      const double primaryInsetStart = H ? p0.sectionInsetLeft : p0.sectionInsetTop;
+      startPrimary = H
+          ? (firstItem->frame.x - primaryInsetStart)
+          : (firstItem->frame.y - primaryInsetStart);
+    }
   }
 
-  // Reflow fromSection reading item heights from cache (so any measured heights
-  // written before this call are preserved), then full-recompute subsequent sections.
-  double y = computeSectionFromCache(p0, fromSection, startY);
+  // Reflow fromSection reading item sizes from cache, then full-recompute subsequent sections.
+  double primary = computeSectionFromCache(p0, fromSection, startPrimary);
   for (int s = fromSection + 1; s < static_cast<int>(sections.size()); ++s) {
-    y = computeSection(sections[s], s, y);
+    primary = computeSection(sections[s], s, primary);
   }
 }
 

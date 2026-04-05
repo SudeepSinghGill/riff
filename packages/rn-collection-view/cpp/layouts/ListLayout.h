@@ -61,6 +61,15 @@ struct ListLayoutParams {
   // section's header. Sits outside the section background frame.
   // Analogous to NSCollectionLayoutSection.interSectionSpacing.
   double sectionSpacing = 0;
+
+  // --- Horizontal mode ---
+  // When true, items advance along X instead of Y.
+  // itemHeight is the estimated primary-axis size (width along scroll axis).
+  // estimatedCrossAxisHeight is the estimated height (cross-axis). Yoga measures final height.
+  // viewportHeight is no longer used for item sizing (was wrong — items don't fill viewport).
+  bool   horizontal              = false;
+  double viewportHeight          = 0;   // kept for completeness but not used for item sizing
+  double estimatedCrossAxisHeight = 200; // initial cross-axis height estimate; Yoga refines
 };
 
 // ─── ListLayout ───────────────────────────────────────────────────────────────
@@ -116,7 +125,9 @@ public:
       LayoutCache& cache) override;
 
   ContentDimension contentDeterminedDimension() const override {
-    return ContentDimension::Height;
+    // Vertical: Yoga measures item heights (primary axis).
+    // Horizontal: Yoga measures both item widths (primary) and heights (cross-axis).
+    return _horizontal ? ContentDimension::Both : ContentDimension::Height;
   }
 
   // ── JSI ─────────────────────────────────────────────────────────────────
@@ -134,6 +145,8 @@ public:
 
 private:
   std::shared_ptr<LayoutCache> _cache;
+  bool _horizontal = false;      // set by computeSections(); drives contentDeterminedDimension() and applyMeasurements()
+  double _viewportHeight = 0.0;  // stored from computeSections(); used in applyMeasurements Pass 3 for horizontal
 
   // Reusable attribute — mutated and copied into cache each iteration.
   // Avoids per-item allocation in the hot loop.

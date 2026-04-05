@@ -5,23 +5,25 @@
  * variants, decorations, mutations, and sticky headers where applicable.
  *
  * Tabs are added progressively as layouts are implemented:
- *   List (V+H)    ← done
+ *   List (V+H)    ← both done
  *   Grid (V+H)    ← TODO
  *   Flow (align)  ← TODO
  *   Masonry (V+H) ← TODO
  */
 import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ListDemo } from './comparison/LayoutsTab';
+import { ListDemo, HorizontalListDemo, GridDemo } from './comparison/LayoutsTab';
 
-type DemoTab = 'list';
+type DemoTab = 'list-v' | 'list-h' | 'grid-v';
 
 const TABS: { key: DemoTab; label: string; detail: string }[] = [
-  { key: 'list', label: 'List', detail: 'Vertical · sections · decorations · mutations · sticky' },
+  { key: 'list-v', label: 'List ↕', detail: 'Vertical · sections · decorations · mutations · sticky' },
+  { key: 'list-h', label: 'List ↔', detail: 'Horizontal · sections · fixed-width cards' },
+  { key: 'grid-v', label: 'Grid ↕', detail: 'Vertical grid · multi-section · sticky headers · section backgrounds · insert/delete · MVC' },
 ];
 
 export default function RiffDemo() {
-  const [tab, setTab] = useState<DemoTab>('list');
+  const [tab, setTab] = useState<DemoTab>('list-v');
 
   return (
     <View style={S.root}>
@@ -42,7 +44,7 @@ export default function RiffDemo() {
           </Pressable>
         ))}
         {/* Placeholder tabs — shown greyed out for roadmap visibility */}
-        {(['Grid', 'Flow', 'Masonry'] as const).map(label => (
+        {(['Grid ↔', 'Flow ↕', 'Flow ↔', 'Masonry ↕'] as const).map(label => (
           <View key={label} style={[S.tab, S.tabDisabled]}>
             <Text style={S.tabLabelDisabled}>{label}</Text>
           </View>
@@ -56,7 +58,9 @@ export default function RiffDemo() {
 
       {/* Content */}
       <View style={S.content}>
-        {tab === 'list' && <ListDemo />}
+        {tab === 'list-v' && <ListDemo />}
+        {tab === 'list-h' && <HorizontalListDemo />}
+        {tab === 'grid-v' && <GridDemo />}
       </View>
     </View>
   );
