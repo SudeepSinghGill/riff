@@ -1312,6 +1312,33 @@ DOCS:         DOC.1 (solution document) + DOC.2 (ShadowNode architecture writeup
 
 - [ ] **Sticky supplementary view animations during MVC** — Section headers/footers that are actively sticking show a minor flicker during insert/delete mutations. Regular cells have LayoutAnimation support but supplementary views don't transition smoothly when their positions shift during MVC correction. Investigate adding LayoutAnimation or CATransaction-based animation for sticky view transform updates during mutations.
 
+### R2: Horizontal Grid — Fill Order (column-major vs row-major)
+
+**Decision (2026-04-05):** Ship column-major only. Don't add a `fillOrder` prop now.
+
+Column-major (`columns=3`): items fill top→bottom in a column-group, then advance right.
+```
+Col-group 0    Col-group 1    Col-group 2
+Item 0         Item 3         Item 6
+Item 1         Item 4         Item 7
+Item 2         Item 5         Item 8
+```
+
+Row-major: items fill left→right across column-groups, then down.
+```
+Col-group 0    Col-group 1    Col-group 2
+Item 0         Item 1         Item 2
+Item 3         Item 4         Item 5
+Item 6         Item 7         Item 8
+```
+
+**Reasons to defer row-major:**
+
+1. **Column-major is the platform default** — UIKit, CSS grid with `grid-auto-flow: column`, all do this for horizontal scroll.
+2. **Row-major for bounded data is really a flow layout use case** — the flow layout engine (which tiles items by fitting widths) already handles this more naturally.
+3. **Adding it later is cheap** — it's just an index remapping (`columnGroup = i / cols, row = i % cols` vs `row = i % cols, columnGroup = i / cols`). No structural change needed. If a real use case surfaces, it's a one-line formula swap behind a prop.
+4. **Avoids prop surface area** that needs testing for both orders × all features (separators, backgrounds, sticky, MVC).
+
 ### R1 Deep Dive: Frame Application Architecture — Option 1 vs Current Approach
 
 #### Current Approach (State-Based Frame Override)
