@@ -752,7 +752,7 @@ function FlowDemo() {
   );
 }
 
-type SubTab = 'list' | 'grid' | 'hgrid' | 'masonry' | 'flow' | 'circular' | 'carousel';
+type SubTab = 'list' | 'grid' | 'hgrid' | 'ahgrid' | 'masonry' | 'flow' | 'circular' | 'carousel';
 
 // ── Callout bullets per layout ───────────────────────────────────────────────
 type Bullet = { type: 'green' | 'amber' | 'red' | 'blue'; text: string };
@@ -763,6 +763,12 @@ const CALLOUTS: Record<SubTab, Bullet[]> = {
     { type: 'blue', text: 'columns=2 → items tile top→bottom in column-groups, scroll left→right. C++ GridLayout horizontal path.' },
     { type: 'blue', text: 'Sticky headers/footers are narrow vertical strips (20px wide). Section backgrounds span column-groups.' },
     { type: 'blue', text: 'Row separators (horizontal lines within a column-group) and column-group separators (vertical lines between groups) toggled independently.' },
+  ],
+  ahgrid: [
+    { type: 'green', text: 'FlashList: Impossible. No adaptive cross-axis sizing; no content-determined container height.' },
+    { type: 'blue', text: 'All H-grids are always adaptive — contentDeterminedDimension()=Both → Yoga measures item heights + widths.' },
+    { type: 'blue', text: 'Engine tracks global max measured height across ALL sections. Container auto-sizes: max × cols + spacing + insets.' },
+    { type: 'blue', text: 'Items have varying content (0–4 description lines). Container height grows as taller items are measured or inserted.' },
   ],
   list: [
     { type: 'green', text: 'S0: Header + footer timers survive all scroll — same view instance repositioned natively, never remounted. FlashList: no sticky footer.' },
@@ -802,6 +808,7 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'list', label: 'List' },
   { key: 'grid', label: 'Grid' },
   { key: 'hgrid', label: 'H-Grid' },
+  { key: 'ahgrid', label: 'AH-Grid' },
   { key: 'masonry', label: 'Masonry' },
   { key: 'flow', label: 'Flow' },
   { key: 'circular', label: 'Radial Arc' },
@@ -857,6 +864,7 @@ export default function LayoutsTab() {
         {subTab === 'list' && <ListDemo />}
         {subTab === 'grid' && <GridDemo />}
         {subTab === 'hgrid' && <HorizontalGridDemo />}
+        {subTab === 'ahgrid' && <AdaptiveHGridDemo />}
         {subTab === 'masonry' && <MasonryDemo />}
         {subTab === 'flow' && <FlowDemo />}
 
@@ -1304,6 +1312,7 @@ export function HorizontalGridDemo() {
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
+  const [containerH, setContainerH] = useState(HG_CONTAINER_H);
   const insertCounter = useRef(staticSections[0]!.items.length);
   const cvRef = useRef<RiffHandle>(null);
 
@@ -1430,8 +1439,8 @@ export function HorizontalGridDemo() {
   return (
     <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       <View style={HGS.titleBar}>
-        <Text style={HGS.title}>Horizontal Grid (2 rows · fixed cross-axis)</Text>
-        <Text style={HGS.subtitle}>Cell height = {HG_ITEM_CROSS_H}pt × 2 rows + {HG_COL_SPACING}pt gap + {HG_INSET_Y}pt insets = {HG_CONTAINER_H}pt total</Text>
+        <Text style={HGS.title}>Horizontal Grid (2 rows · adaptive cross-axis)</Text>
+        <Text style={HGS.subtitle}>Container height auto-sizes from content — currently {Math.round(containerH)}pt</Text>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={HGS.ctrlBar} contentContainerStyle={HGS.ctrlBarContent}>
@@ -1453,7 +1462,7 @@ export function HorizontalGridDemo() {
         </View>
       </ScrollView>
 
-      <View style={[HGS.listBackground, { height: HG_CONTAINER_H }]}>
+      <View style={[HGS.listBackground, { height: containerH }]}>
         <CollectionView
           handle={cvRef}
           sections={riffSections}
@@ -1465,7 +1474,13 @@ export function HorizontalGridDemo() {
           maintainVisibleContentPosition={mvcEnabled}
           decorationRenderers={decorationRenderers}
           onDecorationCountChange={setDecoCount}
-          scrollViewProps={{ style: { backgroundColor: 'transparent' }, indicatorStyle: 'white' }}
+          scrollViewProps={{
+            style: { backgroundColor: 'transparent' },
+            indicatorStyle: 'white',
+            onContentSizeChange: (_w: number, h: number) => {
+              if (h > 0) setContainerH(prev => Math.abs(prev - h) > 2 ? h : prev);
+            },
+          }}
         />
       </View>
     </View>
@@ -1490,8 +1505,8 @@ const HGS = StyleSheet.create({
   sectionFooterLabel: { fontSize: 8, color: 'rgba(255,255,255,0.5)', fontWeight: '600',
                         textAlign: 'center', lineHeight: 10 },
 
-  card:               { flex: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-                        margin: 4 },
+  card:               { borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+                        paddingVertical: 10, paddingHorizontal: 6, margin: 4 },
   cardThumb:          { width: 56, height: 56, borderRadius: 10,
                         backgroundColor: 'rgba(0,0,0,0.3)',
                         alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
@@ -1503,4 +1518,250 @@ const HGS = StyleSheet.create({
   tag:                { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 4,
                         paddingHorizontal: 5, paddingVertical: 2 },
   tagText:            { fontSize: 8, color: '#fff', fontWeight: '700', textTransform: 'uppercase' },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AdaptiveHGridDemo
+// ─────────────────────────────────────────────────────────────────────────────
+// Horizontal grid — all H-grids are always adaptive. Items have varying content
+// heights (0–4 description lines, giving ~50px of variance). The container
+// height auto-sizes to maxItemHeight × cols + spacing + insets.
+// No fixed container height — uses layout contentSize() after first pass.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AHG_COLS        = 2;
+const AHG_COL_SPACING = 8;
+const AHG_INSET_Y     = 10;
+const AHG_ESTIMATED_H = 150; // initial estimate before Yoga measures items
+
+const AHG_DESCRIPTIONS = [
+  '',                                                        // no description
+  'Short note.',                                             // 1 line
+  'A medium-length description\nthat wraps to two lines.',   // 2 lines
+  'Longer description with more\ndetail across three lines\nof text content here.',  // 3 lines
+  'Extended description with four\nlines of varying content\nthat pushes the item\ntaller than the rest.', // 4 lines
+];
+
+const AHG_COLORS = [
+  '#1a3a5c', '#2d5a27', '#5c1a2e', '#3a2d5c',
+  '#5c3a1a', '#1a5c4f', '#4a1a5c', '#5c4a1a',
+];
+
+type AHGCard = { id: string; color: string; num: number; label: string; desc: string; tags: string[] };
+
+function makeAHGSections(): { key: string; items: AHGCard[] }[] {
+  const TAGS = [[], ['new'], ['hot'], ['sale', 'new'], ['featured']];
+  const sections = [
+    { key: 'ahg-nature',   count: 12, prefix: 'ahg-nat' },
+    { key: 'ahg-cities',   count: 10, prefix: 'ahg-city' },
+    { key: 'ahg-abstract', count: 14, prefix: 'ahg-abs' },
+  ];
+  return sections.map(sec => ({
+    key: sec.key,
+    items: Array.from({ length: sec.count }, (_, i) => ({
+      id:    `${sec.prefix}-${i}`,
+      color: AHG_COLORS[(i + sec.count) % AHG_COLORS.length]!,
+      num:   i,
+      label: `${sec.key.split('-')[1]} #${i + 1}`,
+      desc:  AHG_DESCRIPTIONS[i % AHG_DESCRIPTIONS.length]!,
+      tags:  TAGS[i % TAGS.length]!,
+    })),
+  }));
+}
+
+const staticAHGSections = makeAHGSections();
+
+function AdaptiveHGridDemo() {
+  const cvRef = useRef<any>(null);
+  const layoutRef = useRef(
+    grid({
+      horizontal: true,
+      columns: AHG_COLS,
+      estimatedCrossAxisHeight: 120,
+      columnSpacing: AHG_COL_SPACING,
+      rowSpacing: 4,
+      sectionSpacing: 8,
+      sectionBackground: true,
+      stickyMode: 'push',
+      headerHeight: 20,
+      footerHeight: 20,
+      sectionBackgroundContentInsets: { top: -2, bottom: -2, left: -4, right: -4 },
+    })
+  );
+
+  const [s0Items, setS0Items] = useState<AHGCard[]>(staticAHGSections[0]!.items);
+  const [s1Items] = useState<AHGCard[]>(staticAHGSections[1]!.items);
+  const [s2Items] = useState<AHGCard[]>(staticAHGSections[2]!.items);
+  const [containerH, setContainerH] = useState(AHG_ESTIMATED_H);
+  const [mvcEnabled, setMvcEnabled] = useState(false);
+  const [decoCount, setDecoCount] = useState(0);
+
+  // Counter for unique inserted item IDs
+  const insertCounter = useRef(100);
+
+  const handleInsert = useCallback(() => {
+    const n = insertCounter.current++;
+    // Pick a random description to add height variance
+    const desc = AHG_DESCRIPTIONS[n % AHG_DESCRIPTIONS.length]!;
+    const newItem: AHGCard = {
+      id:    `ahg-ins-${n}`,
+      color: AHG_COLORS[n % AHG_COLORS.length]!,
+      num:   n,
+      label: `Inserted #${n}`,
+      desc,
+      tags:  n % 3 === 0 ? ['new'] : [],
+    };
+    setS0Items(prev => [newItem, ...prev]);
+  }, []);
+
+  const handleDelete = useCallback(() => {
+    setS0Items(prev => (prev.length > 1 ? prev.slice(0, -4) : prev));
+  }, []);
+
+  const sections = useMemo(() => [
+    { key: 'ahg-nature',   data: s0Items },
+    { key: 'ahg-cities',   data: s1Items },
+    { key: 'ahg-abstract', data: s2Items },
+  ], [s0Items, s1Items, s2Items]);
+
+  const META: Record<string, { color: string; label: string }> = {
+    'ahg-nature':   { color: '#14532d', label: 'NATURE' },
+    'ahg-cities':   { color: '#1e3a5f', label: 'CITIES' },
+    'ahg-abstract': { color: '#4a1942', label: 'ABS' },
+  };
+
+  const renderHeader = useCallback(({ section }: { section: any }) => {
+    const meta = META[section.key] ?? { color: '#333', label: section.key };
+    return (
+      <View style={[AHGS.sectionHeader, { backgroundColor: meta.color }]}>
+        <Text style={AHGS.sectionHeaderTitle}>{meta.label.split('').join('\n')}</Text>
+      </View>
+    );
+  }, []);
+
+  const renderFooter = useCallback(({ section }: { section: any }) => {
+    const meta = META[section.key] ?? { color: '#333', label: section.key };
+    return (
+      <View style={[AHGS.sectionFooter, { backgroundColor: meta.color }]}>
+        <Text style={AHGS.sectionFooterLabel}>{'END'.split('').join('\n')}</Text>
+      </View>
+    );
+  }, []);
+
+  const renderCard = useCallback(({ item }: { item: AHGCard }) => (
+    <View style={[AHGS.card, { backgroundColor: item.color + 'cc' }]}>
+      <View style={AHGS.cardThumb}>
+        <Text style={AHGS.cardThumbNum}>{item.num + 1}</Text>
+      </View>
+      <Text style={AHGS.cardLabel}>{item.label}</Text>
+      {item.desc !== '' && (
+        <Text style={AHGS.cardDesc}>{item.desc}</Text>
+      )}
+      {item.tags.length > 0 && (
+        <View style={AHGS.tagRow}>
+          {item.tags.map(t => (
+            <View key={t} style={AHGS.tag}>
+              <Text style={AHGS.tagText}>{t}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  ), []);
+
+  const keyExtractor = useCallback((item: AHGCard) => item.id, []);
+
+  const onContentSizeChange = useCallback((_w: number, h: number) => {
+    if (h > 20) setContainerH(prev => Math.abs(prev - h) > 2 ? h : prev);
+  }, []);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
+      <View style={AHGS.titleBar}>
+        <Text style={AHGS.title}>Adaptive H-Grid (2 rows · auto cross-axis)</Text>
+        <Text style={AHGS.subtitle}>
+          {'Container = maxItemHeight × 2 + spacing + insets · now: ' + Math.round(containerH) + 'pt'}
+        </Text>
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={AHGS.ctrlBar} contentContainerStyle={AHGS.ctrlBarContent}>
+        <CtrlBtn label="← Start" onPress={() => cvRef.current?.scrollToOffset({ x: 0 })} />
+        <CtrlBtn label="→ S1" onPress={() => cvRef.current?.scrollToItem('ahg-cities:ahg-city-0', { position: 'start' })} />
+        <CtrlBtn label="→ S2" onPress={() => cvRef.current?.scrollToItem('ahg-abstract:ahg-abs-0', { position: 'start' })} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label="+1" onPress={handleInsert} />
+        <CtrlBtn label="×4" onPress={handleDelete} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
+        <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
+        </View>
+      </ScrollView>
+
+      {/* Container auto-sized from contentSize reported after first layout pass */}
+      <View style={[AHGS.listBackground, { height: containerH }]}>
+        <CollectionView
+          ref={cvRef}
+          horizontal
+          sections={sections}
+          layout={layoutRef.current}
+          keyExtractor={keyExtractor}
+          renderItem={renderCard}
+          renderSectionHeader={renderHeader}
+          renderSectionFooter={renderFooter}
+          decorationRenderers={{
+            sectionBackground: {
+              render: (si, frame) => (
+                <View style={{
+                  ...StyleSheet.absoluteFillObject,
+                  backgroundColor: Object.values(META)[si % 3]?.color + '33',
+                  borderRadius: 8,
+                }} />
+              ),
+              onCountChange: setDecoCount,
+            },
+          }}
+          stickyHeaderIndices={[]}
+          scrollEventThrottle={16}
+          mutationVector={mvcEnabled ? { type: 'auto' } : undefined}
+          scrollViewProps={{ onContentSizeChange }}
+          style={{ flex: 1 }}
+        />
+      </View>
+    </View>
+  );
+}
+
+const AHGS = StyleSheet.create({
+  titleBar:  { paddingHorizontal: 12, paddingVertical: 6 },
+  title:     { fontSize: 12, fontWeight: '700', color: '#ccc' },
+  subtitle:  { fontSize: 10, color: '#666', marginTop: 2 },
+
+  ctrlBar:        { flexGrow: 0, backgroundColor: '#111' },
+  ctrlBarContent: { flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, gap: 4 },
+
+  listBackground: { backgroundColor: '#0f1623', overflow: 'hidden' },
+
+  sectionHeader:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionHeaderTitle: { fontSize: 7, fontWeight: '700', color: 'rgba(255,255,255,0.7)',
+                        textAlign: 'center', lineHeight: 9 },
+  sectionFooter:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionFooterLabel: { fontSize: 7, color: 'rgba(255,255,255,0.5)', fontWeight: '600',
+                        textAlign: 'center', lineHeight: 9 },
+
+  // Card: NOT flex:1 here — let content determine natural height for adaptive measurement.
+  card:        { borderRadius: 12, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 6,
+                 margin: 4 },
+  cardThumb:   { width: 48, height: 48, borderRadius: 10, backgroundColor: 'rgba(0,0,0,0.3)',
+                 alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  cardThumbNum:{ fontSize: 18, fontWeight: '800', color: '#fff' },
+  cardLabel:   { fontSize: 10, color: 'rgba(255,255,255,0.9)', fontWeight: '600',
+                 textAlign: 'center' },
+  cardDesc:    { fontSize: 9, color: 'rgba(255,255,255,0.55)', textAlign: 'center',
+                 marginTop: 4, lineHeight: 13 },
+  tagRow:      { flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 5,
+                 justifyContent: 'center' },
+  tag:         { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 4,
+                 paddingHorizontal: 4, paddingVertical: 2 },
+  tagText:     { fontSize: 7, color: '#fff', fontWeight: '700', textTransform: 'uppercase' },
 });

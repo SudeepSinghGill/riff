@@ -247,12 +247,29 @@ static os_log_t rncvLog(void) {
 
   // Apply content size to scroll view.
   CGSize contentSize = CGSizeMake(data.contentSize.width, data.contentSize.height);
-  if (!CGSizeEqualToSize(_scrollView.contentSize, contentSize)) {
+  BOOL contentSizeChanged = !CGSizeEqualToSize(_scrollView.contentSize, contentSize);
+  if (contentSizeChanged) {
     _scrollView.contentSize = contentSize;
   }
 
   // Resize content view to match.
   _contentView.frame = CGRectMake(0, 0, contentSize.width, contentSize.height);
+
+  // Fire onScroll when content size changes so JS can synthesize onContentSizeChange.
+  // topContentSizeChange is not a registered Fabric event, so we piggyback on onScroll.
+  // CollectionView.tsx detects the size change and calls scrollViewProps.onContentSizeChange.
+  if (contentSizeChanged && _eventEmitter) {
+    auto emitter = std::static_pointer_cast<
+        const RNCollectionViewContainerEventEmitter>(_eventEmitter);
+    RNCollectionViewContainerEventEmitter::OnScroll event;
+    event.contentOffset.x        = _scrollView.contentOffset.x;
+    event.contentOffset.y        = _scrollView.contentOffset.y;
+    event.contentSize.width      = contentSize.width;
+    event.contentSize.height     = contentSize.height;
+    event.layoutMeasurement.width  = _scrollView.bounds.size.width;
+    event.layoutMeasurement.height = _scrollView.bounds.size.height;
+    emitter->onScroll(event);
+  }
 
   // Compute MVC correction here (post-Yoga positions are in LayoutCache), but
   // defer applying it to contentOffset until the end of layoutSubviews — AFTER
@@ -313,6 +330,66 @@ static os_log_t rncvLog(void) {
     emitter->onScroll(event);
   }
 
+}
+
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView
+{
+  if (!_eventEmitter) return;
+  auto emitter = std::static_pointer_cast<
+      const RNCollectionViewContainerEventEmitter>(_eventEmitter);
+  RNCollectionViewContainerEventEmitter::OnScrollBeginDrag event;
+  event.contentOffset.x        = scrollView.contentOffset.x;
+  event.contentOffset.y        = scrollView.contentOffset.y;
+  event.contentSize.width      = scrollView.contentSize.width;
+  event.contentSize.height     = scrollView.contentSize.height;
+  event.layoutMeasurement.width  = scrollView.bounds.size.width;
+  event.layoutMeasurement.height = scrollView.bounds.size.height;
+  emitter->onScrollBeginDrag(event);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+  if (!_eventEmitter) return;
+  auto emitter = std::static_pointer_cast<
+      const RNCollectionViewContainerEventEmitter>(_eventEmitter);
+  RNCollectionViewContainerEventEmitter::OnScrollEndDrag event;
+  event.contentOffset.x        = scrollView.contentOffset.x;
+  event.contentOffset.y        = scrollView.contentOffset.y;
+  event.contentSize.width      = scrollView.contentSize.width;
+  event.contentSize.height     = scrollView.contentSize.height;
+  event.layoutMeasurement.width  = scrollView.bounds.size.width;
+  event.layoutMeasurement.height = scrollView.bounds.size.height;
+  emitter->onScrollEndDrag(event);
+}
+
+- (void)scrollViewWillBeginDecelerating:(UIScrollView *)scrollView
+{
+  if (!_eventEmitter) return;
+  auto emitter = std::static_pointer_cast<
+      const RNCollectionViewContainerEventEmitter>(_eventEmitter);
+  RNCollectionViewContainerEventEmitter::OnMomentumScrollBegin event;
+  event.contentOffset.x        = scrollView.contentOffset.x;
+  event.contentOffset.y        = scrollView.contentOffset.y;
+  event.contentSize.width      = scrollView.contentSize.width;
+  event.contentSize.height     = scrollView.contentSize.height;
+  event.layoutMeasurement.width  = scrollView.bounds.size.width;
+  event.layoutMeasurement.height = scrollView.bounds.size.height;
+  emitter->onMomentumScrollBegin(event);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+  if (!_eventEmitter) return;
+  auto emitter = std::static_pointer_cast<
+      const RNCollectionViewContainerEventEmitter>(_eventEmitter);
+  RNCollectionViewContainerEventEmitter::OnMomentumScrollEnd event;
+  event.contentOffset.x        = scrollView.contentOffset.x;
+  event.contentOffset.y        = scrollView.contentOffset.y;
+  event.contentSize.width      = scrollView.contentSize.width;
+  event.contentSize.height     = scrollView.contentSize.height;
+  event.layoutMeasurement.width  = scrollView.bounds.size.width;
+  event.layoutMeasurement.height = scrollView.bounds.size.height;
+  emitter->onMomentumScrollEnd(event);
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────────

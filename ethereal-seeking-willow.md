@@ -14,6 +14,8 @@
 | Horizontal list demo (sticky H/F, section bkg, scrollTo, insert/delete/resize, MVC) | ✅ Done (branch: `cur-section-footer-test`) |
 | L3.fix – Decoration bug fixes (stale frames, MVC anchor, fingerprint, demo UI) | ✅ Done (tag-based native positioning, visible separator color) |
 | L3.1 – Decoration contentInsets API (frame adjustment like NSCollectionLayoutDecorationItem) | ✅ Done (branch: `cur-decoration-content-insets`, merged to main) |
+| Horizontal grid layout (C++ H-branching + TS delegate + H-Grid demo tab) | ✅ Done (branch: `cur-horizontal-grid`, merged to main) |
+| H-grid adaptive cross-axis (always-adaptive, onContentSizeChange, full scroll events) | ✅ Done (branch: `cur-section-footer-test`) |
 | 5g – Extend ShadowNode to grid/masonry/flow | ⬜ Next |
 | 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
 | Grid rowAlignment – 'top'\|'center'\|'bottom' for uneven heightForItem rows | ⬜ Future (see PLAN.md F3.1) |
@@ -186,6 +188,38 @@ These all silently returned null for non-list layouts (grid, masonry, flow), cau
 - Search for any other `nativeMod.layoutCache.getAttributes('item-` calls in CollectionView.tsx that aren't routed through the layout engine's API
 - Once masonry and flow are implemented, run their demos with multi-section to verify no new hardcoding was introduced
 - Consider adding a lint rule or comment warning: "never hardcode layout-specific key prefixes; use `effectiveLayout.attributesFor*`"
+
+---
+
+## Key Architectural Findings: H-Grid Adaptive Cross-Axis (2026-04-05)
+
+### H-grid is always adaptive — no flag needed
+
+All H-grids always measure item cross-axis (height) via Yoga and self-determine container height. The "adaptive cross-axis" mode is not a flag; it is the only mode. Rationale: any user-provided dimension is always a best-effort estimate; Yoga is the authority. No `adaptiveCrossAxis` prop exists.
+
+### `shouldInvalidate` must return `false` for H-grid
+
+H-grid cross-axis height is OUTPUT (self-determined from item content), not input. If `shouldInvalidate` returns `true` on viewport height change, it triggers: `containerH` change → ScrollView height change → `shouldInvalidate(height changed)` → `prepare()` resets `_maxCrossAxisHeight` → content height changes → `containerH` changes → loop. Fix: H-grid `shouldInvalidate` always returns `false`.
+
+### `_maxCrossAxisHeight` must be preserved across `computeSections` calls
+
+On insert/delete, `computeSections()` clears the cache. Previously this reset `_maxCrossAxisHeight` to the estimate, causing a content-size bounce. Fix: preserve if `> 0`; only initialize from estimate on the very first call. Yoga re-measures and `applyMeasurements` corrects it afterward.
+
+### `applyMeasurements` H-grid: measure-then-reflow, not linear cascade
+
+The old linear `aggregateShift` cascade gave items in the same column-group different X values (each row's delta polluted the next row's start). Fix: 3-phase approach — (1) write measured dimensions into cache, (2) compute global max cross-axis height, (3) full reflow via `computeSectionFromCache` which correctly groups items by column-group. The column-group X alignment logic was already correct in `computeSectionFromCache`.
+
+### `onContentSizeChange` is not a native Fabric event
+
+`topContentSizeChange` is not registered in Fabric's event registry (in standard RN it was always synthesized JS-side). Attempting to declare it in the codegen spec causes a runtime crash (`Unsupported top level event type "topContentSizeChange" dispatched`). Fix: do not add it to the spec. Instead, native fires `onScroll` from `updateState:` when `_scrollView.contentSize` changes; `CollectionView.tsx` detects size changes in the `onScroll` handler using `prevContentSizeRef` and calls `scrollViewProps.onContentSizeChange(w, h)` when the size differs by > 0.5pt.
+
+### Scroll event completeness
+
+Added `onScrollBeginDrag`, `onScrollEndDrag`, `onMomentumScrollBegin`, `onMomentumScrollEnd` as proper `DirectEventHandler` events in both the codegen spec and native `UIScrollViewDelegate` implementation. These are registered Fabric events (matching RN's standard naming). No throttling needed for discrete gesture-phase events. `onScroll` continues to use `scrollEventThrottle` (Fabric coalesces all `DirectEventHandler` events automatically).
+
+### MVC limitation for multi-column H-grids
+
+MVC anchor tracks primary-axis (X) correction only. Inserting at index 0 in a 2-row H-grid pushes an item from row 0 to row 1 (cross-axis shift), which MVC cannot compensate. Same limitation exists in UICollectionView. Use `scrollTo` after insert instead.
 
 ---
 

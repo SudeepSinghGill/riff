@@ -132,7 +132,9 @@ class GridLayoutEngine implements CollectionViewLayout {
         sectionBackgroundInsetRight:  d.sectionBackgroundContentInsets?.right  ?? 0,
         // Horizontal mode params
         horizontal: H,
-        viewportHeight: context.containerHeight,
+        // H-grid: viewportHeight is not used for cross-axis sizing (always adaptive).
+        // Passed as 0 so C++ knows container height is not pre-specified.
+        viewportHeight: H ? 0 : context.containerHeight,
         estimatedCrossAxisHeight: d.estimatedCrossAxisHeight ?? 200,
         keys,
         keyPrefix: '', // keys are provided explicitly above
@@ -163,10 +165,13 @@ class GridLayoutEngine implements CollectionViewLayout {
   }
 
   shouldInvalidate(oldBounds: Rect, newBounds: Rect): boolean {
-    // Vertical grid invalidates when width changes; horizontal when height changes.
-    return this.horizontal
-      ? Math.abs(oldBounds.height - newBounds.height) > 0.5
-      : Math.abs(oldBounds.width  - newBounds.width)  > 0.5;
+    // V-grid: re-layout when viewport width changes (column widths change).
+    // H-grid: cross-axis height is self-determined from item content — never re-layout
+    // based on viewport height changes. Doing so causes oscillation: height update →
+    // containerH changes → scrollView height changes → shouldInvalidate → prepare() resets
+    // _maxCrossAxisHeight → height changes again → loop.
+    if (this.horizontal) return false;
+    return Math.abs(oldBounds.width - newBounds.width) > 0.5;
   }
 
   invalidationScope(): InvalidationScope {

@@ -32,7 +32,15 @@ void GridLayout::compute(const GridLayoutParams& params) {
   _columns        = params.columns > 0 ? params.columns : 1;
   _horizontal     = params.horizontal;
   _viewportHeight = params.viewportHeight;
-  _sectionParams  = { params };
+  if (_horizontal) {
+    const double est = params.estimatedCrossAxisHeight > 0 ? params.estimatedCrossAxisHeight : 100.0;
+    // Preserve measured value across calls — only initialise from estimate on first use.
+    // If already measured, applyMeasurements will correct it; resetting here would oscillate.
+    if (_maxCrossAxisHeight <= 0) {
+      _maxCrossAxisHeight = est;
+    }
+  }
+  _sectionParams = { params };
   computeSection(params, 0, 0.0);
 }
 
@@ -60,17 +68,26 @@ double GridLayout::computeSection(const GridLayoutParams& p,
   //    cols items per column-group; itemCrossSize = row height derived from viewport.
   //    itemPrimarySize = estimated width (Yoga measures actual widths; applyMeasurements corrects).
   //    itemHeights[] is unused for horizontal — cross-axis size is always derived from column count.
-  const double crossContent = H
-      ? p.viewportHeight - p.sectionInsetTop - p.sectionInsetBottom
-      : p.viewportWidth  - p.sectionInsetLeft - p.sectionInsetRight;
   const double crossStart        = H ? p.sectionInsetTop   : p.sectionInsetLeft;
   const double primaryInsetStart = H ? p.sectionInsetLeft  : p.sectionInsetTop;
   const double primaryInsetEnd   = H ? p.sectionInsetRight : p.sectionInsetBottom;
 
   const double totalColSpacing = p.columnSpacing * (cols - 1);
-  const double itemCrossSize   = crossContent > 0
-      ? (crossContent - totalColSpacing) / cols
-      : 0.0;
+
+  // Cross-axis sizing:
+  //   H: itemCrossSize = global max Yoga-measured item height (estimates on first pass,
+  //      grows as applyMeasurements receives height deltas). crossContent derived bottom-up.
+  //   V: crossContent from viewportWidth; itemCrossSize = column width derived top-down.
+  double crossContent, itemCrossSize;
+  if (H) {
+    itemCrossSize = _maxCrossAxisHeight > 0 ? _maxCrossAxisHeight
+                 : (p.estimatedCrossAxisHeight > 0 ? p.estimatedCrossAxisHeight : 100.0);
+    crossContent  = itemCrossSize * cols + totalColSpacing;
+  } else {
+    const double rawCross = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
+    itemCrossSize = rawCross > 0 ? (rawCross - totalColSpacing) / cols : 0.0;
+    crossContent  = rawCross;
+  }
 
   // Primary-axis size per item.
   // V: rowHeight (fixed) or per-item height from p.itemHeights (dynamic).
@@ -92,7 +109,9 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     hdr.isDirty           = false;
     hdr.alpha             = 1.0;
     if (H) {
-      hdr.frame = { primary, 0, p.headerHeight, p.viewportHeight };
+      // Header height = full cross extent: insets + items area + insets.
+      const double hdrCrossH = p.sectionInsetTop + crossContent + p.sectionInsetBottom;
+      hdr.frame = { primary, 0, p.headerHeight, hdrCrossH };
     } else {
       hdr.frame = { crossStart, primary, crossContent, p.headerHeight };
     }
@@ -306,7 +325,8 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     ftr.isDirty           = false;
     ftr.alpha             = 1.0;
     if (H) {
-      ftr.frame = { primary, 0, p.footerHeight, p.viewportHeight };
+      const double ftrCrossH = p.sectionInsetTop + crossContent + p.sectionInsetBottom;
+      ftr.frame = { primary, 0, p.footerHeight, ftrCrossH };
     } else {
       ftr.frame = { crossStart, primary, crossContent, p.footerHeight };
     }
@@ -335,18 +355,23 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
   double primary        = startPrimary;
   double bgStartPrimary = startPrimary;
 
-  // Axis setup — same as computeSection.
-  const double crossContent = H
-      ? p.viewportHeight - p.sectionInsetTop - p.sectionInsetBottom
-      : p.viewportWidth  - p.sectionInsetLeft - p.sectionInsetRight;
+  // Axis setup — mirrors computeSection.
   const double crossStart        = H ? p.sectionInsetTop   : p.sectionInsetLeft;
   const double primaryInsetStart = H ? p.sectionInsetLeft  : p.sectionInsetTop;
   const double primaryInsetEnd   = H ? p.sectionInsetRight : p.sectionInsetBottom;
 
   const double totalColSpacing = p.columnSpacing * (cols - 1);
-  const double itemCrossSize   = crossContent > 0
-      ? (crossContent - totalColSpacing) / cols
-      : 0.0;
+
+  double crossContent, itemCrossSize;
+  if (H) {
+    itemCrossSize = _maxCrossAxisHeight > 0 ? _maxCrossAxisHeight
+                 : (p.estimatedCrossAxisHeight > 0 ? p.estimatedCrossAxisHeight : 100.0);
+    crossContent  = itemCrossSize * cols + totalColSpacing;
+  } else {
+    const double rawCross = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
+    itemCrossSize = rawCross > 0 ? (rawCross - totalColSpacing) / cols : 0.0;
+    crossContent  = rawCross;
+  }
 
   const bool   fixedPrimary     = p.rowHeight > 0;
   const double estimatedPrimary = H
@@ -367,11 +392,12 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     hdr.isDirty           = false;
     hdr.alpha             = 1.0;
     if (H) {
-      // Preserve measured header width (primary axis); height = full viewport.
+      // Preserve measured header width (primary axis); height = full cross extent.
       const double hW = (existingHdr && existingHdr->frame.width > 0)
           ? existingHdr->frame.width
           : p.headerHeight;
-      hdr.frame = { primary, 0, hW, p.viewportHeight };
+      const double hdrCrossH = p.sectionInsetTop + crossContent + p.sectionInsetBottom;
+      hdr.frame = { primary, 0, hW, hdrCrossH };
       primary       += hW;
     } else {
       // Preserve measured header height (Yoga may have refined it).
@@ -387,10 +413,12 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
 
   primary += primaryInsetStart;
 
-  // ── Read primary-axis sizes from cache ────────────────────────────────────
-  // V: reads frame.height (item heights measured by Yoga).
-  // H: reads frame.width (item widths measured by Yoga).
+  // ── Read axis sizes from cache ────────────────────────────────────────────
+  // V: reads frame.height (Yoga-measured item heights).
+  // H: reads frame.width (Yoga-measured primary widths) AND frame.height (Yoga-measured
+  //    natural cross heights; items may be shorter than maxCrossH).
   std::vector<double> primarySizes(p.itemCount);
+  std::vector<double> crossSizes(p.itemCount); // H only: Yoga-measured natural heights
   for (int i = 0; i < p.itemCount; ++i) {
     const std::string key = (i < static_cast<int>(p.keys.size()))
         ? p.keys[i]
@@ -400,6 +428,9 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
       primarySizes[i] = (existing && existing->frame.width > 0)
           ? existing->frame.width
           : (estimatedPrimary > 0 ? estimatedPrimary : 200.0);
+      crossSizes[i] = (existing && existing->frame.height > 0)
+          ? existing->frame.height
+          : itemCrossSize;
     } else {
       primarySizes[i] = (existing && existing->frame.height > 0)
           ? existing->frame.height
@@ -420,7 +451,9 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     const double sz = primarySizes[i];
     const double crossPos = crossStart + col * (itemCrossSize + p.columnSpacing);
     if (H) {
-      frames[i] = { rowStartPrimary, crossPos, sz, itemCrossSize };
+      // Preserve Yoga-measured natural height. Items may be shorter than maxCrossH;
+      // column Y positions are spaced by maxCrossH so items don't overlap.
+      frames[i] = { rowStartPrimary, crossPos, sz, crossSizes[i] };
     } else {
       frames[i] = { crossPos, rowStartPrimary, itemCrossSize, sz };
     }
@@ -596,7 +629,8 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
       const double fW = (existingFtr && existingFtr->frame.width > 0)
           ? existingFtr->frame.width
           : p.footerHeight;
-      ftr.frame = { primary, 0, fW, p.viewportHeight };
+      const double ftrCrossH = p.sectionInsetTop + crossContent + p.sectionInsetBottom;
+      ftr.frame = { primary, 0, fW, ftrCrossH };
       primary += fW;
     } else {
       const double fH = (existingFtr && existingFtr->frame.height > 0)
@@ -621,7 +655,15 @@ void GridLayout::computeSections(const std::vector<GridLayoutParams>& sections) 
   _horizontal     = sections[0].horizontal;
   _viewportHeight = sections[0].viewportHeight;
   _columns        = sections[0].columns > 0 ? sections[0].columns : 2;
-  _sectionParams  = sections;
+  if (_horizontal) {
+    const double est = sections[0].estimatedCrossAxisHeight > 0 ? sections[0].estimatedCrossAxisHeight : 100.0;
+    // Preserve measured value across calls — only initialise from estimate on first use.
+    // If already measured, applyMeasurements will correct it; resetting here would oscillate.
+    if (_maxCrossAxisHeight <= 0) {
+      _maxCrossAxisHeight = est;
+    }
+  }
+  _sectionParams = sections;
 
   double primary = 0.0;
   for (int s = 0; s < static_cast<int>(sections.size()); ++s) {
@@ -674,7 +716,90 @@ bool GridLayout::applyMeasurements(
     LayoutCache& cache) {
   if (deltas.empty()) return true;
 
-  // Apply height deltas and track the first changed section.
+  const bool H = _horizontal;
+
+  // ── Horizontal grid path ──────────────────────────────────────────────────
+  //
+  // contentDeterminedDimension() = Both → ShadowNode sends width AND height deltas.
+  //
+  // A linear "cascade" does NOT work for H-grid: items in the same column-group
+  // share the same starting X, so processing them one-by-one with an accumulating
+  // shift gives different X values to rows within the same group.
+  //
+  // Correct approach — measure then reflow:
+  //   Phase 1: Write Yoga-measured widths and heights into the cache.
+  //            Classify each delta by matching oldValue against frame.width vs frame.height.
+  //   Phase 2: Update _maxCrossAxisHeight from all items (always — both width and height
+  //            deltas may arrive together).
+  //   Phase 3: Full reflow via computeSectionFromCache for every section.
+  //            computeSectionFromCache groups items into column-groups, tracks rowMaxPrimary
+  //            (= max width in group), gives ALL items in a group the same X, and advances
+  //            by rowMaxPrimary + rowSpacing — which is the correct column-group cascade.
+  if (H) {
+    // Phase 1: Write measured dimensions into cache.
+    for (const auto& d : deltas) {
+      auto existing = cache.getAttributes(d.key);
+      if (!existing) continue;
+      if (existing->isDecoration && existing->decorationKind == "sectionBackground") continue;
+
+      auto updated = *existing;
+      const bool matchesH = std::abs(existing->frame.height - d.oldValue) < 1.0;
+      const bool matchesW = std::abs(existing->frame.width  - d.oldValue) < 1.0;
+      bool changed = false;
+
+      if (matchesH && !matchesW) {
+        if (std::abs(d.newValue - updated.frame.height) > 0.01) {
+          updated.frame.height = d.newValue;
+          changed = true;
+        }
+      } else if (matchesW && !matchesH) {
+        if (std::abs(d.newValue - updated.frame.width) > 0.01) {
+          updated.frame.width = d.newValue;
+          changed = true;
+        }
+      } else if (matchesH && matchesW) {
+        if (std::abs(d.newValue - updated.frame.width) > 0.01 ||
+            std::abs(d.newValue - updated.frame.height) > 0.01) {
+          updated.frame.width  = d.newValue;
+          updated.frame.height = d.newValue;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        if (updated.sizingState != SizingState::Measured) {
+          updated.sizingState = SizingState::Measured;
+        }
+        cache.setAttributes(updated);
+      }
+    }
+
+    // Phase 2: Update global max cross height from all item frames in cache.
+    {
+      double globalMaxH = 0.0;
+      auto allNow = cache.getAll();
+      for (const auto& attr : allNow) {
+        if (!attr.isDecoration && !attr.isSupplementary && attr.frame.height > 0) {
+          globalMaxH = std::max(globalMaxH, attr.frame.height);
+        }
+      }
+      if (globalMaxH > 0) {
+        _maxCrossAxisHeight = globalMaxH;
+      }
+    }
+
+    // Phase 3: Full reflow — computeSectionFromCache handles column-group X alignment.
+    if (!_sectionParams.empty()) {
+      double primary = 0.0;
+      for (int s = 0; s < static_cast<int>(_sectionParams.size()); ++s) {
+        primary = computeSectionFromCache(_sectionParams[s], s, primary);
+      }
+    }
+
+    return true;
+  }
+
+  // ── Fixed H-grid / Vertical grid path ────────────────────────────────────
   //
   // Section backgrounds are layout-determined (height = primary - bgStartPrimary).
   // Writing Yoga's measurement to a section background would corrupt its height
@@ -690,7 +815,6 @@ bool GridLayout::applyMeasurements(
   // firstChangedSection because a separator delta alone doesn't shift item positions.
   // For horizontal grid: Yoga measures item WIDTHS (primary axis) → write to frame.width.
   // For vertical grid: Yoga measures item HEIGHTS → write to frame.height (existing behavior).
-  const bool H = _horizontal;
 
   int firstChangedSection = INT_MAX;
   for (const auto& d : deltas) {

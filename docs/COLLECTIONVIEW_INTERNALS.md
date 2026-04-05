@@ -431,6 +431,117 @@ rg 'getAttributes\(' example/components/CollectionView.tsx
 
 ---
 
+## Horizontal Grid — Adaptive Cross-Axis
+
+### H-grid is always adaptive
+
+All H-grids measure item cross-axis (height) via Yoga and self-determine container height. This is not an opt-in flag; it is the only mode. Item heights are best-effort estimates; Yoga is always the authority. No `adaptiveCrossAxis` prop exists on `GridLayoutDelegate`.
+
+**C++ signal:** `_horizontal == true` in `GridLayout.cpp`. `contentDeterminedDimension()` returns `Both` for H-grid, telling the ShadowNode to collect both width and height deltas.
+
+**`_maxCrossAxisHeight`:** Global tracker across all sections. Initialized from `estimatedCrossAxisHeight` on the very first `computeSections()` call only. Preserved (not reset) on subsequent calls, e.g. after insert/delete. Updated upward by `applyMeasurements()` after Yoga measures items.
+
+**Container height:** JS reads `effectiveLayout.contentSize().height` from `onContentSizeChange` and stores it in `containerH` state. The container `<View style={{ height: containerH }}>` wraps the native component.
+
+### `shouldInvalidate` must return `false` for H-grid
+
+H-grid cross-axis height is OUTPUT (content-determined), not INPUT. Returning `true` on viewport height change causes an oscillation loop:
+
+```
+containerH changes → ScrollView height changes → shouldInvalidate(height changed) returns true
+  → prepare() resets _maxCrossAxisHeight → applyMeasurements recalculates → content height changes
+  → containerH changes → loop
+```
+
+`GridLayoutEngine.shouldInvalidate()` always returns `false` for H-grid. For V-grid it returns `true` only when viewport width changes (which changes column widths).
+
+### `applyMeasurements` for H-grid — measure-then-reflow
+
+A linear `aggregateShift` cascade breaks H-grid because items in the same column-group (same `rowStartPrimary`) get different X values: each row's shift delta contaminates the next row's starting position.
+
+The H-grid `applyMeasurements` path uses a 3-phase approach:
+
+1. **Write measured dimensions into cache** — classify each delta as width or height by matching `d.oldValue` against `existing->frame.width` / `existing->frame.height`. Update `sizingState = Measured`.
+2. **Compute global max cross height** — iterate all non-decoration, non-supplementary items in the entire cache; update `_maxCrossAxisHeight`.
+3. **Full reflow via `computeSectionFromCache`** — re-runs the column-group placement logic for every section, using the updated `_maxCrossAxisHeight`. This correctly aligns all items in the same column-group to the same X.
+
+The linear cascade is only used for V-grid and H-list (primary-axis-only deltas).
+
+### Cell height locking for supplementaries only
+
+For H-grid, item cells are NEVER height-locked — Yoga measures natural content height. Only supplementary (header/footer) cells are height-locked: their `frame.height` is the computed cross extent from the engine (typically `_maxCrossAxisHeight * cols + spacing + insets`). Without the lock, Yoga would re-measure the supplementary content (~100px) and ShadowNode Phase 2 would overwrite the cached cross extent.
+
+```tsx
+const isHorizSupplementary = isHorizLayout &&
+    (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
+const containerStyle = [{
+  position: 'absolute', left, top,
+  ...(viewportWidth > 0 ? { width: cellWidth } : {}),
+  ...(isHorizSupplementary && attr && attr.frame.height > 0 ? { height: attr.frame.height } : {}),
+}];
+```
+
+### MVC limitation for multi-column H-grids
+
+MVC anchor tracks primary-axis (X) correction only. Inserting at index 0 in a 2-row H-grid pushes an item from row 0 to row 1 (cross-axis shift), which MVC cannot compensate. Same limitation exists in UICollectionView. Recommendation: use `scrollTo` after insert for multi-column H-grids.
+
+---
+
+## `onContentSizeChange` Synthesis
+
+`topContentSizeChange` is NOT a registered Fabric event. In standard RN, `onContentSizeChange` was always synthesized JS-side from content view frame changes, never fired as a native event. Attempting to add it to a codegen spec causes a runtime crash:
+
+```
+Error: Unsupported top level event type "topContentSizeChange" dispatched
+```
+
+**Implementation:** Native fires `onScroll` from `updateState:` whenever `_scrollView.contentSize` changes. `CollectionView.tsx` detects size changes in the `onScroll` handler:
+
+```tsx
+const prevContentSizeRef = useRef({ width: 0, height: 0 });
+
+// inside onScroll handler, before forwarding to scrollViewProps.onScroll:
+if (scrollViewProps?.onContentSizeChange) {
+  const cs = e.nativeEvent.contentSize;
+  const prev = prevContentSizeRef.current;
+  if (Math.abs(cs.width - prev.width) > 0.5 || Math.abs(cs.height - prev.height) > 0.5) {
+    prevContentSizeRef.current = { width: cs.width, height: cs.height };
+    scrollViewProps.onContentSizeChange(cs.width, cs.height);
+  }
+}
+```
+
+The `0.5pt` threshold avoids spurious calls from floating-point rounding.
+
+**Do not add `onContentSizeChange` to the codegen spec.** The comment in `RNCollectionViewContainerNativeComponent.ts` documents this explicitly.
+
+---
+
+## Scroll Events
+
+The native `RNCollectionViewContainerView` emits all standard RN ScrollView scroll events:
+
+| Event | When | Throttling |
+|---|---|---|
+| `onScroll` | Every scroll frame + whenever content size changes | `scrollEventThrottle` prop (native-side throttle) |
+| `onScrollBeginDrag` | User begins dragging | None (discrete, fires once per gesture) |
+| `onScrollEndDrag` | User releases drag | None |
+| `onMomentumScrollBegin` | Deceleration begins (after drag release) | None |
+| `onMomentumScrollEnd` | Deceleration stops | None |
+
+All five are declared as `DirectEventHandler<OnScrollEvent>` in the codegen spec. Fabric coalesces `DirectEventHandler` events automatically when multiple fire before a JS batch is processed. `scrollEventThrottle` controls native throttling for `onScroll` only (the other four are too infrequent to need throttling).
+
+These map to `UIScrollViewDelegate` methods in native:
+- `scrollViewDidScroll:` → `onScroll`
+- `scrollViewWillBeginDragging:` → `onScrollBeginDrag`
+- `scrollViewDidEndDragging:willDecelerate:` → `onScrollEndDrag`
+- `scrollViewWillBeginDecelerating:` → `onMomentumScrollBegin`
+- `scrollViewDidEndDecelerating:` → `onMomentumScrollEnd`
+
+`CollectionView.tsx` forwards these to `scrollViewProps.onScroll{*}` handlers so the component is a drop-in for standard `ScrollView` prop consumers.
+
+---
+
 ## Codegen Setup (for native pod install)
 
 The library is NOT in `node_modules`. Auto-linking and codegen are driven by:

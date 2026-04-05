@@ -79,16 +79,19 @@ public:
       LayoutCache& cache) override;
 
   ContentDimension contentDeterminedDimension() const override {
-    return _horizontal ? ContentDimension::Width : ContentDimension::Height;
+    // H-grid: Yoga measures both widths (primary) and heights (cross).
+    // Engine tracks global max height for uniform column-row Y positioning.
+    return _horizontal ? ContentDimension::Both : ContentDimension::Height;
   }
 
   void installJSIBindings(facebook::jsi::Runtime& rt, facebook::jsi::Object& target);
 
 private:
   std::shared_ptr<LayoutCache> _cache;
-  int    _columns        = 2;
-  bool   _horizontal     = false;
-  double _viewportHeight = 0.0;
+  int    _columns            = 2;
+  bool   _horizontal         = false;
+  double _viewportHeight     = 0.0;     // retained for V-grid (cross=X); unused for H-grid cross-axis
+  double _maxCrossAxisHeight = 0.0;     // H-grid: global max Yoga-measured item height
   std::vector<GridLayoutParams> _sectionParams; // stored for applyMeasurements
 
   /** Layout one section from scratch. Returns next section's startPrimary. */

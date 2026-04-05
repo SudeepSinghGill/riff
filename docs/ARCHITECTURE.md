@@ -270,6 +270,24 @@ Stable item identity flows from JS to C++ to the LayoutCache:
 
 For Grid/Masonry/Flow, keys follow the pattern `"grid-N"` / `"masonry-N"` / `"flow-N"` when no `keyExtractor` is provided. Stable keys are supported but multi-section is not yet available for these layouts.
 
+### Horizontal Grid
+
+`grid({ horizontal: true })` is fully supported. Key design decisions:
+
+**Always adaptive cross-axis:** H-grid always measures item heights via Yoga and self-determines container height. No `adaptiveCrossAxis` flag. Any user-provided dimension is always a best-effort estimate; Yoga is the authority. The C++ engine tracks `_maxCrossAxisHeight` globally across all sections, initialized from `estimatedCrossAxisHeight` and updated upward by `applyMeasurements()`.
+
+**`contentDeterminedDimension` returns `Both`:** The ShadowNode is told the H-grid self-determines both scroll-axis (width) and cross-axis (height). This causes it to collect both width and height deltas for `applyMeasurements()`.
+
+**`shouldInvalidate` always returns `false`:** Container height is OUTPUT for H-grid, not INPUT. Returning `true` on viewport height change creates an oscillation loop (height change → `prepare()` resets `_maxCrossAxisHeight` → content height changes → container height changes → repeat). See `docs/COLLECTIONVIEW_INTERNALS.md` → "Horizontal Grid" for the full loop description.
+
+**Cell height locking for supplementaries only:** H-grid item cells are never height-locked (Yoga measures natural height). Supplementary (header/footer) cells ARE height-locked (`height: attr.frame.height` in `containerStyle`) to prevent ShadowNode Phase 2 from overwriting the cached cross extent with the content's natural height.
+
+**`applyMeasurements` uses measure-then-reflow:** A linear cascade is wrong for H-grid because it gives different X to items in the same column-group. The H-grid path: (1) write measurements into cache, (2) compute global max cross height, (3) full reflow via `computeSectionFromCache` which correctly aligns column-groups.
+
+**MVC limitation:** Multi-column H-grid inserts may shift items cross-axis (row 0 → row 1), which MVC cannot compensate (it tracks primary-axis only). Same limitation as UICollectionView. Use `scrollTo` after insert.
+
+---
+
 ### Decoration Views
 
 Layout-driven views that belong to the layout engine, not to data. The layout emits `LayoutAttributes` with `isDecoration: true` and `decorationKind: string`. They are windowed, z-ordered, and positioned like cells — but have no React data binding.
@@ -474,6 +492,22 @@ Core Fabric ShadowNode APIs (`ConcreteViewShadowNode`, `layout()` override, `Con
 **Why initially chose B:** Simpler initial implementation; existing ScrollView handles scroll natively.
 
 **Why reversed to A:** The ShadowNode needs the scroll offset for offset corrections and sticky header positioning. With Approach B, scroll offset flows: native UIScrollView -> JS onScroll -> prop to ShadowNode. This is the same native-to-JS-to-native roundtrip the ShadowNode is designed to eliminate. With Approach A, the native view reads scroll offset directly from its internal UIScrollView via the scroll delegate -- no JS hop. Additionally, the API is more natural: the collection view IS the scrollable thing, not a child of one.
+
+### H-grid is always adaptive (no adaptive flag)
+
+**Decision:** H-grid always measures item cross-axis height via Yoga and self-determines container height. No `adaptiveCrossAxis` flag.
+
+**Alternatives considered:** A boolean flag to opt into adaptive mode; separate fixed-height H-grid path.
+
+**Why:** Every user-provided dimension is always a best-effort estimate — this is a core invariant of Riff. An explicit adaptive flag would imply some mode where dimensions are not estimates, which contradicts the invariant. One mode (always adaptive) is simpler, more predictable, and consistent with the architecture's "all dimensions are estimates" principle.
+
+### `onContentSizeChange` synthesis in JS
+
+**Decision:** `onContentSizeChange` is synthesized in `CollectionView.tsx` from the `onScroll` event payload, not fired as a native Fabric event.
+
+**Alternatives considered:** Declare `onContentSizeChange` as a `DirectEventHandler` in the codegen spec.
+
+**Why:** `topContentSizeChange` is not registered in Fabric's event registry (confirmed by runtime crash: `Unsupported top level event type "topContentSizeChange" dispatched`). In standard RN, `onContentSizeChange` was always synthesized JS-side — it was never a native Fabric event. Our synthesis approach matches the historical RN behavior: native fires `onScroll` when content size changes; JS detects the size change using `prevContentSizeRef` and calls the user's callback.
 
 ### scrollViewProps bag over direct scroll props
 

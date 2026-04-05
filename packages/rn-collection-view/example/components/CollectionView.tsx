@@ -981,6 +981,7 @@ export function Riff<T = unknown>({
   const prevScrollYRef   = useRef(0);
   const prevScrollXRef   = useRef(0);  // for horizontal layouts
   const prevScrollTimeRef = useRef(0);
+  const prevContentSizeRef = useRef({ width: 0, height: 0 }); // for onContentSizeChange synthesis
   const velocityRef      = useRef(0);
 
   // P5.1 — counters for the debug HUD. Plain refs — no state, no re-renders.
@@ -1646,6 +1647,20 @@ export function Riff<T = unknown>({
       }
 
       nativeMod.signpost.end(0);
+
+      // Synthesize onContentSizeChange — topContentSizeChange is not a registered
+      // Fabric event, so we detect size changes from the onScroll payload instead.
+      // Native fires onScroll (with updated contentSize) from updateState: when
+      // content size changes, even without user scrolling.
+      if (scrollViewProps?.onContentSizeChange) {
+        const cs = e.nativeEvent.contentSize;
+        const prev = prevContentSizeRef.current;
+        if (Math.abs(cs.width - prev.width) > 0.5 || Math.abs(cs.height - prev.height) > 0.5) {
+          prevContentSizeRef.current = { width: cs.width, height: cs.height };
+          scrollViewProps.onContentSizeChange(cs.width, cs.height);
+        }
+      }
+
       scrollViewProps?.onScroll?.(e);
     },
   };
@@ -1857,19 +1872,24 @@ export function Riff<T = unknown>({
     const top  = (measureOnly && !useRealPosition) ? -9999 : estimatedTop;
     const left = (measureOnly && !useRealPosition) ? -9999 : cellLeft;
 
-    // For horizontal supplementary views (headers/footers), the C++ layout sets
-    // frame.height = viewportHeight (cross-axis). Without an explicit height here,
-    // Yoga measures content (~100px) and ShadowNode Phase 2 creates a delta that
-    // overwrites the cached viewportHeight. Lock the height so no delta is created.
-    const isHorizSupp = (effectiveLayout.horizontal ?? false)
-      && (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
+    // For horizontal layouts the cross-axis dimension (height) is determined by the engine:
+    //
+    // H-grid / H-list cross-axis height locking:
+    //   Cells are NEVER height-locked — Yoga measures natural content height.
+    //   Engine tracks global max measured item height and updates container accordingly.
+    //   Supplementaries ARE locked — their height = computed cross extent from engine.
+    const isHorizLayout = (effectiveLayout.horizontal ?? false);
+    const isHorizSupplementary = isHorizLayout &&
+        (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
+    // Cells in horizontal layouts are always Yoga-measured (no height constraint).
+    // Only supplementaries get their cross-axis height locked (engine computes full cross extent).
     const containerStyle = [
       {
         position: 'absolute' as const,
         left,
         top,
         ...(viewportWidth > 0 ? { width: cellWidth } : {}),
-        ...(isHorizSupp && attr ? { height: attr.frame.height } : {}),
+        ...(isHorizSupplementary && attr && attr.frame.height > 0 ? { height: attr.frame.height } : {}),
       },
     ];
 
@@ -2282,6 +2302,10 @@ export function Riff<T = unknown>({
         showsVerticalScrollIndicator={scrollViewProps?.showsVerticalScrollIndicator ?? true}
         scrollEventThrottle={16}
         onScroll={contractProps.onScroll}
+        onScrollBeginDrag={scrollViewProps?.onScrollBeginDrag as any}
+        onScrollEndDrag={scrollViewProps?.onScrollEndDrag as any}
+        onMomentumScrollBegin={scrollViewProps?.onMomentumScrollBegin as any}
+        onMomentumScrollEnd={scrollViewProps?.onMomentumScrollEnd as any}
       >
         {scrollContent}
       </RNCollectionViewContainer>

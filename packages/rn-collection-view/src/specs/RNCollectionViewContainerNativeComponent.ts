@@ -37,6 +37,7 @@ type OnScrollEvent = Readonly<{
   layoutMeasurement: Readonly<{ width: Float; height: Float }>;
 }>;
 
+
 interface NativeProps extends ViewProps {
   // Layout engine configuration
   layoutType?: WithDefault<'list' | 'grid' | 'masonry' | 'flow', 'list'>;
@@ -74,8 +75,14 @@ interface NativeProps extends ViewProps {
   showsVerticalScrollIndicator?: WithDefault<boolean, true>;
   scrollEventThrottle?: Float;
 
-  // Events
+  // Events — mirrors standard RN ScrollView events so scrollViewProps handlers work.
+  // Note: onContentSizeChange is NOT a native Fabric event (topContentSizeChange is
+  // unregistered); it is synthesized in CollectionView.tsx from the onScroll payload.
   onScroll?: DirectEventHandler<OnScrollEvent>;
+  onScrollBeginDrag?: DirectEventHandler<OnScrollEvent>;
+  onScrollEndDrag?: DirectEventHandler<OnScrollEvent>;
+  onMomentumScrollBegin?: DirectEventHandler<OnScrollEvent>;
+  onMomentumScrollEnd?: DirectEventHandler<OnScrollEvent>;
 }
 
 export default codegenNativeComponent<NativeProps>(
