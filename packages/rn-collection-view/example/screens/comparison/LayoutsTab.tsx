@@ -122,46 +122,68 @@ function MasonrySectionFooter({ color, count }: { color: string; count: number }
   );
 }
 
-// ── Flow data (tag cloud) — Two-pass + multi-section demo ────────────────────
-// The two-pass effect: initial render uses estimated sizes from sizeForItem().
-// Yoga then measures actual text widths. The layout engine receives the deltas
-// and reflows items into different row positions. Items visibly rearrange from
-// estimated to measured positions.
+// ── Flow data — S0: product cards, S1: tag cloud ─────────────────────────────
+// S0 demonstrates fractional-width bin-packing: banners fill one row, halves
+// pack 2-per-row, thirds pack 3-per-row. sizeForItem receives containerWidth
+// so widths are computed at layout time. Tap a card to expand/collapse it.
+// S1 demonstrates the two-pass effect: estimated tag widths → Yoga measures →
+// reflow. Items visibly rearrange from estimated to measured positions.
 
-// 3 sections of tags with different topics.
-const FLOW_S0_LABELS = [
-  'React Native', 'C++', 'JSI', 'TypeScript', 'Layout Engine', 'Masonry', 'Grid',
-  'Flow', 'Custom', 'Carousel', 'Performance', 'Virtualization', 'Windowing',
-  'Sticky', 'Headers', 'Prefetch', 'Diff', 'Snapshot', 'Animation', 'Fabric',
+// ── S0: product cards ──
+type FlowCard = { id: string; kind: 'banner' | 'half' | 'third'; label: string; color: string };
+
+// Pattern: banner, half, half, third, third, third — repeating
+const FC_PATTERN: Array<'banner' | 'half' | 'third'> = [
+  'banner',
+  'half', 'half',
+  'third', 'third', 'third',
+  'banner',
+  'half', 'half',
+  'third', 'third', 'third',
+  'banner',
+  'half', 'half',
 ];
+
+const FC_LABELS: Record<FlowCard['kind'], string[]> = {
+  banner: ['Featured Deal', 'New Arrivals', 'Top Picks'],
+  half:   ['Electronics', 'Fashion', 'Home', 'Sports', 'Books', 'Toys'],
+  third:  ['Shoes', 'Bags', 'Watches', 'Jewellery', 'Phones', 'Tablets', 'Cameras', 'Audio', 'Games'],
+};
+
+function makeFlowCards(): FlowCard[] {
+  const counters = { banner: 0, half: 0, third: 0 };
+  return FC_PATTERN.map((kind, i) => {
+    const idx = counters[kind]++;
+    return {
+      id: `fc-${i}`,
+      kind,
+      label: FC_LABELS[kind][idx % FC_LABELS[kind].length]!,
+      color: COLORS[(i * 3) % COLORS.length]!,
+    };
+  });
+}
+
+const FC_S0_INIT: FlowCard[] = makeFlowCards();
+
+// ── S1: tag cloud ──
 const FLOW_S1_LABELS = [
   'Hermes', 'iOS', 'Android', 'Yoga', 'Riff', 'FlashList', 'FlatList',
   'ScrollView', 'Reanimated', 'Gesture Handler', 'UIKit', 'SwiftUI', 'Compose',
   'Kotlin', 'Bridge', 'TurboModule', 'Codegen', 'Metro', 'Babel', 'SWC',
 ];
-const FLOW_S2_LABELS = [
-  // Longer labels to make two-pass effect more visible
-  'Layout Cache Architecture', 'Shadow Node Measurement', 'Content Determined Dimensions',
-  'Shortest Column Algorithm', 'Row Height Alignment', 'Viewport Windowing',
-  'Cell Identity Preservation', 'Scroll Offset Correction', 'Progressive Layout',
-  'Three-Tier Height Resolution',
-];
 
-type FlowTag = { id: string; label: string; estimatedWidth: number; color: string; section: number };
+type FlowTag = { id: string; label: string; estimatedWidth: number; color: string };
 
-function makeFlowSection(prefix: string, labels: string[], sectionIdx: number): FlowTag[] {
+function makeFlowTagSection(prefix: string, labels: string[], colorOffset: number): FlowTag[] {
   return labels.map((label, i) => ({
     id: `${prefix}-${i}`,
     label,
-    estimatedWidth: 20 + label.length * 7,  // intentionally imprecise
-    color: COLORS[(i + sectionIdx * 2) % COLORS.length]!,
-    section: sectionIdx,
+    estimatedWidth: 20 + label.length * 7,  // intentionally imprecise for two-pass demo
+    color: COLORS[(i + colorOffset) % COLORS.length]!,
   }));
 }
 
-const FS0_INIT = makeFlowSection('fs0', FLOW_S0_LABELS, 0);
-const FS1_DATA = makeFlowSection('fs1', FLOW_S1_LABELS, 1);
-const FS2_DATA = makeFlowSection('fs2', FLOW_S2_LABELS, 2);
+const FS1_DATA = makeFlowTagSection('fs1', FLOW_S1_LABELS, 2);
 
 const FL_HDR_H = 44;
 const FL_FTR_H = 28;
@@ -177,7 +199,7 @@ function FlowSectionHeader({ label, color }: { label: string; color: string }) {
 function FlowSectionFooter({ color, count }: { color: string; count: number }) {
   return (
     <View style={{ height: FL_FTR_H, backgroundColor: color + '44', justifyContent: 'center', paddingHorizontal: 14, borderTopWidth: 1, borderTopColor: color + '88' }}>
-      <Text style={{ color, fontSize: 11, fontWeight: '600' }}>{count} tags</Text>
+      <Text style={{ color, fontSize: 11, fontWeight: '600' }}>{count} items</Text>
     </View>
   );
 }
@@ -1035,64 +1057,78 @@ const HMS = StyleSheet.create({
 
 export function FlowDemo() {
   const cvRef = useRef<any>(null);
-  const [fs0Items, setFs0Items] = useState<FlowTag[]>(FS0_INIT);
+  const [s0Cards, setS0Cards] = useState<FlowCard[]>(FC_S0_INIT);
   const [mvcEnabled, setMvcEnabled] = useState(false);
-  const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
-  const insertCounter = useRef(FS0_INIT.length);
+  const [resizedIds, setResizedIds] = useState(() => new Set<string>());
+  const insertCounter = useRef(FC_S0_INIT.length);
 
-  const allSectionsRef = useRef<FlowTag[][]>([fs0Items, FS1_DATA, FS2_DATA]);
-  allSectionsRef.current = [fs0Items, FS1_DATA, FS2_DATA];
+  // Refs for access inside sizeForItem without closure staleness.
+  const s0CardsRef = useRef(s0Cards);
+  s0CardsRef.current = s0Cards;
+  const resizedIdsRef = useRef(resizedIds);
+  resizedIdsRef.current = resizedIds;
 
   const flowLayout = useMemo(() => flow({
     itemSpacing: 8,
     lineSpacing: 8,
     sectionSpacing: 16,
     sectionBackground: true,
-    separator: sepEnabled ? { color: '#334', height: 0.5 } : undefined,
-    sizeForItem: (i: number, s: number) => {
-      const item = allSectionsRef.current[s]?.[i];
-      if (!item) return { width: 80, height: 34 };
-      return { width: item.estimatedWidth, height: 34 };
+    sizeForItem: (i: number, s: number, containerWidth: number) => {
+      if (s === 0) {
+        const card = s0CardsRef.current[i];
+        if (!card) return { width: 80, height: 80 };
+        const expanded = resizedIdsRef.current.has(card.id);
+        const avail = containerWidth - 16; // insetLeft(8) + insetRight(8)
+        if (card.kind === 'banner') return { width: avail, height: expanded ? 160 : 80 };
+        if (card.kind === 'half')   return { width: (avail - 8) / 2, height: expanded ? 200 : 120 };
+        /* third */                 return { width: (avail - 16) / 3, height: expanded ? 140 : 80 };
+      }
+      // S1: tag cloud — estimated widths, Yoga corrects
+      const tag = FS1_DATA[i];
+      return { width: tag?.estimatedWidth ?? 80, height: 34 };
     },
-  }), [sepEnabled, fs0Items]);
+  }), [resizedIds, s0Cards]);
 
-  const keyExtractor = useCallback((item: FlowTag) => item.id, []);
+  const keyExtractor = useCallback((item: FlowCard | FlowTag) => item.id, []);
 
   const handleInsert = useCallback(() => {
     const idx = insertCounter.current++;
-    const label = FLOW_S0_LABELS[idx % FLOW_S0_LABELS.length]!;
-    setFs0Items(prev => [{
-      id: `fs0-ins-${idx}`, label, section: 0,
-      estimatedWidth: 20 + label.length * 7,
+    // Insert a 'third' card so it doesn't break an existing row pattern too badly.
+    const kinds: FlowCard['kind'][] = ['third', 'half', 'banner'];
+    const kind = kinds[idx % kinds.length]!;
+    setS0Cards(prev => [{
+      id: `fc-ins-${idx}`, kind, label: FC_LABELS[kind][idx % FC_LABELS[kind].length]!,
       color: COLORS[idx % COLORS.length]!,
     }, ...prev]);
   }, []);
 
   const handleDelete = useCallback(() => {
-    setFs0Items(prev => prev.length >= 1 ? prev.slice(1) : prev);
+    setS0Cards(prev => prev.length >= 1 ? prev.slice(1) : prev);
+  }, []);
+
+  const toggleResize = useCallback((id: string) => {
+    setResizedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   }, []);
 
   const sections = useMemo(() => [
     {
-      key: 'fs0', data: fs0Items,
-      header: { render: () => <FlowSectionHeader label={`S0 — Runtime (${fs0Items.length})`} color="#e63946" />, height: FL_HDR_H, sticky: true },
-      footer: { render: () => <FlowSectionFooter color="#e63946" count={fs0Items.length} />, height: FL_FTR_H, sticky: true },
+      key: 'fc0', data: s0Cards as Array<FlowCard | FlowTag>,
+      header: { render: () => <FlowSectionHeader label={`S0 — Products (${s0Cards.length})`} color="#e63946" />, height: FL_HDR_H, sticky: true },
+      footer: { render: () => <FlowSectionFooter color="#e63946" count={s0Cards.length} />, height: FL_FTR_H, sticky: true },
       insets: { top: 8, bottom: 8, left: 8, right: 8 },
     },
     {
-      key: 'fs1', data: FS1_DATA,
-      header: { render: () => <FlowSectionHeader label="S1 — Ecosystem (20)" color="#2a9d8f" />, height: FL_HDR_H, sticky: true },
+      key: 'fs1', data: FS1_DATA as Array<FlowCard | FlowTag>,
+      header: { render: () => <FlowSectionHeader label="S1 — Tags (two-pass)" color="#2a9d8f" />, height: FL_HDR_H, sticky: true },
       footer: { render: () => <FlowSectionFooter color="#2a9d8f" count={FS1_DATA.length} />, height: FL_FTR_H, sticky: true },
       insets: { top: 8, bottom: 8, left: 8, right: 8 },
     },
-    {
-      key: 'fs2', data: FS2_DATA,
-      header: { render: () => <FlowSectionHeader label="S2 — Architecture (10)" color="#6a4c93" />, height: FL_HDR_H, sticky: true },
-      footer: { render: () => <FlowSectionFooter color="#6a4c93" count={FS2_DATA.length} />, height: FL_FTR_H, sticky: true },
-      insets: { top: 8, bottom: 8, left: 8, right: 8 },
-    },
-  ], [fs0Items]);
+  ], [s0Cards]);
 
   const decorationRenderers = useMemo(() => ({
     sectionBackground: (sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => (
@@ -1100,30 +1136,46 @@ export function FlowDemo() {
     ),
   }), []);
 
-  const renderItem = useCallback(({ item }: { item: FlowTag }) => (
-    <View style={[S.flowTag, { backgroundColor: item.color }]}>
-      <Text style={S.flowTagText}>{item.label}</Text>
-    </View>
-  ), []);
+  const renderItem = useCallback(({ item }: { item: FlowCard | FlowTag }) => {
+    if ('kind' in item) {
+      // FlowCard — product card/banner
+      const card = item as FlowCard;
+      const isExpanded = resizedIds.has(card.id);
+      const kindLabel = card.kind === 'banner' ? '▬' : card.kind === 'half' ? '½' : '⅓';
+      return (
+        <Pressable
+          style={{ flex: 1, backgroundColor: card.color, borderRadius: card.kind === 'banner' ? 6 : 10,
+                   alignItems: 'center', justifyContent: 'center', padding: 8 }}
+          onPress={() => toggleResize(card.id)}
+        >
+          <Text style={{ fontSize: card.kind === 'banner' ? 13 : 11, fontWeight: '700', color: '#fff', textAlign: 'center' }}>
+            {kindLabel} {card.label}
+          </Text>
+          {isExpanded && <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.7)', marginTop: 4 }}>↕ tap to collapse</Text>}
+        </Pressable>
+      );
+    }
+    // FlowTag — tag cloud
+    const tag = item as FlowTag;
+    return (
+      <View style={[S.flowTag, { backgroundColor: tag.color }]}>
+        <Text style={S.flowTagText}>{tag.label}</Text>
+      </View>
+    );
+  }, [resizedIds, toggleResize]);
 
   return (
     <View style={S.flex}>
-      <View style={S.flowInfoBar}>
-        <Text style={S.flowInfoText}>
-          Two-pass: estimated widths initially → Yoga measures → reflows.{'\n'}
-          Multi-section with sticky H/F and section backgrounds.
-        </Text>
-      </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={S.ctrlBarScroll} contentContainerStyle={S.ctrlBar}>
         <CtrlBtn label="→ Top" onPress={() => cvRef.current?.scrollToOffset({ y: 0 })} />
         <CtrlBtn label="→ S1" onPress={() => cvRef.current?.scrollToItem('fs1:fs1-0', { position: 'top' })} />
-        <CtrlBtn label="→ Bot" onPress={() => cvRef.current?.scrollToItem('fs2:fs2-9', { position: 'bottom' })} />
+        <CtrlBtn label="→ Bot" onPress={() => cvRef.current?.scrollToItem('fs1:fs1-19', { position: 'bottom' })} />
         <View style={S.ctrlDivider} />
         <CtrlBtn label="+1" onPress={handleInsert} />
         <CtrlBtn label="−1" onPress={handleDelete} />
+        <CtrlBtn label="↕ S0[0]" onPress={() => { const id = s0Cards[0]?.id; if (id) toggleResize(id); }} />
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
-        <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
           <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
         </View>
@@ -1134,7 +1186,8 @@ export function FlowDemo() {
         sections={sections}
         layout={flowLayout}
         stickyMode="push"
-        estimatedItemHeight={34}
+        estimatedItemHeight={100}
+        extraData={resizedIds}
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
         onDecorationCountChange={setDecoCount}

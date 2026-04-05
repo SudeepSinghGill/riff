@@ -84,26 +84,17 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
   struct ItemFrame { double primary, cross, primarySize, crossSize; };
   std::vector<ItemFrame> frames(p.itemCount);
 
-  double lineMaxCross = 0.0; // max cross-axis size (height for V, width for H) in current row/col
+  // Track max PRIMARY-axis size per line (height for V, width for H) — used to advance.
+  // Items keep their NATURAL cross-axis size; no normalization to line max.
+  double lineMaxPrimary = 0.0;
   int lineStart = 0;
-  int lineCount = 0; // number of completed lines (for separator keys)
+  int lineCount = 0;
 
   auto finalizeLineAndAdvance = [&](int from, int to) {
-    // Set lineMaxCross for all items in this line.
-    for (int j = from; j < to; ++j) {
-      frames[j].crossSize = lineMaxCross;
-    }
-
-    // Emit between-row/column separator if requested (after line is finalized).
-    // Separator is emitted AFTER the line, so it sits between this line and the next.
-    // We emit it before advancing, using the current primaryCursor + lineMaxCross as end.
-    if (p.emitSeparators && lineCount > 0) {
-      // Emit separator BEFORE this line (between previous and current line).
-      // Separator is placed at the start of the line gap.
-    }
-
-    primaryCursor += lineMaxCross + lineGap;
-    lineMaxCross = 0.0;
+    // Items keep their natural crossSize — do NOT normalize to any max.
+    (void)from; (void)to; // no-op for normalization
+    primaryCursor += lineMaxPrimary + lineGap;
+    lineMaxPrimary = 0.0;
     lineStart = to;
     lineCount++;
   };
@@ -124,7 +115,7 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
     if (needed > availCross + 0.01 && notFirst) {
       // Emit between-line separator (between previous line and this one).
       if (p.emitSeparators && lineCount > 0) {
-        const double sepPos = primaryCursor + lineMaxCross;
+        const double sepPos = primaryCursor + lineMaxPrimary;
         LayoutAttributes sep;
         sep.key            = sPrefix + "sep-" + std::to_string(lineCount);
         sep.index          = lineCount;
@@ -153,22 +144,18 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
 
     if (crossCursor > crossStart + 0.01) crossCursor += itemGap;
 
-    if (H) {
-      frames[i] = { primaryCursor, crossCursor, itemPrimarySize, clampedCross };
-    } else {
-      frames[i] = { primaryCursor, crossCursor, clampedCross,    itemPrimarySize };
-    }
+    // Always: { pos-along-primary, pos-along-cross, primary-axis-size, cross-axis-size }
+    // H: primary=X, cross=Y, primarySize=width, crossSize=height
+    // V: primary=Y, cross=X, primarySize=height, crossSize=width
+    frames[i] = { primaryCursor, crossCursor, itemPrimarySize, clampedCross };
 
-    if (clampedCross > lineMaxCross) lineMaxCross = clampedCross;
+    if (itemPrimarySize > lineMaxPrimary) lineMaxPrimary = itemPrimarySize;
     crossCursor += clampedCross;
   }
 
   // Finalize last row/column.
   if (p.itemCount > 0) {
-    for (int j = lineStart; j < p.itemCount; ++j) {
-      frames[j].crossSize = lineMaxCross;
-    }
-    primaryCursor += lineMaxCross;
+    primaryCursor += lineMaxPrimary;
   }
 
   // Write items to cache.
@@ -286,14 +273,16 @@ double FlowLayout::computeSectionFromCache(const FlowLayoutParams& p, int sectio
   struct ItemFrame { double primary, cross, primarySize, crossSize; };
   std::vector<ItemFrame> frames(p.itemCount);
 
-  double lineMaxCross = 0.0;
+  // Track max PRIMARY-axis size per line (height for V, width for H) — used to advance.
+  // Items keep their natural cross-axis size; no normalization to line max.
+  double lineMaxPrimary = 0.0;
   int lineStart  = 0;
   int lineCount  = 0;
 
   auto finalizeAndAdvance = [&](int from, int to) {
-    for (int j = from; j < to; ++j) frames[j].crossSize = lineMaxCross;
-    primaryCursor += lineMaxCross + lineGap;
-    lineMaxCross = 0.0;
+    (void)from; (void)to; // items keep natural crossSize — no normalization
+    primaryCursor += lineMaxPrimary + lineGap;
+    lineMaxPrimary = 0.0;
     lineStart = to;
     lineCount++;
   };
@@ -334,13 +323,12 @@ double FlowLayout::computeSectionFromCache(const FlowLayoutParams& p, int sectio
     if (crossCursor > crossStart + 0.01) crossCursor += itemGap;
 
     frames[i] = { primaryCursor, crossCursor, itemPrimarySize, clampedCross };
-    if (clampedCross > lineMaxCross) lineMaxCross = clampedCross;
+    if (itemPrimarySize > lineMaxPrimary) lineMaxPrimary = itemPrimarySize;
     crossCursor += clampedCross;
   }
 
   if (p.itemCount > 0) {
-    for (int j = lineStart; j < p.itemCount; ++j) frames[j].crossSize = lineMaxCross;
-    primaryCursor += lineMaxCross;
+    primaryCursor += lineMaxPrimary;
   }
 
   // Write updated positions to cache.
