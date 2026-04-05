@@ -56,6 +56,16 @@ struct ListLayoutParams {
   double separatorInsetLeading  = 0;
   double separatorInsetTrailing = 0;
 
+  // Content insets applied to the sectionBackground frame at emission time.
+  // Mirrors NSCollectionLayoutDecorationItem.contentInsets — positive insets
+  // shrink the frame inward; negative insets expand it outward.
+  // Applied in absolute visual coordinates: top/bottom adjust Y/height,
+  // left/right adjust X/width — independent of scroll direction.
+  double sectionBackgroundInsetTop    = 0;
+  double sectionBackgroundInsetBottom = 0;
+  double sectionBackgroundInsetLeft   = 0;
+  double sectionBackgroundInsetRight  = 0;
+
   // --- Inter-section spacing ---
   // Gap added after the footer (or last item if no footer) before the next
   // section's header. Sits outside the section background frame.

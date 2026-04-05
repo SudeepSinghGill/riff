@@ -207,13 +207,19 @@ double GridLayout::computeSection(const GridLayoutParams& p,
   primary += p.sectionInsetBottom; // gap between last row and footer
 
   // ── Section background (items area only) ──────────────────────────────────
+  // Content insets applied in absolute visual coords so windowed rect and
+  // ShadowNode positions use the inset-adjusted frame.
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
     bg.section        = sectionIndex;
     bg.index          = -1;
-    bg.frame          = { p.sectionInsetLeft, bgStartPrimary,
-                          contentWidth, primary - bgStartPrimary };
+    bg.frame          = {
+      p.sectionInsetLeft + p.sectionBackgroundInsetLeft,
+      bgStartPrimary     + p.sectionBackgroundInsetTop,
+      contentWidth                 - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+      primary - bgStartPrimary     - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+    };
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
     bg.zIndex         = -1;
@@ -420,14 +426,18 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
   primary = rowStartY;
   primary += p.sectionInsetBottom;
 
-  // Section background
+  // Section background — content insets applied in absolute visual coords.
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
     bg.section        = sectionIndex;
     bg.index          = -1;
-    bg.frame          = { p.sectionInsetLeft, bgStartPrimary,
-                          contentWidth, primary - bgStartPrimary };
+    bg.frame          = {
+      p.sectionInsetLeft + p.sectionBackgroundInsetLeft,
+      bgStartPrimary     + p.sectionBackgroundInsetTop,
+      contentWidth                 - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+      primary - bgStartPrimary     - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+    };
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
     bg.zIndex         = -1;
@@ -624,6 +634,11 @@ GridLayoutParams GridLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
 
   p.horizontal               = gbln(rt, obj, "horizontal", false);
   p.estimatedCrossAxisHeight = gdbl(rt, obj, "estimatedCrossAxisHeight", 200.0);
+
+  p.sectionBackgroundInsetTop    = gdbl(rt, obj, "sectionBackgroundInsetTop",    0.0);
+  p.sectionBackgroundInsetBottom = gdbl(rt, obj, "sectionBackgroundInsetBottom", 0.0);
+  p.sectionBackgroundInsetLeft   = gdbl(rt, obj, "sectionBackgroundInsetLeft",   0.0);
+  p.sectionBackgroundInsetRight  = gdbl(rt, obj, "sectionBackgroundInsetRight",  0.0);
 
   // itemHeights: number[]
   auto hv = obj.getProperty(rt, "itemHeights");

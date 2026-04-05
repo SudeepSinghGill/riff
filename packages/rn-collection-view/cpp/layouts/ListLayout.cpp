@@ -493,6 +493,11 @@ ListLayoutParams ListLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.viewportHeight           = dbl(rt, obj, "viewportHeight");
   p.estimatedCrossAxisHeight = dbl(rt, obj, "estimatedCrossAxisHeight", 200.0);
 
+  p.sectionBackgroundInsetTop    = dbl(rt, obj, "sectionBackgroundInsetTop");
+  p.sectionBackgroundInsetBottom = dbl(rt, obj, "sectionBackgroundInsetBottom");
+  p.sectionBackgroundInsetLeft   = dbl(rt, obj, "sectionBackgroundInsetLeft");
+  p.sectionBackgroundInsetRight  = dbl(rt, obj, "sectionBackgroundInsetRight");
+
   // Optional per-item heights array (estimated mode)
   Value heights = obj.getProperty(rt, "itemHeights");
   if (heights.isObject()) {
@@ -711,15 +716,27 @@ double ListLayout::computeSection(const ListLayoutParams& p,
 
   // ── Section background (decoration) ──────────────────────────────────────
   // Frame covers the items area only (between header and footer).
+  // Content insets are applied in absolute visual coords (top/bottom → Y/height,
+  // left/right → X/width) so the windowed rect and ShadowNode positions are correct.
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
     bg.section        = sectionIndex;
     bg.index          = -1;
     if (H) {
-      bg.frame = { bgStartPrimary, crossStart, primary - bgStartPrimary, crossContent };
+      bg.frame = {
+        bgStartPrimary + p.sectionBackgroundInsetLeft,
+        crossStart     + p.sectionBackgroundInsetTop,
+        primary - bgStartPrimary - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        crossContent             - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
     } else {
-      bg.frame = { crossStart, bgStartPrimary, crossContent, primary - bgStartPrimary };
+      bg.frame = {
+        crossStart     + p.sectionBackgroundInsetLeft,
+        bgStartPrimary + p.sectionBackgroundInsetTop,
+        crossContent             - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        primary - bgStartPrimary - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
     }
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
@@ -883,6 +900,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
   primary += primaryInsetEnd;
 
   // ── Section background ─────────────────────────────────────────────────
+  // Content insets applied in absolute visual coords — same as computeSection.
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
@@ -892,9 +910,19 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
       // Use cached height if available (preserves measured values); else estimate.
       auto existingBg = _cache->getAttributes(bg.key);
       const double bgH = (existingBg && existingBg->frame.height > 0) ? existingBg->frame.height : hEstH;
-      bg.frame = { bgStartPrimary, crossStart, primary - bgStartPrimary, bgH };
+      bg.frame = {
+        bgStartPrimary + p.sectionBackgroundInsetLeft,
+        crossStart     + p.sectionBackgroundInsetTop,
+        primary - bgStartPrimary - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        bgH                      - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
     } else {
-      bg.frame = { crossStart, bgStartPrimary, crossContent, primary - bgStartPrimary };
+      bg.frame = {
+        crossStart     + p.sectionBackgroundInsetLeft,
+        bgStartPrimary + p.sectionBackgroundInsetTop,
+        crossContent             - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        primary - bgStartPrimary - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
     }
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
