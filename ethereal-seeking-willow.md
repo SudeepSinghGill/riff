@@ -18,7 +18,12 @@
 | H-grid adaptive cross-axis (always-adaptive, onContentSizeChange, full scroll events) | ✅ Done (branch: `cur-section-footer-test`) |
 | Masonry full feature parity (V+H, multi-section, decorations, MVC, ScrollTo) | ✅ Done (branch: `cur-masonry`, merged to main) |
 | Flow full feature parity (V+H, multi-section, decorations, MVC, ScrollTo) | ✅ Done (branch: `cur-flow`, merged to main) |
+| Flow V bin-packing bugs fixed (lineMaxPrimary, frame W/H swap) | ✅ Done (branch: `cur-flow-fix`, merged to main) |
+| FlowDemo redesigned: S0=fractional-width product cards, S1=tag cloud | ✅ Done |
 | RiffDemo: all 8 layout tabs wired (List/Grid/Masonry/Flow × V+H) | ✅ Done |
+| H-masonry: broken (all items same size) | ⬜ Future/research (see PLAN.md) |
+| H-flow demo | ⬜ Future scope (see PLAN.md) |
+| Flow/masonry separators | ⬜ Future scope (see PLAN.md) |
 | API audit across all 4 layouts | ⬜ Next |
 | 5g – Extend ShadowNode to grid/masonry/flow | ⬜ Future |
 | 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
