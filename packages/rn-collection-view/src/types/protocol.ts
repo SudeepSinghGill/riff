@@ -295,6 +295,11 @@ export interface GridLayoutDelegate {
   /** When true, the layout engine emits a sectionBackground decoration attribute
    *  covering the items area. Render via decorationRenderers on the component. */
   sectionBackground?: boolean;
+
+  // Future: rowAlignment?: 'top' | 'center' | 'bottom'
+  // Alignment of shorter items within a row when heightForItem produces uneven heights.
+  // 'top' (default) aligns all items to the row's top Y. 'center'/'bottom' offset
+  // shorter items downward. See PLAN.md F3.1 for implementation details.
 }
 
 /**

@@ -63,6 +63,7 @@ import RNScrollCoordinatedView from './RNScrollCoordinatedViewNativeComponent';
 import RNCollectionViewContainer from './RNCollectionViewContainerNativeComponent';
 import { RiffSnapshot } from './CollectionSnapshot';
 import type { CollectionViewLayout, LayoutContext } from '@riff/types/protocol';
+import type { LayoutAttributes } from '@riff/types/layout';
 import { list as listLayout } from '@riff/layouts/list';
 
 // ─── JSI module types ─────────────────────────────────────────────────────────
@@ -196,12 +197,12 @@ export interface ScrollToItemOptions {
    * 'nearest' is a no-op if the item is already fully visible.
    * Default: 'top'.
    */
-  position?: 'top' | 'center' | 'bottom' | 'nearest';
+  position?: 'top' | 'center' | 'bottom' | 'nearest' | 'start' | 'end';
 }
 
 export interface ScrollToOffsetOptions {
   x?: number;
-  y: number;
+  y?: number;
   animated?: boolean;
 }
 
@@ -235,6 +236,15 @@ export interface RiffHandle<T = unknown> {
    * next render. Call this when item content changes behind the same key.
    */
   invalidateKeys(keys: Iterable<string>): void;
+
+  /**
+   * Get full layout attributes for an item by its cache key.
+   * Returns LayoutAttributes from the layout engine, or null if not found.
+   * Key format: stable key from keyExtractor, or `${sectionKey}:${itemKey}`.
+   * Exposes frame, section, index, sizingState, isSticky, zIndex, and all
+   * other layout metadata — use with scrollToOffset for custom scroll math.
+   */
+  getItemLayout(key: string): LayoutAttributes | null;
 }
 
 export interface RiffProps<T = unknown> {
@@ -629,6 +639,37 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
   return { flatData, stickyHeaderFlatIndices, stickyFooterFlatIndices, sectionStartFlatIndices, declaredHeights, keyToFlatIndex };
 }
 
+/**
+ * Compute flat index from LayoutAttributes using section+index arithmetic.
+ * Layout-key-agnostic — works for list, grid, masonry, flow, any future layout.
+ * Replaces keyToFlatIndex.get(attr.key) which hardcodes the list "item-" key prefix.
+ */
+function attrToFlatIndex(
+  attr: LayoutAttributes,
+  sectionStartFlatIndices: number[],
+  sections: SectionConfig<any>[],
+): number {
+  if (attr.isDecoration) return -1;
+  const si = attr.section;
+  const start = sectionStartFlatIndices[si];
+  if (start === undefined) return -1;
+  const s = sections[si];
+  if (!s) return -1;
+
+  if (attr.isSupplementary) {
+    if (attr.supplementaryKind === 'header') return s.header ? start : -1;
+    if (attr.supplementaryKind === 'footer') {
+      const headerOffset = s.header ? 1 : 0;
+      return start + headerOffset + s.data.length;
+    }
+    return -1;
+  }
+
+  // Regular item: sectionStart + header offset + item index
+  const headerOffset = s.header ? 1 : 0;
+  return start + headerOffset + attr.index;
+}
+
 /** Flat-mode key extractor for sectioned items. */
 function sectionedKeyExtractor<T>(
   sections: SectionConfig<T>[],
@@ -851,25 +892,10 @@ export function Riff<T = unknown>({
 
   const flattenResult = useMemo(() => {
     if (!propSections) return null;
-    const result = flattenSections(propSections);
-    // Add stable key → flat index mappings alongside positional ones.
-    // Cache keys for list items are now stable when keyExtractor is present,
-    // so keyToFlatIndex.get(attr.key) must resolve to the correct flat index.
-    if (propKeyExtractor) {
-      for (let si = 0; si < propSections.length; si++) {
-        const s = propSections[si]!;
-        for (let ii = 0; ii < s.data.length; ii++) {
-          const stableKey = `${s.key}:${propKeyExtractor(s.data[ii]!, ii)}`;
-          const positionalKey = `item-${si}-${ii}`;
-          const fi = result.keyToFlatIndex.get(positionalKey);
-          if (fi !== undefined) {
-            result.keyToFlatIndex.set(stableKey, fi);
-          }
-        }
-      }
-    }
-    return result;
-  }, [propSections, propKeyExtractor]);
+    return flattenSections(propSections);
+    // NOTE: keyToFlatIndex is no longer used for render-range lookups (replaced by attrToFlatIndex).
+    // Stable key → flat index registration removed — no longer needed.
+  }, [propSections]);
 
   useEffect(() => {
     if (!isSectioned || !flattenResult) return;
@@ -934,11 +960,12 @@ export function Riff<T = unknown>({
   const viewportWidthRef  = useRef(seedW);
   const viewportHeightRef = useRef(seedH);
   const decorationCountRef = useRef(0);
-  // contentHeightRef mirrors contentHeight state. useImperativeHandle closes over
-  // its deps once — a ref lets scrollToItem read the current value without
-  // requiring contentHeight in the deps array (which would recreate the handle
-  // on every layout pass).
-  const contentHeightRef  = useRef(0);
+  // contentHeightRef / layoutContentSizeRef mirror state/memo values.
+  // useImperativeHandle closes over its deps once — refs let scrollToItem read
+  // the current value without requiring those values in the deps array
+  // (which would recreate the handle on every layout pass).
+  const contentHeightRef      = useRef(0);
+  const layoutContentSizeRef  = useRef<{ width: number; height: number } | null>(null);
   const [viewportWidth,  setViewportWidth]  = useState(seedW);
   const [viewportHeight, setViewportHeight] = useState(seedH);
   const [contentHeight,  setContentHeight]  = useState(0);
@@ -1180,6 +1207,7 @@ export function Riff<T = unknown>({
     try {
 
     contentHeightRef.current = layoutContentHeight;
+    layoutContentSizeRef.current = layoutContentSize;
     setContentHeight(layoutContentHeight);
 
     if (itemCount === 0) {
@@ -1214,18 +1242,15 @@ export function Riff<T = unknown>({
       setRenderRange({ first: 0, last: -1 });
     } else {
       let minIdx = Infinity, maxIdx = -Infinity;
-      let missedKeys = [];
       for (const attr of attrs) {
-        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(attr.key) ?? -1) : attr.index;
-        if (fi === -1) {
-          missedKeys.push(attr.key);
-          continue;
-        }
+        const fi = isSectioned
+          ? attrToFlatIndex(attr, flattenResult!.sectionStartFlatIndices, propSections!)
+          : attr.index;
+        if (fi === -1) continue;
         if (fi < minIdx) minIdx = fi;
         if (fi > maxIdx) maxIdx = fi;
       }
-      
-      if (missedKeys.length > 0) rncvVerboseLog(`[RNCVX] scrollY=${scrollY} MISSING KEYS (first 3):`, missedKeys.slice(0, 3));
+
       rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} C++_attr_count=${attrs.length} -> max_fi=${maxIdx} min_fi=${minIdx}`);
       const render = { first: minIdx === Infinity ? 0 : minIdx, last: maxIdx === -Infinity ? -1 : maxIdx };
 
@@ -1235,7 +1260,9 @@ export function Riff<T = unknown>({
       );
       let visFirst = Infinity, visLast = -Infinity;
       for (const a of visAttrs) {
-        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(a.key) ?? -1) : a.index;
+        const fi = isSectioned
+          ? attrToFlatIndex(a, flattenResult!.sectionStartFlatIndices, propSections!)
+          : a.index;
         if (fi === -1) continue;
         if (fi < visFirst) visFirst = fi;
         if (fi > visLast) visLast = fi;
@@ -1302,31 +1329,81 @@ export function Riff<T = unknown>({
       // keyExtractor is provided (via layoutContext.sections[s].itemKeys).
       const attrs = nativeLayoutCache.getAttributes(key);
       if (!attrs) return;
-      const itemY = attrs.frame.y as number;
-      const itemH = attrs.frame.height as number;
-      const vpH   = viewportHeightRef.current;
-      // Use ref, not state: useImperativeHandle closes over deps once and
-      // contentHeight is not in the dep array — the ref always has the live value.
-      const maxY  = Math.max(0, contentHeightRef.current - vpH);
+      const isHoriz = effectiveLayout.horizontal ?? false;
+      const position = options?.position ?? (isHoriz ? 'start' : 'top');
 
-      let targetY: number;
-      const position = options?.position ?? 'top';
-      if (position === 'top') {
-        targetY = itemY;
-      } else if (position === 'bottom') {
-        targetY = itemY - vpH + itemH;
-      } else if (position === 'center') {
-        targetY = itemY - (vpH - itemH) / 2;
-      } else { // 'nearest'
-        const scrollY = nativeMod.windowController.getScrollPosition().y;
-        if (itemY >= scrollY && itemY + itemH <= scrollY + vpH) return; // fully visible
-        targetY = itemY < scrollY ? itemY : itemY - vpH + itemH;
+      if (isHoriz) {
+        // Horizontal: scroll along X axis.
+        const itemX = attrs.frame.x as number;
+        const itemW = attrs.frame.width as number;
+        const vpW   = viewportWidthRef.current;
+        const contentW = layoutContentSizeRef.current?.width ?? 0;
+        const maxX  = Math.max(0, contentW - vpW);
+        // Adjust for sticky headers (leading) / footers (trailing) so the item
+        // lands in the visible region, not behind a pinned supplementary view.
+        const stickyLeadW = hasStickyHeaders
+          ? (effectiveLayout.attributesForSupplementary?.('header', attrs.section)?.frame.width ?? 0)
+          : 0;
+        const stickyTrailW = hasStickyFooters
+          ? (effectiveLayout.attributesForSupplementary?.('footer', attrs.section)?.frame.width ?? 0)
+          : 0;
+        let targetX: number;
+        if (position === 'start' || position === 'top') {
+          targetX = itemX - stickyLeadW;
+        } else if (position === 'end' || position === 'bottom') {
+          targetX = itemX - (vpW - stickyTrailW) + itemW;
+        } else if (position === 'center') {
+          const effectiveVpW = vpW - stickyLeadW - stickyTrailW;
+          targetX = itemX - stickyLeadW - (effectiveVpW - itemW) / 2;
+        } else { // 'nearest'
+          const scrollX = nativeMod.windowController.getScrollPosition().x;
+          const visibleLead = scrollX + stickyLeadW;
+          const visibleTrail = scrollX + vpW - stickyTrailW;
+          if (itemX >= visibleLead && itemX + itemW <= visibleTrail) return; // fully visible
+          targetX = itemX < visibleLead ? (itemX - stickyLeadW) : (itemX - (vpW - stickyTrailW) + itemW);
+        }
+        nativeMod.scrollTo(layoutCacheId, Math.max(0, Math.min(targetX, maxX)), 0, options?.animated ?? true);
+      } else {
+        // Vertical: scroll along Y axis.
+        const itemY = attrs.frame.y as number;
+        const itemH = attrs.frame.height as number;
+        const vpH   = viewportHeightRef.current;
+        // Use ref, not state: useImperativeHandle closes over deps once and
+        // contentHeight is not in the dep array — the ref always has the live value.
+        const maxY  = Math.max(0, contentHeightRef.current - vpH);
+        // Adjust for sticky headers (top) / footers (bottom) so the item
+        // lands in the visible region, not behind a pinned supplementary view.
+        const stickyTopH = hasStickyHeaders
+          ? (effectiveLayout.attributesForSupplementary?.('header', attrs.section)?.frame.height ?? 0)
+          : 0;
+        const stickyBotH = hasStickyFooters
+          ? (effectiveLayout.attributesForSupplementary?.('footer', attrs.section)?.frame.height ?? 0)
+          : 0;
+        let targetY: number;
+        if (position === 'top' || position === 'start') {
+          targetY = itemY - stickyTopH;
+        } else if (position === 'bottom' || position === 'end') {
+          targetY = itemY - (vpH - stickyBotH) + itemH;
+        } else if (position === 'center') {
+          const effectiveVpH = vpH - stickyTopH - stickyBotH;
+          targetY = itemY - stickyTopH - (effectiveVpH - itemH) / 2;
+        } else { // 'nearest'
+          const scrollY = nativeMod.windowController.getScrollPosition().y;
+          const visibleTop = scrollY + stickyTopH;
+          const visibleBot = scrollY + vpH - stickyBotH;
+          if (itemY >= visibleTop && itemY + itemH <= visibleBot) return; // fully visible
+          targetY = itemY < visibleTop ? (itemY - stickyTopH) : (itemY - (vpH - stickyBotH) + itemH);
+        }
+        nativeMod.scrollTo(layoutCacheId, 0, Math.max(0, Math.min(targetY, maxY)), options?.animated ?? true);
       }
-      nativeMod.scrollTo(layoutCacheId, 0, Math.max(0, Math.min(targetY, maxY)), options?.animated ?? true);
     },
 
-    scrollToOffset: ({ x = 0, y, animated = true }: ScrollToOffsetOptions) => {
+    scrollToOffset: ({ x = 0, y = 0, animated = true }: ScrollToOffsetOptions) => {
       nativeMod.scrollTo(layoutCacheId, x, y, animated);
+    },
+
+    getItemLayout: (key: string): LayoutAttributes | null => {
+      return nativeLayoutCache.getAttributes(key) ?? null;
     },
 
     snapshot: () => new RiffSnapshot(data, keyExtractor),
@@ -1481,7 +1558,9 @@ export function Riff<T = unknown>({
 
       let rFirst = Infinity, rLast = -Infinity;
       for (const a of attrs) {
-        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(a.key) ?? -1) : a.index;
+        const fi = isSectioned
+          ? attrToFlatIndex(a, flattenResult!.sectionStartFlatIndices, propSections!)
+          : a.index;
         if (fi === -1) continue;
         if (fi < rFirst) rFirst = fi;
         if (fi > rLast) rLast = fi;
@@ -1494,7 +1573,9 @@ export function Riff<T = unknown>({
       const visAttrs = effectiveLayout.attributesForElements(visRect);
       let vFirst = Infinity, vLast = -Infinity;
       for (const a of visAttrs) {
-        const fi = isSectioned ? (flattenResult?.keyToFlatIndex?.get(a.key) ?? -1) : a.index;
+        const fi = isSectioned
+          ? attrToFlatIndex(a, flattenResult!.sectionStartFlatIndices, propSections!)
+          : a.index;
         if (fi === -1) continue;
         if (fi < vFirst) vFirst = fi;
         if (fi > vLast) vLast = fi;
@@ -1570,7 +1651,7 @@ export function Riff<T = unknown>({
   };
 
   // ── Sticky supplementary config for ScrollCoordinatedView ───────────────────
-  // Build a map: flatIndex → { kind, naturalY, boundaryY, sizeHeight }
+  // Build a map: flatIndex → { kind, naturalY, boundaryY, primaryAxisExtent }
   // Each sticky cell is wrapped in RNScrollCoordinatedView in renderCell.
   // The native component handles the transform on the UI thread.
   // MUST be defined before renderCell / scrollContent IIFE that consumes it.
@@ -1578,7 +1659,7 @@ export function Riff<T = unknown>({
   const stickyConfigMap = useMemo(() => {
     if (!hasStickyHeaders && !hasStickyFooters) return null;
     const isHoriz = effectiveLayout.horizontal ?? false;
-    const map = new Map<number, { kind: 'header' | 'footer'; naturalY: number; boundaryY: number; boundaryX: number; sizeHeight: number }>();
+    const map = new Map<number, { kind: 'header' | 'footer'; naturalY: number; boundaryY: number; boundaryX: number; primaryAxisExtent: number }>();
 
     const allSticky = [
       ...stickyHeaderFlatIndices.map(fi => ({ fi, kind: 'header' as const })),
@@ -1591,15 +1672,21 @@ export function Riff<T = unknown>({
       
       let attr = null;
       if (isSectioned && fiDesc?._kind === 'header') {
-        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+        attr = effectiveLayout.attributesForSupplementary('header', fiDesc.sectionIndex);
       } else if (isSectioned && fiDesc?._kind === 'footer') {
-        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-footer`);
+        attr = effectiveLayout.attributesForSupplementary('footer', fiDesc.sectionIndex);
       } else {
         attr = effectiveLayout.attributesForItem(isSectioned ? ((fiDesc as any)?.itemIndex ?? fi) : fi, isSectioned ? (fiDesc?.sectionIndex ?? 0) : 0);
       }
       
       const naturalY = attr ? attr.frame.y : sectionInsetTop + fi * stride;
-      const sizeHeight = attr ? attr.frame.height : effectiveItemHeight;
+      // primaryAxisExtent: size along the scroll axis (width for horizontal, height for vertical).
+      // For horizontal headers/footers frame.width is the primary-axis extent (e.g. 80px),
+      // while frame.height is the cross-axis extent (viewportHeight). Native _headerHeight
+      // must receive the primary-axis value for both push-boundary and footer positioning.
+      const primaryAxisExtent = attr
+        ? (isHoriz ? attr.frame.width : attr.frame.height)
+        : effectiveItemHeight;
 
       // Push boundary differs by kind:
       // - Header: next section start — the next header pushes this one away from viewport top.
@@ -1608,7 +1695,7 @@ export function Riff<T = unknown>({
       if (isSectioned && typeof fiDesc?.sectionIndex === 'number') {
         if (stickyKind === 'footer') {
           // Footer boundary = section's own header Y (or first item Y if no header).
-          const sectionHeader = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+          const sectionHeader = effectiveLayout.attributesForSupplementary('header', fiDesc.sectionIndex);
           if (sectionHeader) {
             boundaryY = sectionHeader.frame.y;
           } else {
@@ -1619,7 +1706,7 @@ export function Riff<T = unknown>({
           // Header boundary = next section start.
           const nextSection = fiDesc.sectionIndex + 1;
           if (propSections && nextSection < propSections.length) {
-            const nextHeader = nativeMod.layoutCache.getAttributes(`item-${nextSection}-header`);
+            const nextHeader = effectiveLayout.attributesForSupplementary('header', nextSection);
             if (nextHeader) {
               boundaryY = nextHeader.frame.y;
             } else {
@@ -1634,7 +1721,7 @@ export function Riff<T = unknown>({
       let boundaryX = 999999;
       if (isHoriz && isSectioned && typeof fiDesc?.sectionIndex === 'number') {
         if (stickyKind === 'footer') {
-          const sectionHeader = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+          const sectionHeader = effectiveLayout.attributesForSupplementary('header', fiDesc.sectionIndex);
           if (sectionHeader) {
             boundaryX = sectionHeader.frame.x;
           } else {
@@ -1644,7 +1731,7 @@ export function Riff<T = unknown>({
         } else {
           const nextSection = fiDesc.sectionIndex + 1;
           if (propSections && nextSection < propSections.length) {
-            const nextHeader = nativeMod.layoutCache.getAttributes(`item-${nextSection}-header`);
+            const nextHeader = effectiveLayout.attributesForSupplementary('header', nextSection);
             if (nextHeader) {
               boundaryX = nextHeader.frame.x;
             } else {
@@ -1665,9 +1752,9 @@ export function Riff<T = unknown>({
         naturalY,
         boundaryY,
         boundaryX,
-        headerHeight: sizeHeight,
+        primaryAxisExtent,
       });
-      map.set(fi, { kind: stickyKind, naturalY, boundaryY, boundaryX, sizeHeight });
+      map.set(fi, { kind: stickyKind, naturalY, boundaryY, boundaryX, primaryAxisExtent });
     }
     return map;
   }, [hasStickyHeaders, hasStickyFooters, stickyHeaderFlatIndices, stickyFooterFlatIndices,
@@ -1694,15 +1781,21 @@ export function Riff<T = unknown>({
     
     let cacheKey: string;
     if (fiDesc?._kind === 'header') {
-      cacheKey = `item-${sk}-header`;
+      // Use the layout engine's own key for supplementary views — avoids hardcoding "item-" prefix.
+      const suppAttr = effectiveLayout.attributesForSupplementary('header', sk);
+      cacheKey = suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-header`;
     } else if (fiDesc?._kind === 'footer') {
-      cacheKey = `item-${sk}-footer`;
-    } else if (effectiveLayout.type !== 'list') {
-      cacheKey = `${effectiveLayout.type}-${index}`;
+      const suppAttr = effectiveLayout.attributesForSupplementary('footer', sk);
+      cacheKey = suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-footer`;
     } else {
       // Use stable key from layoutContext when keyExtractor is available.
       const sectionKeys = layoutContext?.sections[sk]?.itemKeys;
-      cacheKey = sectionKeys?.[ik] ?? `item-${sk}-${ik}`;
+      // Fallback key must match the C++ layout engine's default key format.
+      // ListLayout uses "item-{s}-{i}"; GridLayout uses "grid-{s}-{i}".
+      const defaultKey = effectiveLayout.type === 'list'
+        ? `item-${sk}-${ik}`
+        : `${effectiveLayout.type}-${sk}-${ik}`;
+      cacheKey = sectionKeys?.[ik] ?? defaultKey;
     }
     rncvLog('RNCV-JS-CELL', {
       op: 'derive-cell-key',
@@ -1729,9 +1822,9 @@ export function Riff<T = unknown>({
     let attr = null;
     if (isSectioned) {
       if (fiDesc?._kind === 'header') {
-        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-header`);
+        attr = effectiveLayout.attributesForSupplementary('header', fiDesc.sectionIndex);
       } else if (fiDesc?._kind === 'footer') {
-        attr = nativeMod.layoutCache.getAttributes(`item-${fiDesc.sectionIndex}-footer`);
+        attr = effectiveLayout.attributesForSupplementary('footer', fiDesc.sectionIndex);
       } else {
         attr = effectiveLayout.attributesForItem((fiDesc as any)?.itemIndex ?? index, fiDesc?.sectionIndex ?? 0);
       }
@@ -1764,15 +1857,19 @@ export function Riff<T = unknown>({
     const top  = (measureOnly && !useRealPosition) ? -9999 : estimatedTop;
     const left = (measureOnly && !useRealPosition) ? -9999 : cellLeft;
 
-    // No explicit height — Yoga measures from content. The ShadowNode reads
-    // Yoga's measured height, compares with the LayoutCache estimate, and
-    // cascades position corrections if they differ (zero-frame correction).
+    // For horizontal supplementary views (headers/footers), the C++ layout sets
+    // frame.height = viewportHeight (cross-axis). Without an explicit height here,
+    // Yoga measures content (~100px) and ShadowNode Phase 2 creates a delta that
+    // overwrites the cached viewportHeight. Lock the height so no delta is created.
+    const isHorizSupp = (effectiveLayout.horizontal ?? false)
+      && (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
     const containerStyle = [
       {
         position: 'absolute' as const,
         left,
         top,
         ...(viewportWidth > 0 ? { width: cellWidth } : {}),
+        ...(isHorizSupp && attr ? { height: attr.frame.height } : {}),
       },
     ];
 
@@ -1810,7 +1907,7 @@ export function Riff<T = unknown>({
           boundaryY={stickyConfig.boundaryY}
           boundaryX={stickyConfig.boundaryX}
           horizontal={isHorizLayout}
-          headerHeight={stickyConfig.sizeHeight}
+          headerHeight={stickyConfig.primaryAxisExtent}
           enabled={true}
           type="supplementary"
           kind={stickyConfig.kind}
@@ -1986,8 +2083,9 @@ export function Riff<T = unknown>({
     // Off-screen decorations are NOT mounted — same windowing as cells.
     let decorationElements: React.ReactElement[] = [];
     const hasDecoRenderers = !!(decorationRenderers || renderSectionBackground);
-    const listDelegate = effectiveLayout?.type === 'list' ? (effectiveLayout as any).delegate : null;
-    const hasSeparators = !!(listDelegate?.separator);
+    // Read separator config from any layout's delegate — not just list.
+    const layoutDelegate = (effectiveLayout as any)?.delegate ?? null;
+    const hasSeparators = !!(layoutDelegate?.separator);
     if ((hasDecoRenderers || hasSeparators) && viewportWidth > 0) {
       const scrollY = prevScrollYRef.current;
       const vpH = viewportHeightRef.current || viewportHeight;
@@ -2001,7 +2099,7 @@ export function Riff<T = unknown>({
       const decoAttrs = nativeMod.layoutCache.getAttributesInRect(decoRect)
         .filter((a: any) => a.isDecoration);
 
-      const sepColor: string = listDelegate?.separator?.color ?? '#C6C6C8';
+      const sepColor: string = layoutDelegate?.separator?.color ?? '#FFFFFF';
 
       // Merge old renderSectionBackground into decorationRenderers.sectionBackground.
       const bgRenderer =
@@ -2044,7 +2142,7 @@ export function Riff<T = unknown>({
         decorationElements.push(
           <RNMeasuredCell
             key={key}
-            style={{ position: 'absolute' as const, left: frame.x, top: frame.y, width: frame.width, height: frame.height }}
+            style={{ position: 'absolute' as const, left: frame.x, top: frame.y, width: frame.width, height: frame.height, zIndex: attrs.zIndex }}
             type="decoration"
             index={-1}
             cacheKey={key}

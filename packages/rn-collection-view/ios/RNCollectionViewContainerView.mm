@@ -386,6 +386,7 @@ static os_log_t rncvLog(void) {
 
   const auto &data = _state->getData();
   const auto &positions = data.positions;
+  const auto &childTags = data.childTags;
   NSArray<UIView *> *subviews = _contentView.subviews;
   size_t childCount = positions.size() / 4;
 
@@ -400,9 +401,31 @@ static os_log_t rncvLog(void) {
            caller.UTF8String, revision, childCount, (unsigned long)subviews.count,
            _scrollView.contentOffset.x, _scrollView.contentOffset.y);
 
+  // Build tag → UIView map for identity-based lookup.
+  //
+  // We use tag-based (not index-based) lookup because Fabric's reconciler
+  // "last index" optimization can leave native subview order inconsistent
+  // with ShadowNode child order: when new children (e.g. separators) are
+  // inserted before existing non-moved children (e.g. section backgrounds),
+  // Fabric doesn't generate MOVE operations for the non-moved views, so
+  // their native index stays at the old position while their ShadowNode
+  // index has shifted. Index-based mapping applies the wrong position to
+  // the wrong view. Tag identity is Fabric's core contract — a native view
+  // with tag X always corresponds to the ShadowNode child with tag X,
+  // regardless of mount operation ordering. Covers ALL child types.
+  NSMutableDictionary<NSNumber *, UIView *> *tagToView =
+      [NSMutableDictionary dictionaryWithCapacity:subviews.count];
+  for (UIView *sv in subviews) {
+    tagToView[@(sv.tag)] = sv;
+  }
+
   // Apply full frame (position + size) from ShadowNode-computed layout.
-  for (size_t i = 0; i < childCount && i < (size_t)subviews.count; i++) {
-    UIView *child = subviews[i];
+  for (size_t i = 0; i < childCount && i < childTags.size(); i++) {
+    UIView *child = (childTags.empty()) ? subviews[i] : tagToView[@(childTags[i])];
+    if (!child) {
+      RNCV_LOG("  apply[%zu] tag=%d — no matching subview, skipping", i, childTags[i]);
+      continue;
+    }
     CGFloat targetX = positions[i * 4];
     CGFloat targetY = positions[i * 4 + 1];
     CGFloat targetW = positions[i * 4 + 2];
@@ -422,13 +445,9 @@ static os_log_t rncvLog(void) {
     const BOOL differsW = std::abs(currentNaturalW - targetW) > kLayoutEpsilon;
     const BOOL differsH = std::abs(currentNaturalH - targetH) > kLayoutEpsilon;
 
-    // Log first 5 children
-    if (i < 8) {
-      RNCV_LOG("  apply[%zu] tag=%ld transformed=%s target=(%.1f,%.1f,%.1f,%.1f) current=(%.1f,%.1f,%.1f,%.1f) natural=(%.1f,%.1f,%.1f,%.1f)",
-               i, (long)child.tag, hasActiveTransform ? "YES" : "NO", targetX, targetY, targetW, targetH,
-               frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-               currentNaturalX, currentNaturalY, currentNaturalW, currentNaturalH);
-    }
+    RNCV_LOG("  apply[%zu] tag=%ld transformed=%s target=(%.1f,%.1f,%.1f,%.1f) current=(%.1f,%.1f,%.1f,%.1f)",
+             i, (long)child.tag, hasActiveTransform ? "YES" : "NO", targetX, targetY, targetW, targetH,
+             frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
 
     if (targetW > 0 && targetH > 0 &&
         (differsX || differsY || differsW || differsH)) {
@@ -440,12 +459,10 @@ static os_log_t rncvLog(void) {
       } else {
         child.frame = CGRectMake(targetX, targetY, targetW, targetH);
       }
-      if (i < 8) {
-        CGRect applied = child.frame;
-        RNCV_LOG("  applied[%zu] tag=%ld frame=(%.1f,%.1f,%.1f,%.1f)",
-                 i, (long)child.tag,
-                 applied.origin.x, applied.origin.y, applied.size.width, applied.size.height);
-      }
+      RNCV_LOG("  applied[%zu] tag=%ld frame=(%.1f,%.1f,%.1f,%.1f)",
+               i, (long)child.tag,
+               child.frame.origin.x, child.frame.origin.y,
+               child.frame.size.width, child.frame.size.height);
     }
   }
 }

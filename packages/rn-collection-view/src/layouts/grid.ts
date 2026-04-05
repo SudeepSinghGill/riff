@@ -12,6 +12,19 @@
  * Standard JSI contract (mirrors ListLayout):
  *   nativeMod.gridLayout.computeSections(sections[])       → void
  *   nativeMod.gridLayout.invalidateSectionsFrom(n, [])     → void
+ *
+ * ─── STABLE KEY RULE (enforce in every layout engine) ────────────────────────
+ * One key per item, used identically in ALL three places:
+ *   1. C++ LayoutCache write  — uses keys[i] when provided, else "grid-{section}-{index}"
+ *   2. TS attributesForItem() — reads from lastSectionKeys[section][index] (same key)
+ *   3. CollectionView.tsx cacheKey — derived from layoutContext.sections[s].itemKeys[i]
+ *
+ * Identity keys from keyExtractor flow as:
+ *   keyExtractor → layoutContext.sections[s].itemKeys → prepare() keys[] → C++ → TS read
+ *
+ * Violation = silent rendering failures (wrong width, lost measurements, broken sticky).
+ * See docs/COLLECTIONVIEW_INTERNALS.md "RULE: Stable Key Consistency" for full details.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import type {
@@ -43,6 +56,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
 class GridLayoutEngine implements CollectionViewLayout {
   readonly type = 'grid';
   private readonly delegate: GridLayoutDelegate;
+  private lastSectionKeys: (readonly string[])[] = [];
 
   constructor(delegate: GridLayoutDelegate) {
     this.delegate = delegate;
@@ -108,6 +122,7 @@ class GridLayoutEngine implements CollectionViewLayout {
       };
     });
 
+    this.lastSectionKeys = context.sections.map(s => s.itemKeys ?? []);
     nativeMod.gridLayout.computeSections(sections);
   }
 
@@ -116,10 +131,9 @@ class GridLayoutEngine implements CollectionViewLayout {
   }
 
   attributesForItem(index: number, section: number): LayoutAttributes | null {
-    // Keys are built as `grid-${section}-${index}` when no itemKeys provided.
-    // When itemKeys are provided by the consumer, they form the key directly.
-    // Since we can't look up itemKeys here, fall back to the positional key.
-    return nativeMod.layoutCache.getAttributes(`grid-${section}-${index}`);
+    const sectionKeys = this.lastSectionKeys[section];
+    const key = sectionKeys?.[index] ?? `grid-${section}-${index}`;
+    return nativeMod.layoutCache.getAttributes(key);
   }
 
   attributesForSupplementary(kind: string, section: number): LayoutAttributes | null {

@@ -4,6 +4,22 @@
 #include <limits>
 #include <stdexcept>
 
+#ifndef RNCV_ENABLE_NATIVE_LOGS
+#define RNCV_ENABLE_NATIVE_LOGS 0
+#endif
+
+#if DEBUG && RNCV_ENABLE_NATIVE_LOGS
+  #ifdef __APPLE__
+    #include <os/log.h>
+    #define RNCV_MVC_LOG(fmt, ...) os_log_info(os_log_create("com.rncv", "mvc"), "[RNCV-MVC] " fmt, ##__VA_ARGS__)
+  #else
+    #include <android/log.h>
+    #define RNCV_MVC_LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "RNCV-MVC", fmt, ##__VA_ARGS__)
+  #endif
+#else
+  #define RNCV_MVC_LOG(fmt, ...) ((void)0)
+#endif
+
 namespace rncv {
 
 using namespace facebook;
@@ -185,8 +201,12 @@ void LayoutCache::_snapshotAnchorLocked() {
     _anchorY   = bestPrimary;  // always stored in _anchorY for simplicity
     _anchorX   = bestPrimary;  // same value; caller uses _horizontal to pick
     _hasAnchor = true;
+    RNCV_MVC_LOG("snapshotAnchor: key=%s oldY=%.1f scrollOffset=%.1f",
+                 _anchorKey.c_str(), bestPrimary, scrollPrimary);
   } else {
     _hasAnchor = false;
+    RNCV_MVC_LOG("snapshotAnchor: no anchor found (scrollOffset=%.1f mapSize=%zu)",
+                 scrollPrimary, _map.size());
   }
 }
 
@@ -224,6 +244,8 @@ double LayoutCache::computeCorrection() {
   const double newPos = _horizontal ? it->second.frame.x : it->second.frame.y;
   const double oldPos = _horizontal ? _anchorX : _anchorY;
   const double correction = newPos - oldPos;
+  RNCV_MVC_LOG("computeCorrection: key=%s oldY=%.1f newY=%.1f correction=%.1f",
+               _anchorKey.c_str(), oldPos, newPos, correction);
   _pendingCorrectionY   = correction;
   _hasPendingCorrection = true;
   return correction;

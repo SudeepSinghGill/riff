@@ -99,7 +99,10 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     col++;
 
     if (col >= cols) {
-      // End of row — align all items in this row to rowMaxHeight
+      // End of row — all items in this row are top-aligned (frame.y = rowStartY).
+      // Future: rowAlignment ('top'|'center'|'bottom') — shorter items would have
+      // their frame.y offset by (rowMaxHeight - itemHeight) / 2 or (rowMaxHeight - itemHeight).
+      // See PLAN.md F3.1 and src/types/protocol.ts GridLayoutDelegate for the API sketch.
       if (!fixedRow) {
         for (int j = rowStart; j <= i; ++j) frames[j].height = rowMaxHeight;
       }
@@ -124,6 +127,29 @@ double GridLayout::computeSection(const GridLayoutParams& p,
         };
         _cache->setAttributes(sep);
       }
+      // Column separators between adjacent columns in this row
+      if (p.emitSeparators && cols > 1) {
+        const int rowIdx = rowStart / cols;
+        for (int c = 0; c < cols - 1; ++c) {
+          LayoutAttributes colSep;
+          colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
+                                  std::to_string(rowIdx) + "-" + std::to_string(c);
+          colSep.section        = sectionIndex;
+          colSep.index          = -1;
+          colSep.isDecoration   = true;
+          colSep.decorationKind = "separator";
+          colSep.zIndex         = 0;
+          colSep.sizingState    = SizingState::Measured;
+          colSep.isDirty        = false;
+          colSep.alpha          = 1.0;
+          // Center the thin line in the column gap
+          const double gapX = p.sectionInsetLeft +
+                              (c + 1) * itemWidth + c * p.columnSpacing +
+                              (p.columnSpacing - p.separatorHeight) / 2.0;
+          colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+          _cache->setAttributes(colSep);
+        }
+      }
       rowStartY   += rowMaxHeight + p.rowSpacing;
       col          = 0;
       rowMaxHeight = 0.0;
@@ -135,6 +161,28 @@ double GridLayout::computeSection(const GridLayoutParams& p,
   if (col > 0 && p.itemCount > 0) {
     if (!fixedRow) {
       for (int j = rowStart; j < p.itemCount; ++j) frames[j].height = rowMaxHeight;
+    }
+    // Column separators for last partial row (only between occupied columns)
+    if (p.emitSeparators && col > 1) {
+      const int rowIdx = rowStart / cols;
+      for (int c = 0; c < col - 1; ++c) {
+        LayoutAttributes colSep;
+        colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
+                                std::to_string(rowIdx) + "-" + std::to_string(c);
+        colSep.section        = sectionIndex;
+        colSep.index          = -1;
+        colSep.isDecoration   = true;
+        colSep.decorationKind = "separator";
+        colSep.zIndex         = 0;
+        colSep.sizingState    = SizingState::Measured;
+        colSep.isDirty        = false;
+        colSep.alpha          = 1.0;
+        const double gapX = p.sectionInsetLeft +
+                            (c + 1) * itemWidth + c * p.columnSpacing +
+                            (p.columnSpacing - p.separatorHeight) / 2.0;
+        colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+        _cache->setAttributes(colSep);
+      }
     }
     rowStartY += rowMaxHeight;
   }
@@ -296,6 +344,28 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
         };
         _cache->setAttributes(sep);
       }
+      // Column separators between adjacent columns in this row
+      if (p.emitSeparators && cols > 1) {
+        const int rowIdx = rowStart / cols;
+        for (int c = 0; c < cols - 1; ++c) {
+          LayoutAttributes colSep;
+          colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
+                                  std::to_string(rowIdx) + "-" + std::to_string(c);
+          colSep.section        = sectionIndex;
+          colSep.index          = -1;
+          colSep.isDecoration   = true;
+          colSep.decorationKind = "separator";
+          colSep.zIndex         = 0;
+          colSep.sizingState    = SizingState::Measured;
+          colSep.isDirty        = false;
+          colSep.alpha          = 1.0;
+          const double gapX = p.sectionInsetLeft +
+                              (c + 1) * itemWidth + c * p.columnSpacing +
+                              (p.columnSpacing - p.separatorHeight) / 2.0;
+          colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+          _cache->setAttributes(colSep);
+        }
+      }
       rowStartY   += rowMaxHeight + p.rowSpacing;
       col          = 0;
       rowMaxHeight = 0.0;
@@ -305,6 +375,28 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
 
   if (col > 0 && p.itemCount > 0) {
     for (int j = rowStart; j < p.itemCount; ++j) frames[j].height = rowMaxHeight;
+    // Column separators for last partial row (only between occupied columns)
+    if (p.emitSeparators && col > 1) {
+      const int rowIdx = rowStart / cols;
+      for (int c = 0; c < col - 1; ++c) {
+        LayoutAttributes colSep;
+        colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
+                                std::to_string(rowIdx) + "-" + std::to_string(c);
+        colSep.section        = sectionIndex;
+        colSep.index          = -1;
+        colSep.isDecoration   = true;
+        colSep.decorationKind = "separator";
+        colSep.zIndex         = 0;
+        colSep.sizingState    = SizingState::Measured;
+        colSep.isDirty        = false;
+        colSep.alpha          = 1.0;
+        const double gapX = p.sectionInsetLeft +
+                            (c + 1) * itemWidth + c * p.columnSpacing +
+                            (p.columnSpacing - p.separatorHeight) / 2.0;
+        colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+        _cache->setAttributes(colSep);
+      }
+    }
     rowStartY += rowMaxHeight;
   }
 
@@ -428,16 +520,38 @@ bool GridLayout::applyMeasurements(
     LayoutCache& cache) {
   if (deltas.empty()) return true;
 
-  // Apply height deltas and track the first changed section
+  // Apply height deltas and track the first changed section.
+  //
+  // Section backgrounds are layout-determined (height = primary - bgStartPrimary).
+  // Writing Yoga's measurement to a section background would corrupt its height
+  // because the ShadowNode sees items+separators as siblings; its Yoga tree does
+  // not know which height belongs to the "background of section N". Instead:
+  //   - Don't write Yoga height to sectionBackground decorations.
+  //   - Trigger firstChangedSection so computeSectionFromCache restores the
+  //     correct height from the item positions.
+  //
+  // Separators: height is also layout-determined but stable (0.5 or rowMaxH).
+  // Writing Yoga's measurement is fine for separators; they are small enough that
+  // any rounding error won't cause visible corruption. We still skip them for
+  // firstChangedSection because a separator delta alone doesn't shift item positions.
   int firstChangedSection = INT_MAX;
   for (const auto& d : deltas) {
     auto attrs = cache.getAttributes(d.key);
     if (attrs) {
-      auto updated = *attrs;
-      updated.frame.height = d.newValue;
-      updated.sizingState  = SizingState::Measured;
-      cache.setAttributes(updated);
+      const bool isSectionBg = attrs->isDecoration &&
+                               attrs->decorationKind == "sectionBackground";
+      if (!isSectionBg) {
+        // Items, supplementary (headers/footers), and separators: update height.
+        auto updated = *attrs;
+        updated.frame.height = d.newValue;
+        updated.sizingState  = SizingState::Measured;
+        cache.setAttributes(updated);
+      }
       if (!attrs->isDecoration && !attrs->isSupplementary) {
+        // Item delta → reflow from this section.
+        firstChangedSection = std::min(firstChangedSection, attrs->section);
+      } else if (isSectionBg) {
+        // Section background height mismatch → reflow this section to restore it.
         firstChangedSection = std::min(firstChangedSection, attrs->section);
       }
     }

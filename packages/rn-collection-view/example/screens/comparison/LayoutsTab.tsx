@@ -68,7 +68,10 @@ const S2_DATA: ListItem[] = Array.from({ length: 20 }, (_, i) => {
 
 // ── Grid data ────────────────────────────────────────────────────────────────
 
-type GridCell = { id: string; color: string; num: number };
+type GridCell = { id: string; color: string; num: number; height?: number };
+
+// S2 uses varying heights to demonstrate uneven rows (row height = tallest item)
+const GS2_HEIGHTS = [60, 110, 80, 130, 70, 100, 90, 120, 65, 95, 115, 75];
 
 // 3 sections of fixed-height cells — each section uses COLORS rotated
 const GS0_DATA: GridCell[] = Array.from({ length: 18 }, (_, i) => ({
@@ -79,6 +82,7 @@ const GS1_DATA: GridCell[] = Array.from({ length: 12 }, (_, i) => ({
 }));
 const GS2_DATA: GridCell[] = Array.from({ length: 24 }, (_, i) => ({
   id: `gs2-${i}`, color: COLORS[(i + 5) % COLORS.length]!, num: i,
+  height: GS2_HEIGHTS[i % GS2_HEIGHTS.length],
 }));
 
 // ── Masonry data ─────────────────────────────────────────────────────────────
@@ -491,7 +495,7 @@ const GRID_ROW_H  = 90;
 
 function GridSectionHeader({ label, color }: { label: string; color: string }) {
   return (
-    <View style={{ flex: 1, backgroundColor: color + 'dd', justifyContent: 'center', paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: color }}>
+    <View style={{ height: GRID_HDR_H, backgroundColor: color + 'dd', justifyContent: 'center', paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: color }}>
       <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{label}</Text>
     </View>
   );
@@ -499,29 +503,43 @@ function GridSectionHeader({ label, color }: { label: string; color: string }) {
 
 function GridSectionFooter({ color, count }: { color: string; count: number }) {
   return (
-    <View style={{ flex: 1, backgroundColor: color + '44', justifyContent: 'center', paddingHorizontal: 14, borderTopWidth: 1, borderTopColor: color + '88' }}>
+    <View style={{ height: GRID_FTR_H, backgroundColor: color + '44', justifyContent: 'center', paddingHorizontal: 14, borderTopWidth: 1, borderTopColor: color + '88' }}>
       <Text style={{ color: color, fontSize: 11, fontWeight: '600' }}>{count} items</Text>
     </View>
   );
 }
 
 export function GridDemo() {
+  const cvRef = useRef<any>(null);
   const [gs0Items, setGs0Items] = useState<GridCell[]>(GS0_DATA);
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
+  const [resizedIds, setResizedIds] = useState(() => new Set<string>());
   const insertCounter = useRef(GS0_DATA.length);
+  // Ref mirrors resizedIds so heightForItem closure always reads current value.
+  const resizedIdsRef = useRef(resizedIds);
+  resizedIdsRef.current = resizedIds;
 
+  // Always use heightForItem — S2 has varying heights, S0/S1 use GRID_ROW_H (or 2× when resized).
+  // Row height = max of items in that row, demonstrating uneven items in a row.
   const gridLayout = useMemo(() => grid({
     columns: 3,
-    rowHeight: GRID_ROW_H,
+    heightForItem: (i: number, s: number) => {
+      const allSections = [gs0Items, GS1_DATA, GS2_DATA];
+      const item = allSections[s]?.[i];
+      if (!item) return GRID_ROW_H;
+      if (resizedIdsRef.current.has(item.id)) return GRID_ROW_H * 2;
+      return item.height ?? GRID_ROW_H;
+    },
     columnSpacing: 6,
     rowSpacing: 6,
     sectionSpacing: 16,
     sectionBackground: true,
-    separator: sepEnabled ? { color: '#333', height: 0.5 } : undefined,
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [sepEnabled]);
+    separator: sepEnabled ? { color: '#ff3b30', height: 0.5 } : undefined,
+  }), [sepEnabled, resizedIds, gs0Items]);
+
+  const keyExtractor = useCallback((item: GridCell) => item.id, []);
 
   const handleInsert = useCallback(() => {
     const newItems: GridCell[] = Array.from({ length: 3 }, () => {
@@ -535,12 +553,29 @@ export function GridDemo() {
     setGs0Items(prev => prev.length >= 3 ? prev.slice(3) : prev);
   }, []);
 
+  const handleInsert1 = useCallback(() => {
+    const idx = insertCounter.current++;
+    setGs0Items(prev => [{ id: `gs0-ins-${idx}`, color: COLORS[idx % COLORS.length]!, num: idx }, ...prev]);
+  }, []);
+
+  const handleDelete1 = useCallback(() => {
+    setGs0Items(prev => prev.length >= 1 ? prev.slice(1) : prev);
+  }, []);
+
+  const toggleResize = useCallback((id: string) => {
+    setResizedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
   const sections = useMemo(() => [
     {
       key: 'gs0',
       data: gs0Items,
       header: {
-        render: () => <GridSectionHeader label="S0 — Photos (18)" color="#e63946" />,
+        render: () => <GridSectionHeader label={`S0 — Photos (${gs0Items.length})`} color="#e63946" />,
         height: GRID_HDR_H,
         sticky: true,
       },
@@ -589,17 +624,35 @@ export function GridDemo() {
     ),
   }), []);
 
-  const renderItem = useCallback(({ item }: { item: GridCell }) => (
-    <View style={[S.gridCell, { backgroundColor: item.color }]}>
-      <Text style={S.gridCellText}>{item.num}</Text>
-    </View>
-  ), []);
+  const renderItem = useCallback(({ item }: { item: GridCell }) => {
+    const isResized = resizedIds.has(item.id);
+    const cellHeight = isResized ? GRID_ROW_H * 2 : (item.height ?? GRID_ROW_H);
+    return (
+      <Pressable
+        style={[S.gridCell, { borderColor: item.color, height: cellHeight }]}
+        onPress={() => toggleResize(item.id)}
+      >
+        <Text style={[S.gridCellText, { color: item.color }]}>{item.num}</Text>
+        {item.height && !isResized && (
+          <Text style={{ color: item.color, fontSize: 9, opacity: 0.7 }}>{item.height}px</Text>
+        )}
+        {isResized && <Text style={{ color: item.color, fontSize: 9, opacity: 0.7 }}>↕ tall</Text>}
+      </Pressable>
+    );
+  }, [resizedIds, toggleResize]);
 
   return (
     <View style={S.flex}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={S.ctrlBarScroll} contentContainerStyle={S.ctrlBar}>
-        <CtrlBtn label="+Insert" onPress={handleInsert} />
-        <CtrlBtn label="×Delete" onPress={handleDelete} />
+        <CtrlBtn label="→ Top" onPress={() => cvRef.current?.scrollToOffset({ y: 0 })} />
+        <CtrlBtn label="→ S1" onPress={() => cvRef.current?.scrollToItem('gs1:gs1-0', { position: 'top' })} />
+        <CtrlBtn label="→ Bot" onPress={() => cvRef.current?.scrollToItem('gs2:gs2-23', { position: 'bottom' })} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label="+1" onPress={handleInsert1} />
+        <CtrlBtn label="−1" onPress={handleDelete1} />
+        <CtrlBtn label="+3" onPress={handleInsert} />
+        <CtrlBtn label="−3" onPress={handleDelete} />
+        <CtrlBtn label="↕ S0[0]" onPress={() => { const id = gs0Items[0]?.id; if (id) toggleResize(id); }} />
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
         <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
@@ -609,13 +662,16 @@ export function GridDemo() {
       </ScrollView>
 
       <CollectionView
+        handle={cvRef}
         sections={sections}
         layout={gridLayout}
         stickyMode="push"
         estimatedItemHeight={GRID_ROW_H}
+        extraData={resizedIds}
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
         onDecorationCountChange={setDecoCount}
+        keyExtractor={keyExtractor}
         renderItem={renderItem}
       />
     </View>
@@ -866,8 +922,8 @@ const S = StyleSheet.create({
   listCellTitle: { fontSize: 15, fontWeight: '600', color: '#fff' },
   listCellSub: { fontSize: 12, color: '#888', marginTop: 4, lineHeight: 18 },
 
-  gridCell: { height: 100, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  gridCellText: { fontSize: 18, fontWeight: '700', color: '#fff' },
+  gridCell: { height: 100, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 2 },
+  gridCellText: { fontSize: 18, fontWeight: '700' },
 
   masonryCell: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   masonryCellText: { fontSize: 18, fontWeight: '700', color: '#fff' },

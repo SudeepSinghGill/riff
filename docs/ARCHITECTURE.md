@@ -298,6 +298,21 @@ decorationRenderers={{
 
 **applyMeasurements and decorations:** When Yoga measures a cell and its height differs from the estimate, `applyMeasurements()` cascades Y-position shifts to all downstream items. Decorations use a shift-based second pass: the section background's Y origin and height are adjusted by tracking `entryShift` (cumulative shift before the section's first item) and `exitShift` (cumulative shift after the section's last item). This preserves the original `sectionInsetTop`/`sectionInsetBottom` padding in the bg frame even after measurement corrections. Decorations are excluded from MVC anchor selection (`_snapshotAnchorLocked` skips entries where `isDecoration == true`).
 
+### Horizontal List
+
+`list({ horizontal: true })` is fully supported including sticky headers/footers, section backgrounds, separators, insert/delete/resize, MVC, and `scrollToItem`/`scrollToOffset`.
+
+**Frame semantics for horizontal supplementary views:**
+- Header frame: `{ x: sectionStart, y: 0, width: headerPrimaryAxisSize, height: viewportHeight }`
+- Footer frame: `{ x: sectionEnd - footerPrimaryAxisSize, y: 0, width: footerPrimaryAxisSize, height: viewportHeight }`
+- `width` = size along the scroll (X) axis; `height` = cross-axis (fills the list height)
+
+**Sticky config — `primaryAxisExtent`:**  The sticky config map stores `primaryAxisExtent` (renamed from `sizeHeight`): `frame.width` for horizontal, `frame.height` for vertical. This is passed to native `RNScrollCoordinatedViewView` as `_headerHeight` and drives both the push boundary cap (`maxTranslate = boundaryX - naturalX - _headerHeight`) and footer trailing-edge position (`desiredLeft = scrollX + viewportW - _headerHeight`). Passing the cross-axis dimension here breaks all three calculations.
+
+**Cross-axis height pinning:**  Horizontal supplementary views must have an explicit `height: attr.frame.height` in `containerStyle`. Without it, Yoga measures the content (~100px) and ShadowNode Phase 2 creates a delta that overwrites the cached `viewportHeight`. A future optimization could instead skip height deltas for supplementary views in horizontal mode directly in `CollectionViewContainerShadowNode.cpp`.
+
+**Native offloading opportunity (not yet done):**  `RNScrollCoordinatedViewView` already derives `naturalY`/`naturalX` from `self.center` (ignores the JS prop). The `boundaryY`/`boundaryX`/`headerHeight` values could also be read directly from `LayoutCacheRegistry` using the `cacheKey` prop — eliminating the JS `stickyConfigMap` useMemo (~100 lines) entirely. Prerequisites: thread-safety audit of LayoutCacheRegistry for UI-thread reads.
+
 ---
 
 ## 4. Scroll Container Design
@@ -447,6 +462,8 @@ Core Fabric ShadowNode APIs (`ConcreteViewShadowNode`, `layout()` override, `Con
 **Why:** The async path has a 2-frame gap between Yoga measurement and position correction. Users see a visible jump when cells are first measured. FlashList has the same limitation. The ShadowNode approach reads measurements in the same commit cycle, enabling correct positions from frame 1.
 
 **Status:** Phases 1-4 implemented and working. The ShadowNode reads child heights, runs the layout engine, writes position arrays into state, and applies MVC scroll offset correction to keep visible content stable when items above the viewport change height. Remaining: Phase 5 (sticky headers via ShadowNode), Phase 6 (legacy cleanup — remove JS cell wrapper positioning).
+
+**Two-layer identity design (confirmed critical, 2026-04-05):** The position pipeline uses two orthogonal identity systems. (1) **cacheKey** (stable string) — maps "what element is this?" → "what position should it have?" across the C++ engine → LayoutCache → SpatialIndex → JS → ShadowNode Phase 1 chain. (2) **Fabric tag** (int32) — maps "this position entry" → "which native UIView receives it?" The ShadowNode records `children[i]->getTag()` in a `childTags` vector parallel to the `positions` vector; the native view builds a `tag → UIView*` map and applies positions by identity rather than by index. This is required because Fabric's reconciler "last index" optimization can leave native subview order inconsistent with ShadowNode child order when new children are inserted before existing non-moved children (confirmed in production logs with decoration views). Universal tag-based lookup protects ALL child types. Full analysis in `docs/COLLECTIONVIEW_INTERNALS.md` → "Two-Layer Identity".
 
 ### Approach A: ShadowNode owns scroll container
 
