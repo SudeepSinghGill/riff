@@ -6,20 +6,21 @@
  *
  * Tabs are added progressively as layouts are implemented:
  *   List (V+H)    ← both done
- *   Grid (V+H)    ← TODO
+ *   Grid (V+H)    ← both done
  *   Flow (align)  ← TODO
  *   Masonry (V+H) ← TODO
  */
 import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ListDemo, HorizontalListDemo, GridDemo } from './comparison/LayoutsTab';
+import { ListDemo, HorizontalListDemo, GridDemo, HorizontalGridDemo } from './comparison/LayoutsTab';
 
-type DemoTab = 'list-v' | 'list-h' | 'grid-v';
+type DemoTab = 'list-v' | 'list-h' | 'grid-v' | 'grid-h';
 
 const TABS: { key: DemoTab; label: string; detail: string }[] = [
   { key: 'list-v', label: 'List ↕', detail: 'Vertical · sections · decorations · mutations · sticky' },
   { key: 'list-h', label: 'List ↔', detail: 'Horizontal · sections · fixed-width cards' },
   { key: 'grid-v', label: 'Grid ↕', detail: 'Vertical grid · multi-section · sticky headers · section backgrounds · insert/delete · MVC' },
+  { key: 'grid-h', label: 'Grid ↔', detail: 'Horizontal grid · columns=2 · section backgrounds · insert/delete · MVC' },
 ];
 
 export default function RiffDemo() {
@@ -44,7 +45,7 @@ export default function RiffDemo() {
           </Pressable>
         ))}
         {/* Placeholder tabs — shown greyed out for roadmap visibility */}
-        {(['Grid ↔', 'Flow ↕', 'Flow ↔', 'Masonry ↕'] as const).map(label => (
+        {(['Flow ↕', 'Flow ↔', 'Masonry ↕'] as const).map(label => (
           <View key={label} style={[S.tab, S.tabDisabled]}>
             <Text style={S.tabLabelDisabled}>{label}</Text>
           </View>
@@ -61,6 +62,7 @@ export default function RiffDemo() {
         {tab === 'list-v' && <ListDemo />}
         {tab === 'list-h' && <HorizontalListDemo />}
         {tab === 'grid-v' && <GridDemo />}
+        {tab === 'grid-h' && <HorizontalGridDemo />}
       </View>
     </View>
   );
