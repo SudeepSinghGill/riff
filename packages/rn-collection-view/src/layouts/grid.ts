@@ -116,6 +116,11 @@ class GridLayoutEngine implements CollectionViewLayout {
         separatorInsetLeading: d.separator?.insetLeading ?? 0,
         separatorInsetTrailing: d.separator?.insetTrailing ?? 0,
         sectionSpacing: d.sectionSpacing ?? 0,
+        // sectionBackground content insets — applied at C++ frame emission time.
+        sectionBackgroundInsetTop:    d.sectionBackgroundContentInsets?.top    ?? 0,
+        sectionBackgroundInsetBottom: d.sectionBackgroundContentInsets?.bottom ?? 0,
+        sectionBackgroundInsetLeft:   d.sectionBackgroundContentInsets?.left   ?? 0,
+        sectionBackgroundInsetRight:  d.sectionBackgroundContentInsets?.right  ?? 0,
         keys,
         keyPrefix: '', // keys are provided explicitly above
         ...(itemHeights ? { itemHeights } : {}),

@@ -329,6 +329,8 @@ export function ListDemo() {
     sectionSpacing: 20,
     separator: sepEnabled ? { color: '#4a4a6a', insetLeading: 16 } : undefined,
     sectionBackground: true,
+    // L3.1: jacket effect — bg expands 8pt above header + below footer.
+    sectionBackgroundContentInsets: { top: -8, bottom: -8 },
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [sepEnabled]);
 

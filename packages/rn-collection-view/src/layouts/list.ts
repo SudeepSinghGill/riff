@@ -141,6 +141,11 @@ class ListLayout implements CollectionViewLayout {
         separatorInsetLeading: d.separator?.insetLeading ?? 0,
         separatorInsetTrailing: d.separator?.insetTrailing ?? 0,
         sectionSpacing: d.sectionSpacing ?? 0,
+        // sectionBackground content insets — applied at C++ frame emission time.
+        sectionBackgroundInsetTop:    d.sectionBackgroundContentInsets?.top    ?? 0,
+        sectionBackgroundInsetBottom: d.sectionBackgroundContentInsets?.bottom ?? 0,
+        sectionBackgroundInsetLeft:   d.sectionBackgroundContentInsets?.left   ?? 0,
+        sectionBackgroundInsetRight:  d.sectionBackgroundContentInsets?.right  ?? 0,
         estimatedCrossAxisHeight: d.estimatedCrossAxisHeight ?? 200,
       };
 
@@ -161,7 +166,7 @@ class ListLayout implements CollectionViewLayout {
     // Build a fingerprint of the data shape. Only clear + recompute when it changes.
     // This preserves Yoga-measured heights across measurement-triggered re-renders.
     // Include both dimensions in fingerprint: horizontal list invalidates on height change, vertical on width.
-    const fp = `${context.containerWidth}x${context.containerHeight}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight},${s.emitSeparators},${s.emitSectionBackground}`).join(';')}`;
+    const fp = `${context.containerWidth}x${context.containerHeight}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight},${s.emitSeparators},${s.emitSectionBackground},${s.sectionBackgroundInsetTop},${s.sectionBackgroundInsetBottom},${s.sectionBackgroundInsetLeft},${s.sectionBackgroundInsetRight}`).join(';')}`;
     if (fp !== this._lastFingerprint) {
       nativeMod.layoutCache.clear();
       this._lastFingerprint = fp;

@@ -216,6 +216,23 @@ export interface ListLayoutDelegate {
   sectionBackground?: boolean;
 
   /**
+   * Insets applied to the sectionBackground frame at C++ emission time.
+   * Positive values shrink the frame inward; negative values expand it outward.
+   * Applied in absolute visual coordinates:
+   *   top/bottom → adjust Y origin and height
+   *   left/right → adjust X origin and width
+   * This mirrors NSCollectionLayoutDecorationItem.contentInsets — adjustments happen
+   * at the layout level so windowing and ShadowNode positioning use the final frame.
+   * Requires `sectionBackground: true`.
+   */
+  sectionBackgroundContentInsets?: {
+    top?: number;
+    bottom?: number;
+    left?: number;
+    right?: number;
+  };
+
+  /**
    * Vertical gap inserted after each section's footer (or last item if no footer),
    * before the next section's header. Sits outside the section background frame.
    * Analogous to NSCollectionLayoutSection.interSectionSpacing.
@@ -295,6 +312,18 @@ export interface GridLayoutDelegate {
   /** When true, the layout engine emits a sectionBackground decoration attribute
    *  covering the items area. Render via decorationRenderers on the component. */
   sectionBackground?: boolean;
+
+  /**
+   * Insets applied to the sectionBackground frame at C++ emission time.
+   * Same semantics as the list layout equivalent — see ListLayoutDelegate.
+   * Requires `sectionBackground: true`.
+   */
+  sectionBackgroundContentInsets?: {
+    top?: number;
+    bottom?: number;
+    left?: number;
+    right?: number;
+  };
 
   // Future: rowAlignment?: 'top' | 'center' | 'bottom'
   // Alignment of shorter items within a row when heightForItem produces uneven heights.

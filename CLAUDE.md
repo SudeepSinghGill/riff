@@ -10,6 +10,9 @@
 
 ## Workflow
 
+- **Always start from `main`.** At the start of every session, check out `main` and pull latest before doing anything.
+- **Always use a feature branch.** Create a new branch from `main` for every change (`git checkout -b <branch-name>`). Never commit directly to `main`.
+- **Merge back to `main` when done.** Once a change is complete and verified, merge the feature branch back to `main` and push. Delete the feature branch after merge.
 - **Always plan first.** Before any non-trivial implementation, present the plan and get explicit sign-off before writing code.
 - **Ask before proceeding to next milestone.** Keep milestones small and atomic.
 - **At end of session:** update `ethereal-seeking-willow.md` and write a new handoff file in `docs/ContextExchange/` with timestamp.

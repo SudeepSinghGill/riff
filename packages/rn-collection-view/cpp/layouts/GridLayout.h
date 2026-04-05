@@ -36,6 +36,14 @@ struct GridLayoutParams {
   double separatorInsetTrailing = 0.0;
   double sectionSpacing        = 0.0;
 
+  // Content insets applied to the sectionBackground frame at emission time.
+  // Positive shrinks frame inward; negative expands outward.
+  // Applied in absolute visual coordinates (top/bottom → Y/height, left/right → X/width).
+  double sectionBackgroundInsetTop    = 0;
+  double sectionBackgroundInsetBottom = 0;
+  double sectionBackgroundInsetLeft   = 0;
+  double sectionBackgroundInsetRight  = 0;
+
   // Horizontal mode
   bool   horizontal               = false;
   double estimatedCrossAxisHeight = 200.0;
