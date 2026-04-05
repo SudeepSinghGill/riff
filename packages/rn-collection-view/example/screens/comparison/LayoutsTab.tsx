@@ -752,12 +752,18 @@ function FlowDemo() {
   );
 }
 
-type SubTab = 'list' | 'grid' | 'masonry' | 'flow' | 'circular' | 'carousel';
+type SubTab = 'list' | 'grid' | 'hgrid' | 'masonry' | 'flow' | 'circular' | 'carousel';
 
 // ── Callout bullets per layout ───────────────────────────────────────────────
 type Bullet = { type: 'green' | 'amber' | 'red' | 'blue'; text: string };
 
 const CALLOUTS: Record<SubTab, Bullet[]> = {
+  hgrid: [
+    { type: 'green', text: 'FlashList: No built-in horizontal grid. Requires manual row-grouping and numColumns workaround.' },
+    { type: 'blue', text: 'columns=2 → items tile top→bottom in column-groups, scroll left→right. C++ GridLayout horizontal path.' },
+    { type: 'blue', text: 'Sticky headers/footers are narrow vertical strips (20px wide). Section backgrounds span column-groups.' },
+    { type: 'blue', text: 'Row separators (horizontal lines within a column-group) and column-group separators (vertical lines between groups) toggled independently.' },
+  ],
   list: [
     { type: 'green', text: 'S0: Header + footer timers survive all scroll — same view instance repositioned natively, never remounted. FlashList: no sticky footer.' },
     { type: 'red', text: 'FlashList: Recycled cell re-mounts → shimmer restarts from frame 0, mount counter increments. No sticky footer support.' },
@@ -795,6 +801,7 @@ const CALLOUTS: Record<SubTab, Bullet[]> = {
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'list', label: 'List' },
   { key: 'grid', label: 'Grid' },
+  { key: 'hgrid', label: 'H-Grid' },
   { key: 'masonry', label: 'Masonry' },
   { key: 'flow', label: 'Flow' },
   { key: 'circular', label: 'Radial Arc' },
@@ -849,6 +856,7 @@ export default function LayoutsTab() {
       <View style={S.content}>
         {subTab === 'list' && <ListDemo />}
         {subTab === 'grid' && <GridDemo />}
+        {subTab === 'hgrid' && <HorizontalGridDemo />}
         {subTab === 'masonry' && <MasonryDemo />}
         {subTab === 'flow' && <FlowDemo />}
 
@@ -1233,4 +1241,204 @@ const HS = StyleSheet.create({
   tag:                { backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 4,
                         paddingHorizontal: 6, paddingVertical: 2 },
   tagText:            { fontSize: 9, color: '#fff', fontWeight: '600', textTransform: 'uppercase' },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HorizontalGridDemo
+// 2-row horizontal grid (columns=2) with 3 sections, sticky headers/footers,
+// section backgrounds, row/column-group separators, insert/delete, MVC toggle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HG_SECTIONS_META = H_SECTIONS_META; // reuse same metadata
+
+const makeHGSections = () => [
+  {
+    key: 'hg-nature',
+    items: Array.from({ length: 14 }, (_, i) => ({
+      id: `hg-nature-${i}`,
+      color: H_COLORS[i % H_COLORS.length]!,
+      num: i,
+      label: `Nature ${i + 1}`,
+    })),
+  },
+  {
+    key: 'hg-cities',
+    items: Array.from({ length: 10 }, (_, i) => ({
+      id: `hg-city-${i}`,
+      color: H_COLORS[(i + 3) % H_COLORS.length]!,
+      num: i,
+      label: `City ${i + 1}`,
+    })),
+  },
+  {
+    key: 'hg-abstract',
+    items: Array.from({ length: 12 }, (_, i) => ({
+      id: `hg-abs-${i}`,
+      color: H_COLORS[(i + 6) % H_COLORS.length]!,
+      num: i,
+      label: `Art ${i + 1}`,
+    })),
+  },
+];
+
+type HGCard = { id: string; color: string; num: number; label: string };
+
+export function HorizontalGridDemo() {
+  const staticSections = useMemo(() => makeHGSections(), []);
+  const [s0Items, setS0Items] = useState<HGCard[]>(staticSections[0]!.items);
+  const [mvcEnabled, setMvcEnabled] = useState(false);
+  const [sepEnabled, setSepEnabled] = useState(false);
+  const [decoCount, setDecoCount] = useState(0);
+  const insertCounter = useRef(staticSections[0]!.items.length);
+  const cvRef = useRef<RiffHandle>(null);
+
+  const handleInsert = useCallback(() => {
+    const newItems: HGCard[] = Array.from({ length: 4 }, () => {
+      const idx = insertCounter.current++;
+      return {
+        id: `hg-nature-ins-${idx}`,
+        color: H_COLORS[idx % H_COLORS.length]!,
+        num: idx,
+        label: `New ${idx + 1}`,
+      };
+    });
+    setS0Items(prev => [...newItems, ...prev]);
+  }, []);
+
+  const handleDelete = useCallback(() => {
+    setS0Items(prev => prev.length >= 4 ? prev.slice(4) : prev);
+  }, []);
+
+  const riffSections = useMemo(() => {
+    const allSections = [
+      { ...staticSections[0]!, items: s0Items },
+      staticSections[1]!,
+      staticSections[2]!,
+    ];
+    return allSections.map((sec, sIdx) => {
+      const meta = HG_SECTIONS_META[sIdx]!;
+      return {
+        key: sec.key,
+        data: sec.items,
+        header: {
+          render: () => (
+            <View style={[HGS.sectionHeader, { backgroundColor: meta.color }]}>
+              <Text style={HGS.sectionHeaderTitle}>
+                {meta.label.toUpperCase().split('').join('\n')}
+              </Text>
+            </View>
+          ),
+          height: 20,
+          sticky: true,
+        },
+        footer: {
+          render: () => (
+            <View style={[HGS.sectionFooter, { backgroundColor: meta.color }]}>
+              <Text style={HGS.sectionFooterLabel}>{'END'.split('').join('\n')}</Text>
+            </View>
+          ),
+          height: 20,
+          sticky: true,
+        },
+        insets: { top: 8, bottom: 8, left: 10, right: 10 },
+      };
+    });
+  }, [s0Items, staticSections]);
+
+  const hgLayout = useMemo(() => grid({
+    horizontal: true,
+    columns: 2,
+    rowHeight: 110,
+    estimatedCrossAxisHeight: 120,
+    columnSpacing: 8,
+    rowSpacing: 4,
+    sectionSpacing: 8,
+    sectionBackground: true,
+    ...(sepEnabled ? { separator: { height: 1.5 } } : {}),
+  }), [sepEnabled]);
+
+  const decorationRenderers = useMemo(() => ({
+    sectionBackground: (sectionIndex: number, frame: { x: number; y: number; width: number; height: number }) => (
+      <AnimatedSectionBg sectionIndex={sectionIndex} frame={frame} />
+    ),
+  }), []);
+
+  const renderCard = useCallback(({ item }: { item: HGCard }) => (
+    <View style={[HGS.card, { backgroundColor: item.color + 'cc' }]}>
+      <View style={HGS.cardThumb}>
+        <Text style={HGS.cardThumbNum}>{item.num + 1}</Text>
+      </View>
+      <Text style={HGS.cardLabel}>{item.label}</Text>
+    </View>
+  ), []);
+
+  const keyExtractor = useCallback((item: HGCard) => item.id, []);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
+      <View style={HGS.titleBar}>
+        <Text style={HGS.title}>Horizontal Grid (2 rows)</Text>
+        <Text style={HGS.subtitle}>3 sections · columns=2 · sticky headers/footers · section backgrounds · insert/delete</Text>
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={HGS.ctrlBar} contentContainerStyle={HGS.ctrlBarContent}>
+        <CtrlBtn label="← Start" onPress={() => cvRef.current?.scrollToOffset({ x: 0 })} />
+        <CtrlBtn label="→ S1" onPress={() => cvRef.current?.scrollToItem('hg-city-0', { position: 'start' })} />
+        <CtrlBtn label="→ S2" onPress={() => cvRef.current?.scrollToItem('hg-abs-0', { position: 'start' })} />
+        <CtrlBtn label="→ End" onPress={() => cvRef.current?.scrollToItem('hg-abs-11', { position: 'end' })} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label="+Insert" onPress={handleInsert} />
+        <CtrlBtn label="×Delete" onPress={handleDelete} />
+        <View style={S.ctrlDivider} />
+        <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
+        <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
+        <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
+        </View>
+      </ScrollView>
+
+      <View style={HGS.listBackground}>
+        <CollectionView
+          handle={cvRef}
+          sections={riffSections}
+          layout={hgLayout}
+          renderItem={renderCard}
+          keyExtractor={keyExtractor}
+          estimatedItemHeight={120}
+          maintainVisibleContentPosition={mvcEnabled}
+          decorationRenderers={decorationRenderers}
+          onDecorationCountChange={setDecoCount}
+          scrollViewProps={{ style: { backgroundColor: 'transparent' }, indicatorStyle: 'white' }}
+        />
+      </View>
+    </View>
+  );
+}
+
+const HGS = StyleSheet.create({
+  titleBar:           { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 8 },
+  title:              { fontSize: 15, fontWeight: '700', color: '#e2e8f0' },
+  subtitle:           { fontSize: 11, color: '#475569', marginTop: 2 },
+
+  ctrlBar:            { backgroundColor: '#111', flexGrow: 0 },
+  ctrlBarContent:     { flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
+
+  listBackground:     { height: 290, backgroundColor: '#0f1623', overflow: 'hidden' },
+
+  sectionHeader:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionHeaderTitle: { fontSize: 8, fontWeight: '700', color: 'rgba(255,255,255,0.7)',
+                        textAlign: 'center', lineHeight: 10 },
+
+  sectionFooter:      { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionFooterLabel: { fontSize: 8, color: 'rgba(255,255,255,0.5)', fontWeight: '600',
+                        textAlign: 'center', lineHeight: 10 },
+
+  card:               { flex: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+                        margin: 4 },
+  cardThumb:          { width: 56, height: 56, borderRadius: 10,
+                        backgroundColor: 'rgba(0,0,0,0.3)',
+                        alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  cardThumbNum:       { fontSize: 22, fontWeight: '800', color: '#fff' },
+  cardLabel:          { fontSize: 10, color: 'rgba(255,255,255,0.85)', fontWeight: '600',
+                        textAlign: 'center' },
 });

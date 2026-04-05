@@ -29,10 +29,10 @@ static bool gbln(Runtime& rt, const Object& o, const char* k, bool def = false) 
 
 void GridLayout::compute(const GridLayoutParams& params) {
   _cache->clear();
-  _columns = params.columns > 0 ? params.columns : 1;
-  _horizontal = false;
-  _viewportHeight = 0.0;
-  _sectionParams = { params };
+  _columns        = params.columns > 0 ? params.columns : 1;
+  _horizontal     = params.horizontal;
+  _viewportHeight = params.viewportHeight;
+  _sectionParams  = { params };
   computeSection(params, 0, 0.0);
 }
 
@@ -41,21 +41,44 @@ void GridLayout::compute(const GridLayoutParams& params) {
 double GridLayout::computeSection(const GridLayoutParams& p,
                                    int sectionIndex,
                                    double startPrimary) {
-  const int cols = p.columns > 0 ? p.columns : 1;
+  const bool H    = p.horizontal;
+  const int  cols = p.columns > 0 ? p.columns : 1;
 
   const std::string prefix = p.keyPrefix.empty()
       ? "grid-" + std::to_string(sectionIndex) + "-"
       : p.keyPrefix;
 
-  double primary       = startPrimary;
+  double primary        = startPrimary;
   double bgStartPrimary = startPrimary;
 
-  // Vertical layout only (horizontal grid handled in a later pass).
-  const double contentWidth     = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
-  const double totalColSpacing  = p.columnSpacing * (cols - 1);
-  const double itemWidth        = contentWidth > 0
-      ? (contentWidth - totalColSpacing) / cols
+  // ── Axis setup ────────────────────────────────────────────────────────────
+  // V: primary=Y, cross=X. Items fill left-to-right per row, rows stack downward.
+  //    cols items per row; itemCrossSize = column width derived from viewport.
+  //    itemPrimarySize = rowHeight (fixed) or per-item height (dynamic; Yoga measures).
+  //
+  // H: primary=X, cross=Y. Items fill top-to-bottom per column-group, groups advance right.
+  //    cols items per column-group; itemCrossSize = row height derived from viewport.
+  //    itemPrimarySize = estimated width (Yoga measures actual widths; applyMeasurements corrects).
+  //    itemHeights[] is unused for horizontal — cross-axis size is always derived from column count.
+  const double crossContent = H
+      ? p.viewportHeight - p.sectionInsetTop - p.sectionInsetBottom
+      : p.viewportWidth  - p.sectionInsetLeft - p.sectionInsetRight;
+  const double crossStart        = H ? p.sectionInsetTop   : p.sectionInsetLeft;
+  const double primaryInsetStart = H ? p.sectionInsetLeft  : p.sectionInsetTop;
+  const double primaryInsetEnd   = H ? p.sectionInsetRight : p.sectionInsetBottom;
+
+  const double totalColSpacing = p.columnSpacing * (cols - 1);
+  const double itemCrossSize   = crossContent > 0
+      ? (crossContent - totalColSpacing) / cols
       : 0.0;
+
+  // Primary-axis size per item.
+  // V: rowHeight (fixed) or per-item height from p.itemHeights (dynamic).
+  // H: rowHeight (fixed primary size) or estimatedCrossAxisHeight (placeholder; Yoga refines).
+  const bool   fixedPrimary     = p.rowHeight > 0;
+  const double estimatedPrimary = H
+      ? (fixedPrimary ? p.rowHeight : p.estimatedCrossAxisHeight)
+      : 0.0;  // unused for V (per-item heights used below)
 
   // ── Header ────────────────────────────────────────────────────────────────
   if (p.headerHeight > 0) {
@@ -68,45 +91,55 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     hdr.sizingState       = SizingState::Measured;
     hdr.isDirty           = false;
     hdr.alpha             = 1.0;
-    hdr.frame             = { p.sectionInsetLeft, primary, contentWidth, p.headerHeight };
+    if (H) {
+      hdr.frame = { primary, 0, p.headerHeight, p.viewportHeight };
+    } else {
+      hdr.frame = { crossStart, primary, crossContent, p.headerHeight };
+    }
     _cache->setAttributes(hdr);
-    primary       += p.headerHeight;
-    bgStartPrimary = primary; // bg starts after header
+    primary        += p.headerHeight;
+    bgStartPrimary  = primary;
   }
 
-  primary += p.sectionInsetTop; // gap between header (or section start) and first row
+  primary += primaryInsetStart;
 
   // ── Items in grid ─────────────────────────────────────────────────────────
-  const bool fixedRow = p.rowHeight > 0;
-
   struct CellFrame { double x, y, width, height; };
   std::vector<CellFrame> frames(p.itemCount);
 
-  int    col          = 0;
-  double rowStartY    = primary;
-  double rowMaxHeight = 0.0;
-  int    rowStart     = 0;
+  int    col              = 0;
+  double rowStartPrimary  = primary;   // primary-axis start of current row/column-group
+  double rowMaxPrimary    = 0.0;       // max primary-axis size in current row/column-group
+  int    rowStart         = 0;
 
   for (int i = 0; i < p.itemCount; ++i) {
-    double itemHeight = fixedRow
-        ? p.rowHeight
-        : (i < static_cast<int>(p.itemHeights.size()) ? p.itemHeights[i] : 44.0);
+    double itemPrimary;
+    if (H) {
+      itemPrimary = estimatedPrimary > 0 ? estimatedPrimary : 200.0;
+    } else {
+      itemPrimary = fixedPrimary
+          ? p.rowHeight
+          : (i < static_cast<int>(p.itemHeights.size()) ? p.itemHeights[i] : 44.0);
+    }
 
-    const double x = p.sectionInsetLeft + col * (itemWidth + p.columnSpacing);
-    frames[i] = { x, rowStartY, itemWidth, itemHeight };
+    const double crossPos = crossStart + col * (itemCrossSize + p.columnSpacing);
+    if (H) {
+      frames[i] = { rowStartPrimary, crossPos, itemPrimary, itemCrossSize };
+    } else {
+      frames[i] = { crossPos, rowStartPrimary, itemCrossSize, itemPrimary };
+    }
 
-    if (itemHeight > rowMaxHeight) rowMaxHeight = itemHeight;
+    if (itemPrimary > rowMaxPrimary) rowMaxPrimary = itemPrimary;
     col++;
 
     if (col >= cols) {
-      // End of row — all items in this row are top-aligned (frame.y = rowStartY).
-      // Future: rowAlignment ('top'|'center'|'bottom') — shorter items would have
-      // their frame.y offset by (rowMaxHeight - itemHeight) / 2 or (rowMaxHeight - itemHeight).
-      // See PLAN.md F3.1 and src/types/protocol.ts GridLayoutDelegate for the API sketch.
-      if (!fixedRow) {
-        for (int j = rowStart; j <= i; ++j) frames[j].height = rowMaxHeight;
+      // V: normalize all items in this row to rowMaxPrimary (= row height)
+      // H: no normalization needed — estimated widths are all the same; Yoga refines later
+      if (!H && !fixedPrimary) {
+        for (int j = rowStart; j <= i; ++j) frames[j].height = rowMaxPrimary;
       }
-      // Row separator between this row and the next
+
+      // Between-group (row/column-group) separator
       if (p.emitSeparators && i < p.itemCount - 1) {
         LayoutAttributes sep;
         sep.key            = "separator-" + std::to_string(sectionIndex) + "-row-" +
@@ -119,21 +152,33 @@ double GridLayout::computeSection(const GridLayoutParams& p,
         sep.sizingState    = SizingState::Measured;
         sep.isDirty        = false;
         sep.alpha          = 1.0;
-        sep.frame          = {
-          p.sectionInsetLeft + p.separatorInsetLeading,
-          rowStartY + rowMaxHeight,
-          contentWidth - p.separatorInsetLeading - p.separatorInsetTrailing,
-          p.separatorHeight
-        };
+        if (H) {
+          // Vertical separator line between column-groups
+          sep.frame = {
+            rowStartPrimary + rowMaxPrimary,
+            crossStart + p.separatorInsetLeading,
+            p.separatorHeight,
+            crossContent - p.separatorInsetLeading - p.separatorInsetTrailing
+          };
+        } else {
+          // Horizontal separator line between rows
+          sep.frame = {
+            crossStart + p.separatorInsetLeading,
+            rowStartPrimary + rowMaxPrimary,
+            crossContent - p.separatorInsetLeading - p.separatorInsetTrailing,
+            p.separatorHeight
+          };
+        }
         _cache->setAttributes(sep);
       }
-      // Column separators between adjacent columns in this row
+
+      // Within-group separators (between columns in V, between rows in H)
       if (p.emitSeparators && cols > 1) {
-        const int rowIdx = rowStart / cols;
+        const int groupIdx = rowStart / cols;
         for (int c = 0; c < cols - 1; ++c) {
           LayoutAttributes colSep;
           colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
-                                  std::to_string(rowIdx) + "-" + std::to_string(c);
+                                  std::to_string(groupIdx) + "-" + std::to_string(c);
           colSep.section        = sectionIndex;
           colSep.index          = -1;
           colSep.isDecoration   = true;
@@ -142,33 +187,38 @@ double GridLayout::computeSection(const GridLayoutParams& p,
           colSep.sizingState    = SizingState::Measured;
           colSep.isDirty        = false;
           colSep.alpha          = 1.0;
-          // Center the thin line in the column gap
-          const double gapX = p.sectionInsetLeft +
-                              (c + 1) * itemWidth + c * p.columnSpacing +
-                              (p.columnSpacing - p.separatorHeight) / 2.0;
-          colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+          const double gap = crossStart +
+                             (c + 1) * itemCrossSize + c * p.columnSpacing +
+                             (p.columnSpacing - p.separatorHeight) / 2.0;
+          if (H) {
+            // Horizontal line between rows within a column-group
+            colSep.frame = { rowStartPrimary, gap, rowMaxPrimary, p.separatorHeight };
+          } else {
+            // Vertical line between columns within a row
+            colSep.frame = { gap, rowStartPrimary, p.separatorHeight, rowMaxPrimary };
+          }
           _cache->setAttributes(colSep);
         }
       }
-      rowStartY   += rowMaxHeight + p.rowSpacing;
-      col          = 0;
-      rowMaxHeight = 0.0;
-      rowStart     = i + 1;
+
+      rowStartPrimary += rowMaxPrimary + p.rowSpacing;
+      col              = 0;
+      rowMaxPrimary    = 0.0;
+      rowStart         = i + 1;
     }
   }
 
-  // Handle last partial row
+  // Last partial row/column-group
   if (col > 0 && p.itemCount > 0) {
-    if (!fixedRow) {
-      for (int j = rowStart; j < p.itemCount; ++j) frames[j].height = rowMaxHeight;
+    if (!H && !fixedPrimary) {
+      for (int j = rowStart; j < p.itemCount; ++j) frames[j].height = rowMaxPrimary;
     }
-    // Column separators for last partial row (only between occupied columns)
     if (p.emitSeparators && col > 1) {
-      const int rowIdx = rowStart / cols;
+      const int groupIdx = rowStart / cols;
       for (int c = 0; c < col - 1; ++c) {
         LayoutAttributes colSep;
         colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
-                                std::to_string(rowIdx) + "-" + std::to_string(c);
+                                std::to_string(groupIdx) + "-" + std::to_string(c);
         colSep.section        = sectionIndex;
         colSep.index          = -1;
         colSep.isDecoration   = true;
@@ -177,14 +227,18 @@ double GridLayout::computeSection(const GridLayoutParams& p,
         colSep.sizingState    = SizingState::Measured;
         colSep.isDirty        = false;
         colSep.alpha          = 1.0;
-        const double gapX = p.sectionInsetLeft +
-                            (c + 1) * itemWidth + c * p.columnSpacing +
-                            (p.columnSpacing - p.separatorHeight) / 2.0;
-        colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+        const double gap = crossStart +
+                           (c + 1) * itemCrossSize + c * p.columnSpacing +
+                           (p.columnSpacing - p.separatorHeight) / 2.0;
+        if (H) {
+          colSep.frame = { rowStartPrimary, gap, rowMaxPrimary, p.separatorHeight };
+        } else {
+          colSep.frame = { gap, rowStartPrimary, p.separatorHeight, rowMaxPrimary };
+        }
         _cache->setAttributes(colSep);
       }
     }
-    rowStartY += rowMaxHeight;
+    rowStartPrimary += rowMaxPrimary;
   }
 
   // Write items to cache
@@ -199,27 +253,38 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     attrs.zIndex      = 0;
     attrs.alpha       = 1.0;
     attrs.frame       = { frames[i].x, frames[i].y, frames[i].width, frames[i].height };
-    attrs.sizingState = fixedRow ? SizingState::Measured : SizingState::Placeholder;
+    // H: always Placeholder (Yoga measures widths).
+    // V fixedPrimary: Measured (no Yoga measurement needed).
+    // V dynamic: Placeholder (Yoga measures heights).
+    attrs.sizingState = (H || !fixedPrimary) ? SizingState::Placeholder : SizingState::Measured;
     _cache->setAttributes(attrs);
   }
 
-  primary = rowStartY;
-  primary += p.sectionInsetBottom; // gap between last row and footer
+  primary = rowStartPrimary;
+  primary += primaryInsetEnd;
 
-  // ── Section background (items area only) ──────────────────────────────────
-  // Content insets applied in absolute visual coords so windowed rect and
-  // ShadowNode positions use the inset-adjusted frame.
+  // ── Section background ────────────────────────────────────────────────────
+  // Content insets applied in absolute visual coords.
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
     bg.section        = sectionIndex;
     bg.index          = -1;
-    bg.frame          = {
-      p.sectionInsetLeft + p.sectionBackgroundInsetLeft,
-      bgStartPrimary     + p.sectionBackgroundInsetTop,
-      contentWidth                 - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
-      primary - bgStartPrimary     - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
-    };
+    if (H) {
+      bg.frame = {
+        bgStartPrimary + p.sectionBackgroundInsetLeft,
+        crossStart     + p.sectionBackgroundInsetTop,
+        primary - bgStartPrimary - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        crossContent             - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
+    } else {
+      bg.frame = {
+        crossStart     + p.sectionBackgroundInsetLeft,
+        bgStartPrimary + p.sectionBackgroundInsetTop,
+        crossContent             - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        primary - bgStartPrimary - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
+    }
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
     bg.zIndex         = -1;
@@ -240,12 +305,16 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     ftr.sizingState       = SizingState::Measured;
     ftr.isDirty           = false;
     ftr.alpha             = 1.0;
-    ftr.frame             = { p.sectionInsetLeft, primary, contentWidth, p.footerHeight };
+    if (H) {
+      ftr.frame = { primary, 0, p.footerHeight, p.viewportHeight };
+    } else {
+      ftr.frame = { crossStart, primary, crossContent, p.footerHeight };
+    }
     _cache->setAttributes(ftr);
     primary += p.footerHeight;
   }
 
-  primary += p.sectionSpacing; // inter-section gap
+  primary += p.sectionSpacing;
   return primary;
 }
 
@@ -256,7 +325,8 @@ double GridLayout::computeSection(const GridLayoutParams& p,
 double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
                                             int sectionIndex,
                                             double startPrimary) {
-  const int cols = p.columns > 0 ? p.columns : 1;
+  const bool H    = p.horizontal;
+  const int  cols = p.columns > 0 ? p.columns : 1;
 
   const std::string prefix = p.keyPrefix.empty()
       ? "grid-" + std::to_string(sectionIndex) + "-"
@@ -265,12 +335,23 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
   double primary        = startPrimary;
   double bgStartPrimary = startPrimary;
 
-  const double contentWidth    = p.viewportWidth - p.sectionInsetLeft - p.sectionInsetRight;
+  // Axis setup — same as computeSection.
+  const double crossContent = H
+      ? p.viewportHeight - p.sectionInsetTop - p.sectionInsetBottom
+      : p.viewportWidth  - p.sectionInsetLeft - p.sectionInsetRight;
+  const double crossStart        = H ? p.sectionInsetTop   : p.sectionInsetLeft;
+  const double primaryInsetStart = H ? p.sectionInsetLeft  : p.sectionInsetTop;
+  const double primaryInsetEnd   = H ? p.sectionInsetRight : p.sectionInsetBottom;
+
   const double totalColSpacing = p.columnSpacing * (cols - 1);
-  const double itemWidth       = contentWidth > 0
-      ? (contentWidth - totalColSpacing) / cols
+  const double itemCrossSize   = crossContent > 0
+      ? (crossContent - totalColSpacing) / cols
       : 0.0;
-  const bool   fixedRow        = p.rowHeight > 0;
+
+  const bool   fixedPrimary     = p.rowHeight > 0;
+  const double estimatedPrimary = H
+      ? (fixedPrimary ? p.rowHeight : p.estimatedCrossAxisHeight)
+      : 0.0;
 
   // ── Header ────────────────────────────────────────────────────────────────
   if (p.headerHeight > 0) {
@@ -285,51 +366,74 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     hdr.sizingState       = SizingState::Measured;
     hdr.isDirty           = false;
     hdr.alpha             = 1.0;
-    // Preserve measured header height (Yoga may have refined it)
-    const double hH = (existingHdr && existingHdr->frame.height > 0)
-        ? existingHdr->frame.height
-        : p.headerHeight;
-    hdr.frame = { p.sectionInsetLeft, primary, contentWidth, hH };
+    if (H) {
+      // Preserve measured header width (primary axis); height = full viewport.
+      const double hW = (existingHdr && existingHdr->frame.width > 0)
+          ? existingHdr->frame.width
+          : p.headerHeight;
+      hdr.frame = { primary, 0, hW, p.viewportHeight };
+      primary       += hW;
+    } else {
+      // Preserve measured header height (Yoga may have refined it).
+      const double hH = (existingHdr && existingHdr->frame.height > 0)
+          ? existingHdr->frame.height
+          : p.headerHeight;
+      hdr.frame = { crossStart, primary, crossContent, hH };
+      primary       += hH;
+    }
     _cache->setAttributes(hdr);
-    primary        += hH;
-    bgStartPrimary  = primary;
+    bgStartPrimary = primary;
   }
 
-  primary += p.sectionInsetTop;
+  primary += primaryInsetStart;
 
-  // ── Read item heights from cache ──────────────────────────────────────────
-  std::vector<double> heights(p.itemCount);
+  // ── Read primary-axis sizes from cache ────────────────────────────────────
+  // V: reads frame.height (item heights measured by Yoga).
+  // H: reads frame.width (item widths measured by Yoga).
+  std::vector<double> primarySizes(p.itemCount);
   for (int i = 0; i < p.itemCount; ++i) {
     const std::string key = (i < static_cast<int>(p.keys.size()))
         ? p.keys[i]
         : prefix + std::to_string(i);
     auto existing = _cache->getAttributes(key);
-    heights[i] = existing && existing->frame.height > 0
-        ? existing->frame.height
-        : (fixedRow ? p.rowHeight : 44.0);
+    if (H) {
+      primarySizes[i] = (existing && existing->frame.width > 0)
+          ? existing->frame.width
+          : (estimatedPrimary > 0 ? estimatedPrimary : 200.0);
+    } else {
+      primarySizes[i] = (existing && existing->frame.height > 0)
+          ? existing->frame.height
+          : (fixedPrimary ? p.rowHeight : 44.0);
+    }
   }
 
-  // ── Layout items using cached heights ─────────────────────────────────────
+  // ── Layout items using cached sizes ──────────────────────────────────────
   struct CellFrame { double x, y, width, height; };
   std::vector<CellFrame> frames(p.itemCount);
 
-  int    col          = 0;
-  double rowStartY    = primary;
-  double rowMaxHeight = 0.0;
-  int    rowStart     = 0;
+  int    col             = 0;
+  double rowStartPrimary = primary;
+  double rowMaxPrimary   = 0.0;
+  int    rowStart        = 0;
 
   for (int i = 0; i < p.itemCount; ++i) {
-    const double h = heights[i];
-    const double x = p.sectionInsetLeft + col * (itemWidth + p.columnSpacing);
-    frames[i] = { x, rowStartY, itemWidth, h };
-
-    if (h > rowMaxHeight) rowMaxHeight = h;
+    const double sz = primarySizes[i];
+    const double crossPos = crossStart + col * (itemCrossSize + p.columnSpacing);
+    if (H) {
+      frames[i] = { rowStartPrimary, crossPos, sz, itemCrossSize };
+    } else {
+      frames[i] = { crossPos, rowStartPrimary, itemCrossSize, sz };
+    }
+    if (sz > rowMaxPrimary) rowMaxPrimary = sz;
     col++;
 
     if (col >= cols) {
-      // Align row to max
-      for (int j = rowStart; j <= i; ++j) frames[j].height = rowMaxHeight;
-      // Row separator
+      // V: normalize to rowMaxPrimary.
+      // H: no normalization (widths per item may differ; each has its own measured value).
+      if (!H) {
+        for (int j = rowStart; j <= i; ++j) frames[j].height = rowMaxPrimary;
+      }
+
       if (p.emitSeparators && i < p.itemCount - 1) {
         LayoutAttributes sep;
         sep.key            = "separator-" + std::to_string(sectionIndex) + "-row-" +
@@ -342,21 +446,30 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
         sep.sizingState    = SizingState::Measured;
         sep.isDirty        = false;
         sep.alpha          = 1.0;
-        sep.frame          = {
-          p.sectionInsetLeft + p.separatorInsetLeading,
-          rowStartY + rowMaxHeight,
-          contentWidth - p.separatorInsetLeading - p.separatorInsetTrailing,
-          p.separatorHeight
-        };
+        if (H) {
+          sep.frame = {
+            rowStartPrimary + rowMaxPrimary,
+            crossStart + p.separatorInsetLeading,
+            p.separatorHeight,
+            crossContent - p.separatorInsetLeading - p.separatorInsetTrailing
+          };
+        } else {
+          sep.frame = {
+            crossStart + p.separatorInsetLeading,
+            rowStartPrimary + rowMaxPrimary,
+            crossContent - p.separatorInsetLeading - p.separatorInsetTrailing,
+            p.separatorHeight
+          };
+        }
         _cache->setAttributes(sep);
       }
-      // Column separators between adjacent columns in this row
+
       if (p.emitSeparators && cols > 1) {
-        const int rowIdx = rowStart / cols;
+        const int groupIdx = rowStart / cols;
         for (int c = 0; c < cols - 1; ++c) {
           LayoutAttributes colSep;
           colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
-                                  std::to_string(rowIdx) + "-" + std::to_string(c);
+                                  std::to_string(groupIdx) + "-" + std::to_string(c);
           colSep.section        = sectionIndex;
           colSep.index          = -1;
           colSep.isDecoration   = true;
@@ -365,29 +478,35 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
           colSep.sizingState    = SizingState::Measured;
           colSep.isDirty        = false;
           colSep.alpha          = 1.0;
-          const double gapX = p.sectionInsetLeft +
-                              (c + 1) * itemWidth + c * p.columnSpacing +
-                              (p.columnSpacing - p.separatorHeight) / 2.0;
-          colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+          const double gap = crossStart +
+                             (c + 1) * itemCrossSize + c * p.columnSpacing +
+                             (p.columnSpacing - p.separatorHeight) / 2.0;
+          if (H) {
+            colSep.frame = { rowStartPrimary, gap, rowMaxPrimary, p.separatorHeight };
+          } else {
+            colSep.frame = { gap, rowStartPrimary, p.separatorHeight, rowMaxPrimary };
+          }
           _cache->setAttributes(colSep);
         }
       }
-      rowStartY   += rowMaxHeight + p.rowSpacing;
-      col          = 0;
-      rowMaxHeight = 0.0;
-      rowStart     = i + 1;
+
+      rowStartPrimary += rowMaxPrimary + p.rowSpacing;
+      col              = 0;
+      rowMaxPrimary    = 0.0;
+      rowStart         = i + 1;
     }
   }
 
   if (col > 0 && p.itemCount > 0) {
-    for (int j = rowStart; j < p.itemCount; ++j) frames[j].height = rowMaxHeight;
-    // Column separators for last partial row (only between occupied columns)
+    if (!H) {
+      for (int j = rowStart; j < p.itemCount; ++j) frames[j].height = rowMaxPrimary;
+    }
     if (p.emitSeparators && col > 1) {
-      const int rowIdx = rowStart / cols;
+      const int groupIdx = rowStart / cols;
       for (int c = 0; c < col - 1; ++c) {
         LayoutAttributes colSep;
         colSep.key            = "separator-" + std::to_string(sectionIndex) + "-col-" +
-                                std::to_string(rowIdx) + "-" + std::to_string(c);
+                                std::to_string(groupIdx) + "-" + std::to_string(c);
         colSep.section        = sectionIndex;
         colSep.index          = -1;
         colSep.isDecoration   = true;
@@ -396,14 +515,18 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
         colSep.sizingState    = SizingState::Measured;
         colSep.isDirty        = false;
         colSep.alpha          = 1.0;
-        const double gapX = p.sectionInsetLeft +
-                            (c + 1) * itemWidth + c * p.columnSpacing +
-                            (p.columnSpacing - p.separatorHeight) / 2.0;
-        colSep.frame = { gapX, rowStartY, p.separatorHeight, rowMaxHeight };
+        const double gap = crossStart +
+                           (c + 1) * itemCrossSize + c * p.columnSpacing +
+                           (p.columnSpacing - p.separatorHeight) / 2.0;
+        if (H) {
+          colSep.frame = { rowStartPrimary, gap, rowMaxPrimary, p.separatorHeight };
+        } else {
+          colSep.frame = { gap, rowStartPrimary, p.separatorHeight, rowMaxPrimary };
+        }
         _cache->setAttributes(colSep);
       }
     }
-    rowStartY += rowMaxHeight;
+    rowStartPrimary += rowMaxPrimary;
   }
 
   // Write updated positions to cache
@@ -423,21 +546,30 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     _cache->setAttributes(attrs);
   }
 
-  primary = rowStartY;
-  primary += p.sectionInsetBottom;
+  primary = rowStartPrimary;
+  primary += primaryInsetEnd;
 
-  // Section background — content insets applied in absolute visual coords.
+  // ── Section background ────────────────────────────────────────────────────
   if (p.emitSectionBackground) {
     LayoutAttributes bg;
     bg.key            = "decoration-" + std::to_string(sectionIndex) + "-sectionBackground";
     bg.section        = sectionIndex;
     bg.index          = -1;
-    bg.frame          = {
-      p.sectionInsetLeft + p.sectionBackgroundInsetLeft,
-      bgStartPrimary     + p.sectionBackgroundInsetTop,
-      contentWidth                 - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
-      primary - bgStartPrimary     - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
-    };
+    if (H) {
+      bg.frame = {
+        bgStartPrimary + p.sectionBackgroundInsetLeft,
+        crossStart     + p.sectionBackgroundInsetTop,
+        primary - bgStartPrimary - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        crossContent             - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
+    } else {
+      bg.frame = {
+        crossStart     + p.sectionBackgroundInsetLeft,
+        bgStartPrimary + p.sectionBackgroundInsetTop,
+        crossContent             - p.sectionBackgroundInsetLeft - p.sectionBackgroundInsetRight,
+        primary - bgStartPrimary - p.sectionBackgroundInsetTop  - p.sectionBackgroundInsetBottom,
+      };
+    }
     bg.isDecoration   = true;
     bg.decorationKind = "sectionBackground";
     bg.zIndex         = -1;
@@ -447,7 +579,7 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     _cache->setAttributes(bg);
   }
 
-  // Footer
+  // ── Footer ────────────────────────────────────────────────────────────────
   if (p.footerHeight > 0) {
     const std::string ftrKey = prefix + "footer";
     auto existingFtr = _cache->getAttributes(ftrKey);
@@ -460,12 +592,20 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     ftr.sizingState       = SizingState::Measured;
     ftr.isDirty           = false;
     ftr.alpha             = 1.0;
-    const double fH = (existingFtr && existingFtr->frame.height > 0)
-        ? existingFtr->frame.height
-        : p.footerHeight;
-    ftr.frame = { p.sectionInsetLeft, primary, contentWidth, fH };
+    if (H) {
+      const double fW = (existingFtr && existingFtr->frame.width > 0)
+          ? existingFtr->frame.width
+          : p.footerHeight;
+      ftr.frame = { primary, 0, fW, p.viewportHeight };
+      primary += fW;
+    } else {
+      const double fH = (existingFtr && existingFtr->frame.height > 0)
+          ? existingFtr->frame.height
+          : p.footerHeight;
+      ftr.frame = { crossStart, primary, crossContent, fH };
+      primary += fH;
+    }
     _cache->setAttributes(ftr);
-    primary += fH;
   }
 
   primary += p.sectionSpacing;
@@ -502,18 +642,22 @@ void GridLayout::invalidateSectionsFrom(int fromSection,
       ? "grid-" + std::to_string(fromSection) + "-"
       : p0.keyPrefix;
 
-  // Determine where this section starts (its leading edge in primary axis)
+  // Determine where this section starts (its leading edge in primary axis).
+  // V: primary=Y. H: primary=X.
+  const bool H0 = p0.horizontal;
   double startPrimary = 0.0;
   if (p0.headerHeight > 0) {
     auto header = _cache->getAttributes(prefix0 + "header");
-    if (header) startPrimary = header->frame.y;
+    if (header) startPrimary = H0 ? header->frame.x : header->frame.y;
   } else if (p0.itemCount > 0) {
     const std::string firstKey = p0.keys.empty()
         ? prefix0 + "0"
         : p0.keys[0];
     auto firstItem = _cache->getAttributes(firstKey);
     if (firstItem) {
-      startPrimary = firstItem->frame.y - p0.sectionInsetTop;
+      startPrimary = H0
+          ? firstItem->frame.x - p0.sectionInsetLeft
+          : firstItem->frame.y - p0.sectionInsetTop;
     }
   }
 
@@ -544,6 +688,10 @@ bool GridLayout::applyMeasurements(
   // Writing Yoga's measurement is fine for separators; they are small enough that
   // any rounding error won't cause visible corruption. We still skip them for
   // firstChangedSection because a separator delta alone doesn't shift item positions.
+  // For horizontal grid: Yoga measures item WIDTHS (primary axis) → write to frame.width.
+  // For vertical grid: Yoga measures item HEIGHTS → write to frame.height (existing behavior).
+  const bool H = _horizontal;
+
   int firstChangedSection = INT_MAX;
   for (const auto& d : deltas) {
     auto attrs = cache.getAttributes(d.key);
@@ -551,17 +699,18 @@ bool GridLayout::applyMeasurements(
       const bool isSectionBg = attrs->isDecoration &&
                                attrs->decorationKind == "sectionBackground";
       if (!isSectionBg) {
-        // Items, supplementary (headers/footers), and separators: update height.
         auto updated = *attrs;
-        updated.frame.height = d.newValue;
+        if (H) {
+          updated.frame.width = d.newValue;  // primary axis for horizontal
+        } else {
+          updated.frame.height = d.newValue; // primary axis for vertical
+        }
         updated.sizingState  = SizingState::Measured;
         cache.setAttributes(updated);
       }
       if (!attrs->isDecoration && !attrs->isSupplementary) {
-        // Item delta → reflow from this section.
         firstChangedSection = std::min(firstChangedSection, attrs->section);
       } else if (isSectionBg) {
-        // Section background height mismatch → reflow this section to restore it.
         firstChangedSection = std::min(firstChangedSection, attrs->section);
       }
     }
@@ -584,16 +733,18 @@ bool GridLayout::applyMeasurements(
       ? "grid-" + std::to_string(firstChangedSection) + "-"
       : p0.keyPrefix;
 
-  // Determine where the changed section starts
+  // Determine where the changed section starts. V: primary=Y. H: primary=X.
   double startPrimary = 0.0;
   if (p0.headerHeight > 0) {
     auto header = _cache->getAttributes(prefix0 + "header");
-    if (header) startPrimary = header->frame.y;
+    if (header) startPrimary = H ? header->frame.x : header->frame.y;
   } else if (p0.itemCount > 0) {
     const std::string firstKey = p0.keys.empty() ? prefix0 + "0" : p0.keys[0];
     auto firstItem = _cache->getAttributes(firstKey);
     if (firstItem) {
-      startPrimary = firstItem->frame.y - p0.sectionInsetTop;
+      startPrimary = H
+          ? firstItem->frame.x - p0.sectionInsetLeft
+          : firstItem->frame.y - p0.sectionInsetTop;
     }
   }
 

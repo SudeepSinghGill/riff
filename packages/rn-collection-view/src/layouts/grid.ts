@@ -41,6 +41,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     getAttributesInRect(rect: { x: number; y: number; width: number; height: number }): LayoutAttributes[];
     getAttributes(key: string): LayoutAttributes | null;
     getTotalContentSize(): Size;
+    setHorizontal(horizontal: boolean): void;
     clear(): void;
   };
   gridLayout: {
@@ -55,26 +56,34 @@ const nativeMod = NativeCollectionViewModule as unknown as {
 
 class GridLayoutEngine implements CollectionViewLayout {
   readonly type = 'grid';
+  readonly horizontal: boolean;
   private readonly delegate: GridLayoutDelegate;
   private lastSectionKeys: (readonly string[])[] = [];
 
   constructor(delegate: GridLayoutDelegate) {
     this.delegate = delegate;
+    this.horizontal = delegate.horizontal ?? false;
   }
 
   prepare(context: LayoutContext): void {
     const d = this.delegate;
+    const H = this.horizontal;
     const w = context.containerWidth;
 
     if (w <= 0 || context.sections.length === 0) return;
+
+    // Inform LayoutCache of scroll axis for MVC anchor computation.
+    nativeMod.layoutCache.setHorizontal(H);
 
     const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
     const effectiveRowHeight = typeof d.rowHeight === 'function' ? d.rowHeight(w) : (d.rowHeight ?? 0);
 
     const sections = context.sections.map((sec, sectionIndex) => {
-      // Build per-item heights when rows are dynamic (no fixed rowHeight)
+      // Build per-item heights when rows are dynamic (no fixed rowHeight).
+      // For horizontal mode: heights are cross-axis sizes derived from column count —
+      // no per-item measurement needed here; Yoga measures primary-axis widths.
       let itemHeights: number[] | undefined;
-      if (!effectiveRowHeight && (d.heightForItem || context.measuredHeightForItem)) {
+      if (!H && !effectiveRowHeight && (d.heightForItem || context.measuredHeightForItem)) {
         itemHeights = new Array(sec.itemCount);
         for (let i = 0; i < sec.itemCount; i++) {
           const measured = context.measuredHeightForItem?.(i, sectionIndex);
@@ -121,6 +130,10 @@ class GridLayoutEngine implements CollectionViewLayout {
         sectionBackgroundInsetBottom: d.sectionBackgroundContentInsets?.bottom ?? 0,
         sectionBackgroundInsetLeft:   d.sectionBackgroundContentInsets?.left   ?? 0,
         sectionBackgroundInsetRight:  d.sectionBackgroundContentInsets?.right  ?? 0,
+        // Horizontal mode params
+        horizontal: H,
+        viewportHeight: context.containerHeight,
+        estimatedCrossAxisHeight: d.estimatedCrossAxisHeight ?? 200,
         keys,
         keyPrefix: '', // keys are provided explicitly above
         ...(itemHeights ? { itemHeights } : {}),
@@ -150,7 +163,10 @@ class GridLayoutEngine implements CollectionViewLayout {
   }
 
   shouldInvalidate(oldBounds: Rect, newBounds: Rect): boolean {
-    return Math.abs(oldBounds.width - newBounds.width) > 0.5;
+    // Vertical grid invalidates when width changes; horizontal when height changes.
+    return this.horizontal
+      ? Math.abs(oldBounds.height - newBounds.height) > 0.5
+      : Math.abs(oldBounds.width  - newBounds.width)  > 0.5;
   }
 
   invalidationScope(): InvalidationScope {
