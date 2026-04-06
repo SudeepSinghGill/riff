@@ -9,7 +9,7 @@
  *
  * PerfHood shows JS FPS, mount count, and render count during the session.
  */
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Riff } from '../../components/CollectionView';
@@ -73,12 +73,15 @@ function SearchCell({ item }: { item: SearchItem }) {
 
 // ── Mount tracking ────────────────────────────────────────────────────────────
 
-let searchMountCount = 0;
-export function resetSearchMounts() { searchMountCount = 0; }
+let searchTotalMounts  = 0;
+let searchActiveMounts = 0;
+
+export function resetSearchMounts() { searchTotalMounts = 0; searchActiveMounts = 0; }
 
 function TrackedSearchCell({ item }: { item: SearchItem }) {
   const mounted = useRef(false);
-  if (!mounted.current) { mounted.current = true; searchMountCount++; }
+  if (!mounted.current) { mounted.current = true; searchTotalMounts++; searchActiveMounts++; }
+  React.useEffect(() => { return () => { searchActiveMounts--; }; }, []);
   return <SearchCell item={item} />;
 }
 
@@ -87,12 +90,40 @@ function TrackedSearchCell({ item }: { item: SearchItem }) {
 const LAYOUT = list({ itemHeight: ITEM_H });
 
 export default function SearchComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
-  const renderCount = useRef(0);
+  const renderCount    = useRef(0);
+  const prevOffsetRef  = useRef(0);
+  const prevTimeRef    = useRef(0);
+  const [velocity, setVelocity] = useState(0);
+  const [, setTick] = useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 500);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleScroll = (e: any) => {
+    const offset = e.nativeEvent.contentOffset.y;
+    const now    = Date.now();
+    const dt     = now - prevTimeRef.current;
+    if (dt > 0 && dt < 300) {
+      const vel = Math.abs(offset - prevOffsetRef.current) / (dt / 1000);
+      setVelocity(Math.round(vel));
+    }
+    prevOffsetRef.current = offset;
+    prevTimeRef.current   = now;
+  };
 
   const renderItem = ({ item }: { item: SearchItem }) => {
     renderCount.current++;
     return <TrackedSearchCell item={item} />;
   };
+
+  const perfHood = (
+    <PerfHood
+      activeMounts={searchActiveMounts}
+      totalMounts={searchTotalMounts}
+      scrollVelocity={velocity}
+    />
+  );
 
   if (mode === 'flash') {
     return (
@@ -104,8 +135,10 @@ export default function SearchComparisonTab({ mode }: { mode: 'cv' | 'flash' }) 
           estimatedItemSize={ITEM_H}
           getItemType={() => 'search-row'}
           overrideItemLayout={layout => { layout.size = ITEM_H; }}
+          onScroll={handleScroll}
+          scrollEventThrottle={100}
         />
-        <PerfHood mountCount={searchMountCount} renderCount={renderCount.current} />
+        {perfHood}
       </View>
     );
   }
@@ -117,8 +150,10 @@ export default function SearchComparisonTab({ mode }: { mode: 'cv' | 'flash' }) 
         keyExtractor={item => String(item.id)}
         renderItem={renderItem}
         layout={LAYOUT}
+        onScroll={handleScroll}
+        scrollEventThrottle={100}
       />
-      <PerfHood mountCount={searchMountCount} renderCount={renderCount.current} />
+      {perfHood}
     </View>
   );
 }

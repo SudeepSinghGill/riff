@@ -10,7 +10,7 @@
  * - Riff renders each cell with its real identity — no recycling artifacts.
  * - Deep hierarchy (5-10 Views deep) stresses JS bridge in FlashList recycling.
  */
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Riff } from '../../components/CollectionView';
@@ -206,12 +206,16 @@ function FeedCell({ item }: { item: FeedItem }) {
 
 // ── Mount tracking ────────────────────────────────────────────────────────────
 
-let feedMountCount = 0;
-export function resetFeedMounts() { feedMountCount = 0; }
+let feedTotalMounts  = 0;
+let feedActiveMounts = 0;
+
+export function resetFeedMounts() { feedTotalMounts = 0; feedActiveMounts = 0; }
 
 function TrackedFeedCell({ item }: { item: FeedItem }) {
   const mounted = useRef(false);
-  if (!mounted.current) { mounted.current = true; feedMountCount++; }
+  if (!mounted.current) { mounted.current = true; feedTotalMounts++; feedActiveMounts++; }
+  // Decrement active count on unmount (cell leaves the render window).
+  React.useEffect(() => { return () => { feedActiveMounts--; }; }, []);
   return <FeedCell item={item} />;
 }
 
@@ -220,12 +224,43 @@ function TrackedFeedCell({ item }: { item: FeedItem }) {
 const LAYOUT = list({ estimatedItemHeight: 140 }); // measured by Yoga; estimate for Phase A windowing
 
 export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
-  const renderCount = useRef(0);
+  const renderCount    = useRef(0);
+  const prevOffsetRef  = useRef(0);
+  const prevTimeRef    = useRef(0);
+  const [velocity, setVelocity] = useState(0);
+  // Tick state drives re-renders so PerfHood picks up latest mount counters.
+  const [, setTick] = useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 500);
+    return () => clearInterval(id);
+  }, []);
 
+  const handleScroll = (e: any) => {
+    const offset = e.nativeEvent.contentOffset.y;
+    const now    = Date.now();
+    const dt     = now - prevTimeRef.current;
+    if (dt > 0 && dt < 300) {
+      const vel = Math.abs(offset - prevOffsetRef.current) / (dt / 1000);
+      setVelocity(Math.round(vel));
+    }
+    prevOffsetRef.current = offset;
+    prevTimeRef.current   = now;
+  };
+
+  // Re-render PerfHood by reading module-level counters on each render.
+  // PerfHood's 500ms interval triggers re-renders which pick up the latest values.
   const renderItem = ({ item }: { item: FeedItem }) => {
     renderCount.current++;
     return <TrackedFeedCell item={item} />;
   };
+
+  const perfHood = (
+    <PerfHood
+      activeMounts={feedActiveMounts}
+      totalMounts={feedTotalMounts}
+      scrollVelocity={velocity}
+    />
+  );
 
   if (mode === 'flash') {
     return (
@@ -237,8 +272,10 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
           estimatedItemSize={140}
           getItemType={item => item.type}
           overrideItemLayout={(layout, item) => { layout.size = TYPE_HEIGHTS[item.type]; }}
+          onScroll={handleScroll}
+          scrollEventThrottle={100}
         />
-        <PerfHood mountCount={feedMountCount} renderCount={renderCount.current} />
+        {perfHood}
       </View>
     );
   }
@@ -250,8 +287,10 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
         keyExtractor={item => String(item.id)}
         renderItem={renderItem}
         layout={LAYOUT}
+        onScroll={handleScroll}
+        scrollEventThrottle={100}
       />
-      <PerfHood mountCount={feedMountCount} renderCount={renderCount.current} />
+      {perfHood}
     </View>
   );
 }

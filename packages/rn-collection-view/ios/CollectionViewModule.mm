@@ -2,6 +2,7 @@
 #import "RNCVScrollObserver.h"
 #import <os/signpost.h>
 #import <os/proc.h>
+#import <mach/mach.h>
 
 // New Arch / TurboModule includes
 #import <React/RCTUtils.h>
@@ -69,6 +70,23 @@ RCT_EXPORT_MODULE(RNCollectionViewModule)
   // P4.1 — memory: synchronous available-bytes query via os_proc_available_memory().
   mod->setGetAvailableMemoryCallback(^int64_t {
     return (int64_t)os_proc_available_memory();
+  });
+
+  // P5.1 — main-thread CPU: synchronous Mach thread_info query.
+  // Called from JS thread; thread_info(mach_thread_self()) queries the calling
+  // thread — to measure the main thread we must dispatch to it synchronously.
+  mod->setMainThreadCPUCallback(^double {
+    __block double result = -1;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      thread_basic_info_data_t info;
+      mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+      kern_return_t kr = thread_info(mach_thread_self(), THREAD_BASIC_INFO,
+                                     (thread_info_t)&info, &count);
+      if (kr == KERN_SUCCESS) {
+        result = (double)info.cpu_usage / TH_USAGE_SCALE * 100.0;
+      }
+    });
+    return result;
   });
 
   // Register for system memory warnings — fires triggerMemoryPressure(2) on the
@@ -154,6 +172,12 @@ RCT_EXPORT_MODULE(RNCollectionViewModule)
   }
   return nil;
 }
+
+// ── P5.1: main-thread CPU (via Mach) ─────────────────────────────────────────
+
+// NOTE: mainThreadCPUUsage is NOT used directly here — the callback above
+// dispatches to main queue via dispatch_sync and calls thread_info inline.
+// This comment retained for clarity about the measurement strategy.
 
 // ── P5.1: CADisplayLink frame timer ───────────────────────────────────────────
 
