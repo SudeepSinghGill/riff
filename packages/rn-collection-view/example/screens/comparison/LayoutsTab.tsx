@@ -640,7 +640,7 @@ export function GridDemo() {
   // Always use heightForItem — S2 has varying heights, S0/S1 use GRID_ROW_H (or 2× when resized).
   // Row height = max of items in that row, demonstrating uneven items in a row.
   const gridLayout = useMemo(() => grid({
-    columns: 3,
+    columns: (w: number) => w > 280 ? 3 : w > 180 ? 2 : 1,
     heightForItem: (i: number, s: number) => {
       const allSections = [gs0Items, GS1_DATA, GS2_DATA];
       const item = allSections[s]?.[i];
@@ -811,7 +811,7 @@ export function MasonryDemo() {
   allSectionsRef.current = [ms0Items, MS1_DATA, MS2_DATA];
 
   const masonryLayout = useMemo(() => masonry({
-    columns: 2,
+    columns: (w: number) => w > 200 ? 2 : 1,
     columnSpacing: 8,
     rowSpacing: 8,
     sectionSpacing: 16,
