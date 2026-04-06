@@ -291,7 +291,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
   return (
     <View style={T.root}>
       <Riff
-        ref={listRef}
+        handle={listRef}
         data={FEED_DATA}
         keyExtractor={item => String(item.id)}
         renderItem={renderItem}
