@@ -14,20 +14,22 @@
  * Tab 4 is CV-only (FlashList can't do these layouts).
  */
 import React, { useCallback, useState } from 'react';
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import PrefetchTab    from './comparison/PrefetchTab';
-import StickyTab      from './comparison/StickyTab';
-import DecorationsTab from './comparison/DecorationsTab';
-import LayoutsTab     from './comparison/LayoutsTab';
-import PerfTab        from './comparison/PerfTab';
-import ResizeTab      from './comparison/ResizeTab';
-import StateTab       from './comparison/StateTab';
-import SnapshotTab    from './comparison/SnapshotTab';
+import PrefetchTab        from './comparison/PrefetchTab';
+import StickyTab          from './comparison/StickyTab';
+import DecorationsTab     from './comparison/DecorationsTab';
+import LayoutsTab         from './comparison/LayoutsTab';
+import PerfTab            from './comparison/PerfTab';
+import ResizeTab          from './comparison/ResizeTab';
+import StateTab           from './comparison/StateTab';
+import SnapshotTab        from './comparison/SnapshotTab';
+import FeedComparisonTab  from './comparison/FeedComparisonTab';
+import SearchComparisonTab from './comparison/SearchComparisonTab';
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type TabId = 'prefetch' | 'sticky' | 'deco' | 'layouts' | 'perf' | 'resize' | 'state' | 'snapshot';
+type TabId = 'prefetch' | 'sticky' | 'deco' | 'layouts' | 'perf' | 'resize' | 'state' | 'snapshot' | 'feed' | 'search';
 
 const TABS: { id: TabId; label: string; cvOnly?: boolean }[] = [
   { id: 'prefetch', label: 'Prefetch' },
@@ -38,6 +40,8 @@ const TABS: { id: TabId; label: string; cvOnly?: boolean }[] = [
   { id: 'resize',   label: 'Resize' },
   { id: 'state',    label: 'State' },
   { id: 'snapshot', label: 'Snapshot', cvOnly: true },
+  { id: 'feed',     label: 'Feed' },
+  { id: 'search',   label: 'Search' },
 ];
 
 type Engine = 'cv' | 'flash';
@@ -60,7 +64,12 @@ export default function Comparison() {
   return (
     <SafeAreaView style={S.root}>
       {/* Tab bar */}
-      <View style={S.tabBar}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={S.tabBarScroll}
+        contentContainerStyle={S.tabBar}
+      >
         {TABS.map(t => (
           <Pressable
             key={t.id}
@@ -72,7 +81,7 @@ export default function Comparison() {
             </Text>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
 
       {/* Engine toggle */}
       {!isCvOnly && (
@@ -107,14 +116,16 @@ export default function Comparison() {
 
       {/* Tab content */}
       <View style={S.content}>
-        {activeTab === 'prefetch' && <PrefetchTab    mode={engine} />}
-        {activeTab === 'sticky'   && <StickyTab      mode={engine} />}
-        {activeTab === 'deco'     && <DecorationsTab mode={engine} />}
+        {activeTab === 'prefetch' && <PrefetchTab         mode={engine} />}
+        {activeTab === 'sticky'   && <StickyTab           mode={engine} />}
+        {activeTab === 'deco'     && <DecorationsTab      mode={engine} />}
         {activeTab === 'layouts'  && <LayoutsTab />}
-        {activeTab === 'perf'     && <PerfTab        mode={engine} />}
-        {activeTab === 'resize'   && <ResizeTab      mode={engine} />}
-        {activeTab === 'state'    && <StateTab       mode={engine} />}
+        {activeTab === 'perf'     && <PerfTab             mode={engine} />}
+        {activeTab === 'resize'   && <ResizeTab           mode={engine} />}
+        {activeTab === 'state'    && <StateTab            mode={engine} />}
         {activeTab === 'snapshot' && <SnapshotTab />}
+        {activeTab === 'feed'     && <FeedComparisonTab   mode={engine} />}
+        {activeTab === 'search'   && <SearchComparisonTab mode={engine} />}
       </View>
     </SafeAreaView>
   );
@@ -125,9 +136,10 @@ export default function Comparison() {
 const S = StyleSheet.create({
   root:           { flex: 1, backgroundColor: '#0a0a0a' },
 
+  tabBarScroll:   { flexGrow: 0 },
   tabBar:         { flexDirection: 'row', paddingHorizontal: 6, paddingTop: 6,
                     paddingBottom: 2, gap: 4 },
-  tab:            { flex: 1, paddingVertical: 6, borderRadius: 6,
+  tab:            { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6,
                     backgroundColor: '#1a1a1a', alignItems: 'center' },
   tabActive:      { backgroundColor: '#1e3a1e' },
   tabText:        { fontSize: 10, fontWeight: '600', color: '#555' },
