@@ -156,7 +156,7 @@ export default function SearchComparisonTab({ mode }: { mode: 'cv' | 'flash' }) 
   return (
     <View style={T.root}>
       <Riff
-        ref={listRef}
+        handle={listRef}
         data={SEARCH_DATA}
         keyExtractor={item => String(item.id)}
         renderItem={renderItem}
