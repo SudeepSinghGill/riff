@@ -527,6 +527,17 @@ Value CollectionViewModule::getMetricsObject(Runtime& rt) {
           return Value::undefined();
         }));
 
+    // getMainThreadCPU() → number (0–100, % utilization. -1 if unavailable.)
+    // The ObjC callback dispatches_sync to the main thread and reads
+    // thread_basic_info.cpu_usage via the Mach thread_info API.
+    obj.setProperty(rt, "getMainThreadCPU",
+      Function::createFromHostFunction(rt,
+        PropNameID::forAscii(rt, "getMainThreadCPU"), 0,
+        [this](Runtime&, const Value&, const Value*, size_t) -> Value {
+          double cpu = _mainThreadCPUCb ? _mainThreadCPUCb() : -1;
+          return Value(cpu);
+        }));
+
     _metricsJSI = std::move(obj);
   }
   return Value(rt, *_metricsJSI);
@@ -681,6 +692,10 @@ Value CollectionViewModule::getFlowLayoutObject(Runtime& rt) {
 
 void CollectionViewModule::setGetAvailableMemoryCallback(std::function<int64_t()> cb) {
   _getAvailableMemoryCb = std::move(cb);
+}
+
+void CollectionViewModule::setMainThreadCPUCallback(std::function<double()> cb) {
+  _mainThreadCPUCb = std::move(cb);
 }
 
 void CollectionViewModule::triggerMemoryPressure(int level) {

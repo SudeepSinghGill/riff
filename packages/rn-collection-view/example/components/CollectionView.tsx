@@ -98,6 +98,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     stopFrameTimer(): void;
     getFrameMetrics(): { fps: number; frameTimeMs: number };
     resetMetrics(): void;
+    getMainThreadCPU(): number;
   };
   /** F1.1 — Key-based identity diff. */
   diffEngine: {

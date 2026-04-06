@@ -90,6 +90,14 @@ public:
   void setGetAvailableMemoryCallback(std::function<int64_t()> cb);
   void triggerMemoryPressure(int level);
 
+  /**
+   * P5.1 — Main-thread CPU utilization.
+   * cb is called synchronously on the JS thread; the ObjC layer dispatches
+   * to the main thread (dispatch_sync) and reads thread_basic_info.cpu_usage.
+   * Returns 0–100 (% of one core). -1 if unavailable.
+   */
+  void setMainThreadCPUCallback(std::function<double()> cb);
+
   static constexpr const char* kModuleName = "RNCollectionViewModule";
 
   // ── Static LayoutCache registry ──────────────────────────────────────────
@@ -133,6 +141,9 @@ private:
 
   // P4.1 — memory management callbacks.
   std::function<int64_t()>              _getAvailableMemoryCb;
+
+  // P5.1 — main-thread CPU callback (synchronous, ObjC dispatches to main).
+  std::function<double()>               _mainThreadCPUCb;
   std::shared_ptr<jsi::Function>        _memoryPressureJsFn;
   jsi::Runtime*                         _memoryPressureRt{nullptr};
 
