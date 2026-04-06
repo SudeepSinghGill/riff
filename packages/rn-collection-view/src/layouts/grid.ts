@@ -45,11 +45,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     clear(): void;
   };
   gridLayout: {
-    /** Legacy single-section method. Kept for compatibility. */
-    computeGridLayout(params: object): { positions: number[]; contentHeight: number };
-    /** Standard multi-section method — preferred. */
     computeSections(sections: object[]): void;
-    /** Standard partial re-layout from fromSection onward. */
     invalidateSectionsFrom(fromSection: number, sections: object[]): void;
   };
 };

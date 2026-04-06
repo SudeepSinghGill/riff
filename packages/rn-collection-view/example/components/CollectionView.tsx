@@ -543,7 +543,6 @@ interface FlattenResult<T> {
   sectionStartFlatIndices:   number[];
   /** Pre-populated heights for supplementary views with declared height. */
   declaredHeights:           Map<string, number>;
-  keyToFlatIndex:            Map<string, number>;
 }
 
 const RNCV_DEBUG_LOGS = false;
@@ -568,7 +567,6 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
   const stickyFooterFlatIndices: number[]      = [];
   const sectionStartFlatIndices: number[]      = [];
   const declaredHeights                        = new Map<string, number>();
-  const keyToFlatIndex                         = new Map<string, number>();
 
   for (let si = 0; si < sections.length; si++) {
     const s = sections[si]!;
@@ -578,7 +576,6 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
       const fi = flatData.length;
       if (s.header.sticky) stickyHeaderFlatIndices.push(fi);
       declaredHeights.set(`__h_${s.key}`, s.header.height);
-      keyToFlatIndex.set(`item-${si}-header`, fi);
       flatData.push({ _kind: 'header', sectionIndex: si });
       rncvLog('RNCV-JS-FLAT', {
         op: 'push-header',
@@ -593,7 +590,6 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
 
     for (let ii = 0; ii < s.data.length; ii++) {
       const fi = flatData.length;
-      keyToFlatIndex.set(`item-${si}-${ii}`, fi);
       flatData.push({ _kind: 'item', sectionIndex: si, item: s.data[ii]!, itemIndex: ii });
       if (ii < 3 || ii === s.data.length - 1) {
         rncvLog('RNCV-JS-FLAT', {
@@ -611,7 +607,6 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
       const fi = flatData.length;
       if (s.footer.sticky) stickyFooterFlatIndices.push(fi);
       declaredHeights.set(`__f_${s.key}`, s.footer.height);
-      keyToFlatIndex.set(`item-${si}-footer`, fi);
       flatData.push({ _kind: 'footer', sectionIndex: si });
       rncvLog('RNCV-JS-FLAT', {
         op: 'push-footer',
@@ -632,11 +627,9 @@ function flattenSections<T>(sections: SectionConfig<T>[]): FlattenResult<T> {
     stickyHeaderFlatIndices,
     stickyFooterFlatIndices,
     sectionStartFlatIndices,
-    keyToFlatIndexSize: keyToFlatIndex.size,
-    keyToFlatIndexSample: Array.from(keyToFlatIndex.entries()).slice(0, 16),
   });
 
-  return { flatData, stickyHeaderFlatIndices, stickyFooterFlatIndices, sectionStartFlatIndices, declaredHeights, keyToFlatIndex };
+  return { flatData, stickyHeaderFlatIndices, stickyFooterFlatIndices, sectionStartFlatIndices, declaredHeights };
 }
 
 /**
@@ -905,7 +898,6 @@ export function Riff<T = unknown>({
       stickyHeaders: flattenResult.stickyHeaderFlatIndices,
       stickyFooters: flattenResult.stickyFooterFlatIndices,
       sectionStartFlatIndices: flattenResult.sectionStartFlatIndices,
-      keyToFlatIndexSize: flattenResult.keyToFlatIndex.size,
     });
   }, [isSectioned, flattenResult]);
 
@@ -1064,10 +1056,7 @@ export function Riff<T = unknown>({
 
   // Stable callback that resolves measured height for an item by index.
   // Reads from LayoutCache (ShadowNode writes Yoga-measured heights there).
-  const measuredHeightForItemRef = useRef((index: number, section: number): number | undefined => {
-    const attr = nativeLayoutCache.getAttributes(`item-${section}-${index}`);
-    return attr ? attr.frame.height : undefined;
-  });
+  const measuredHeightForItemRef = useRef<(index: number, section: number) => number | undefined>(() => undefined);
   measuredHeightForItemRef.current = (index: number, section: number): number | undefined => {
     // Use the same identity key that list.ts writes to the cache when keyExtractor is set.
     // Positional keys (item-S-I) always miss for identity-keyed lists, causing every
@@ -1828,10 +1817,6 @@ export function Riff<T = unknown>({
     // ShadowNode measures all children via Yoga and writes heights to LayoutCache.
     const mode: 'visible' | 'hidden' = measureOnly ? 'hidden' : 'visible';
 
-    const useRealPosition = !!Activity; // true on RN 0.83+
-
-    let estimatedTop: number;
-    let cellLeft = sectionInsetLeft;
     let cellWidth = itemWidth;
 
     let attr = null;
@@ -1848,11 +1833,7 @@ export function Riff<T = unknown>({
     }
 
     if (attr) {
-      estimatedTop = attr.frame.y;
-      cellLeft = attr.frame.x;
       cellWidth = attr.frame.width;
-    } else {
-      estimatedTop = sectionInsetTop + index * stride;
     }
     rncvLog('RNCV-JS-CELL', {
       op: 'layout-attr',
@@ -1864,13 +1845,8 @@ export function Riff<T = unknown>({
       attrHit: !!attr,
       attrY: attr?.frame?.y,
       attrH: attr?.frame?.height,
-      estimatedTop,
-      cellLeft,
       cellWidth,
     });
-
-    const top  = (measureOnly && !useRealPosition) ? -9999 : estimatedTop;
-    const left = (measureOnly && !useRealPosition) ? -9999 : cellLeft;
 
     // For horizontal layouts the cross-axis dimension (height) is determined by the engine:
     //
@@ -1883,11 +1859,9 @@ export function Riff<T = unknown>({
         (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
     // Cells in horizontal layouts are always Yoga-measured (no height constraint).
     // Only supplementaries get their cross-axis height locked (engine computes full cross extent).
+    // Position (left, top) is set natively by ShadowNode applyPositionsFromState — not needed in JS.
     const containerStyle = [
       {
-        position: 'absolute' as const,
-        left,
-        top,
         ...(viewportWidth > 0 ? { width: cellWidth } : {}),
         ...(isHorizSupplementary && attr && attr.frame.height > 0 ? { height: attr.frame.height } : {}),
       },
@@ -2170,7 +2144,7 @@ export function Riff<T = unknown>({
         decorationElements.push(
           <RNMeasuredCell
             key={key}
-            style={{ position: 'absolute' as const, left: frame.x, top: frame.y, width: frame.width, height: frame.height, zIndex: attrs.zIndex }}
+            style={{ width: frame.width, height: frame.height, zIndex: attrs.zIndex }}
             type="decoration"
             index={-1}
             cacheKey={key}

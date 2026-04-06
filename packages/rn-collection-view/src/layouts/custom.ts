@@ -17,6 +17,7 @@ import type { LayoutAttributes, Rect, Size } from '../types';
 
 class CustomLayoutEngine implements CollectionViewLayout {
   readonly type = 'custom';
+  readonly horizontal: boolean;
   private readonly delegate: CustomLayoutDelegate;
   private _attrs: LayoutAttributes[] = [];
   private _contentWidth = 0;
@@ -24,6 +25,7 @@ class CustomLayoutEngine implements CollectionViewLayout {
 
   constructor(delegate: CustomLayoutDelegate) {
     this.delegate = delegate;
+    this.horizontal = delegate.horizontal ?? false;
   }
 
   prepare(context: LayoutContext): void {

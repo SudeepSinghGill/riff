@@ -474,6 +474,8 @@ export interface FlowLayoutDelegate {
  * `attributesForSupplementary` on the CollectionViewLayout interface.
  */
 export interface CustomLayoutDelegate {
+  /** When true, the layout scrolls horizontally. Defaults to false. */
+  horizontal?: boolean;
   /**
    * Compute layout attributes for a single item.
    * Called per-index for items in the windowed range.

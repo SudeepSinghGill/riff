@@ -22,9 +22,9 @@ const TABS: { key: DemoTab; label: string; detail: string }[] = [
   { key: 'grid-v',    label: 'Grid ↕',    detail: 'Vertical grid · multi-section · sticky headers · section backgrounds · insert/delete · MVC' },
   { key: 'grid-h',    label: 'Grid ↔',    detail: 'Horizontal grid · columns=2 · section backgrounds · insert/delete · MVC' },
   { key: 'masonry-v', label: 'Masonry ↕', detail: 'Vertical masonry · 2 columns · shortest-lane · multi-section · sticky · section backgrounds · insert/delete · MVC' },
-  { key: 'masonry-h', label: 'Masonry ↔', detail: 'Horizontal masonry · 3 lanes · adaptive container height · insert/delete · MVC' },
   { key: 'flow-v',    label: 'Flow ↕',    detail: 'Vertical flow · tag cloud · multi-section · two-pass · sticky · section backgrounds · insert/delete · MVC' },
-  { key: 'flow-h',    label: 'Flow ↔',    detail: 'Horizontal flow · items pack top→bottom · fixed container height · multi-section · insert/delete' },
+  // { key: 'flow-h',    label: 'Flow ↔',    detail: 'Horizontal flow · items pack top→bottom · fixed container height · multi-section · insert/delete' },
+  // { key: 'masonry-h', label: 'Masonry ↔', detail: 'Horizontal masonry · 3 lanes · adaptive container height · insert/delete · MVC' },
 ];
 
 export default function RiffDemo() {
