@@ -1,5 +1,6 @@
 #include "CollectionViewModule.h"
 
+#include <limits>
 #include <unordered_map>
 
 namespace facebook::react {
@@ -414,6 +415,162 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           Object result(rt);
           result.setProperty(rt, "first", Value(mr.first));
           result.setProperty(rt, "last",  Value(mr.last));
+          return Value(rt, result);
+        }));
+
+    // processScroll(scrollPrimary, vpPrimary, vpCross, isHorizontal, renderMult,
+    //              velocity, stride, measureAheadMult, mountedWindowSize,
+    //              itemCount, sectionInfoPacked?)
+    //   → { renderFirst, renderLast, visibleFirst, visibleLast,
+    //       measureFirst, measureLast, cacheVersion }
+    //
+    // Batches 4-6 individual JSI calls into one:
+    //   version() + 2×attributesForElements + applyBudget + computeMeasureRange
+    // The two spatial queries run entirely in C++ — LayoutAttributes are never
+    // marshalled to JS. Result is 7 numbers, not ~300 JSI property writes.
+    //
+    // sectionInfoPacked (arg 10): JS Array [start0, headerOffset0, dataCount0, ...]
+    //   one triple per section. Omit / pass null for single-section lists.
+    obj.setProperty(rt, "processScroll",
+      Function::createFromHostFunction(rt,
+        PropNameID::forAscii(rt, "processScroll"), 11,
+        [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+          double scrollPrimary    = count > 0 && args[0].isNumber() ? args[0].getNumber() : 0.0;
+          double vpPrimary        = count > 1 && args[1].isNumber() ? args[1].getNumber() : 0.0;
+          double vpCross          = count > 2 && args[2].isNumber() ? args[2].getNumber() : 0.0;
+          bool   isHoriz          = count > 3 && args[3].isBool()   ? args[3].getBool()   : false;
+          double renderMult       = count > 4 && args[4].isNumber() ? args[4].getNumber() : 1.0;
+          double velocity         = count > 5 && args[5].isNumber() ? args[5].getNumber() : 0.0;
+          double stride           = count > 6 && args[6].isNumber() ? args[6].getNumber() : 0.0;
+          double measureAheadMult = count > 7 && args[7].isNumber() ? args[7].getNumber() : 0.0;
+          double mountedWindowSz  = count > 8 && args[8].isNumber() ? args[8].getNumber() : 1e10;
+          int    itemCount        = count > 9 && args[9].isNumber()  ? static_cast<int>(args[9].getNumber()) : 0;
+
+          // sectionInfoPacked: flat array [start0, headerOffset0, dataCount0, start1, ...]
+          struct SecInfo { int start; int headerOffset; int dataCount; };
+          std::vector<SecInfo> sections;
+          if (count > 10 && args[10].isObject()) {
+            auto sArr = args[10].getObject(rt);
+            if (sArr.isArray(rt)) {
+              auto arr = sArr.getArray(rt);
+              size_t n = arr.size(rt);
+              sections.reserve(n / 3);
+              for (size_t i = 0; i + 2 < n; i += 3) {
+                sections.push_back({
+                  static_cast<int>(arr.getValueAtIndex(rt, i).getNumber()),
+                  static_cast<int>(arr.getValueAtIndex(rt, i + 1).getNumber()),
+                  static_cast<int>(arr.getValueAtIndex(rt, i + 2).getNumber()),
+                });
+              }
+            }
+          }
+          bool sectioned = !sections.empty();
+
+          // Flat-index computation — mirrors JS attrToFlatIndex()
+          auto toFlatIdx = [&](const rncv::LayoutAttributes& a) -> int {
+            if (a.isDecoration) return -1;
+            if (!sectioned) {
+              // Single-section: supplementaries have no flat index in the item range
+              return a.isSupplementary ? -1 : a.index;
+            }
+            int si = a.section;
+            if (si < 0 || si >= static_cast<int>(sections.size())) return -1;
+            const auto& sec = sections[static_cast<size_t>(si)];
+            if (a.isSupplementary) {
+              if (a.supplementaryKind == "header") return sec.start;
+              if (a.supplementaryKind == "footer")
+                return sec.start + sec.headerOffset + sec.dataCount;
+              return -1;
+            }
+            return sec.start + sec.headerOffset + a.index;
+          };
+
+          // Helper: return an empty result with just the current cache version
+          auto makeEmpty = [&]() -> Value {
+            double ver = static_cast<double>(_layoutCache->version());
+            Object r(rt);
+            r.setProperty(rt, "renderFirst",  Value(0));
+            r.setProperty(rt, "renderLast",   Value(-1));
+            r.setProperty(rt, "visibleFirst", Value(0));
+            r.setProperty(rt, "visibleLast",  Value(-1));
+            r.setProperty(rt, "measureFirst", Value(0));
+            r.setProperty(rt, "measureLast",  Value(-1));
+            r.setProperty(rt, "cacheVersion", Value(ver));
+            return Value(rt, r);
+          };
+
+          if (vpPrimary <= 0.0 || itemCount == 0) return makeEmpty();
+
+          // Velocity-adaptive multipliers — mirrors CollectionView.tsx scroll handler
+          double speed     = std::abs(velocity);
+          double leadBoost = std::min(4.0, speed) * renderMult;
+          double leadMult  = renderMult + leadBoost;
+          double minTrail  = isHoriz ? 0.75 : 0.25;
+          double trailMult = std::max(minTrail, renderMult - leadBoost * 0.5);
+          bool   goingFwd  = velocity >= 0.0;
+          double abovePad  = (goingFwd ? trailMult : leadMult) * vpPrimary;
+          double belowPad  = (goingFwd ? leadMult  : trailMult) * vpPrimary;
+
+          rncv::Rect renderRect, visibleRect;
+          if (isHoriz) {
+            renderRect  = { scrollPrimary - abovePad, 0.0,
+                            vpPrimary + abovePad + belowPad, vpCross };
+            visibleRect = { scrollPrimary, 0.0, vpPrimary, vpCross };
+          } else {
+            renderRect  = { 0.0, scrollPrimary - abovePad,
+                            vpCross, vpPrimary + abovePad + belowPad };
+            visibleRect = { 0.0, scrollPrimary, vpCross, vpPrimary };
+          }
+
+          // Run both spatial queries in C++ — no LayoutAttributes marshalled to JS
+          auto renderAttrs = _layoutCache->getAttributesInRect(renderRect);
+          int rFirst = std::numeric_limits<int>::max();
+          int rLast  = std::numeric_limits<int>::min();
+          for (const auto& a : renderAttrs) {
+            int fi = toFlatIdx(a);
+            if (fi < 0) continue;
+            if (fi < rFirst) rFirst = fi;
+            if (fi > rLast)  rLast  = fi;
+          }
+
+          if (rFirst == std::numeric_limits<int>::max()) return makeEmpty();
+
+          auto visAttrs = _layoutCache->getAttributesInRect(visibleRect);
+          int vFirst = std::numeric_limits<int>::max();
+          int vLast  = std::numeric_limits<int>::min();
+          for (const auto& a : visAttrs) {
+            int fi = toFlatIdx(a);
+            if (fi < 0) continue;
+            if (fi < vFirst) vFirst = fi;
+            if (fi > vLast)  vLast  = fi;
+          }
+          if (vFirst == std::numeric_limits<int>::max()) { vFirst = rFirst; vLast = rLast; }
+
+          // Apply budget
+          rncv::Range render  = { rFirst, rLast };
+          rncv::Range visible = { vFirst, vLast };
+          auto budgeted = rncv::WindowController::applyBudget(
+            render, visible, mountedWindowSz, vpPrimary, stride);
+
+          // Measure range (optional — only when measureAheadMult > 0 and stride known)
+          int mFirst = budgeted.first, mLast = budgeted.last;
+          if (measureAheadMult > 0.0 && stride > 0.0) {
+            int ahead = static_cast<int>(std::ceil(measureAheadMult * vpPrimary / stride));
+            auto mr = rncv::WindowController::computeMeasureRange(budgeted, ahead, itemCount);
+            mFirst = mr.first;
+            mLast  = mr.last;
+          }
+
+          double ver = static_cast<double>(_layoutCache->version());
+
+          Object result(rt);
+          result.setProperty(rt, "renderFirst",  Value(budgeted.first));
+          result.setProperty(rt, "renderLast",   Value(budgeted.last));
+          result.setProperty(rt, "visibleFirst", Value(vFirst));
+          result.setProperty(rt, "visibleLast",  Value(vLast));
+          result.setProperty(rt, "measureFirst", Value(mFirst));
+          result.setProperty(rt, "measureLast",  Value(mLast));
+          result.setProperty(rt, "cacheVersion", Value(ver));
           return Value(rt, result);
         }));
 

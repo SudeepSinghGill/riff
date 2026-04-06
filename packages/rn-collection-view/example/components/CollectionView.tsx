@@ -143,6 +143,21 @@ const nativeMod = NativeCollectionViewModule as unknown as {
       budgetedFirst: number, budgetedLast: number,
       ahead: number, itemCount: number,
     ): NativeRange;
+    // Batched scroll computation — replaces 4-6 individual JSI calls.
+    // Spatial queries run entirely in C++; returns 7 integers (no LayoutAttributes marshalled).
+    processScroll(
+      scrollPrimary: number, vpPrimary: number, vpCross: number,
+      isHorizontal: boolean,
+      renderMult: number, velocity: number,
+      stride: number, measureAheadMult: number,
+      mountedWindowSize: number, itemCount: number,
+      sectionInfoPacked: number[] | null,
+    ): {
+      renderFirst: number; renderLast: number;
+      visibleFirst: number; visibleLast: number;
+      measureFirst: number; measureLast: number;
+      cacheVersion: number;
+    };
   };
 };
 const nativeWindowController = nativeMod.windowController;
@@ -1187,6 +1202,22 @@ export function Riff<T = unknown>({
   // Budget stride for applyBudget: estimated stride for budget calculation.
   const budgetStride = stride;
 
+  // ── processScroll inputs ─────────────────────────────────────────────────────
+  // Packed section info for processScroll: [start0, headerOffset0, dataCount0, ...]
+  // null for single-section (C++ uses attr.index directly as flat index).
+  const sectionInfoPacked = useMemo<number[] | null>(() => {
+    if (!isSectioned || !propSections || !flattenResult) return null;
+    const packed: number[] = [];
+    propSections.forEach((s, si) => {
+      packed.push(
+        flattenResult.sectionStartFlatIndices[si] ?? 0,
+        s.header ? 1 : 0,
+        s.data.length,
+      );
+    });
+    return packed;
+  }, [isSectioned, propSections, flattenResult]);
+
   // ── Layout pass + initial window state ───────────────────────────────────────
   // useLayoutEffect so the accurate range (with real layout data) is committed
   // before the frame is painted — avoids a visible flash of stale positions.
@@ -1206,68 +1237,37 @@ export function Riff<T = unknown>({
       return;
     }
 
-    // Query the layout for items in the render window (spatial query).
+    // Single C++ call replaces 2×spatial query + applyBudget + computeMeasureRange.
     const scrollY = prevScrollYRef.current;
     const scrollX = prevScrollXRef.current;
     const isHoriz = effectiveLayout.horizontal ?? false;
-    const speed = Math.abs(velocityRef.current);
-    const leadBoost = Math.min(4, speed) * renderMultiplier;
-    const leadMult = renderMultiplier + leadBoost;
-    const minTrail = isHoriz ? 0.75 : 0.25;
-    const trailMult = Math.max(minTrail, renderMultiplier - leadBoost * 0.5);
-    const goingForward = velocityRef.current >= 0;
 
-    const attrs = effectiveLayout.attributesForElements(isHoriz ? {
-      x: scrollX - (goingForward ? trailMult : leadMult) * viewportWidth,
-      y: 0,
-      width: viewportWidth + (leadMult + trailMult) * viewportWidth,
-      height: viewportHeight,
-    } : {
-      x: 0,
-      y: scrollY - (goingForward ? trailMult : leadMult) * viewportHeight,
-      width: viewportWidth,
-      height: viewportHeight + (leadMult + trailMult) * viewportHeight,
-    });
+    const layoutResult = nativeWindowController.processScroll(
+      isHoriz ? scrollX : scrollY,               // scrollPrimary
+      isHoriz ? viewportWidth  : viewportHeight, // vpPrimary
+      isHoriz ? viewportHeight : viewportWidth,  // vpCross
+      isHoriz,
+      renderMultiplier,
+      velocityRef.current,
+      budgetStride,
+      isVariableHeight && measureAhead > 0 ? measureAhead : 0,
+      effectiveMountedWindowSize,
+      itemCount,
+      sectionInfoPacked,
+    );
 
-    if (attrs.length === 0) {
+    rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
+
+    if (layoutResult.renderLast < layoutResult.renderFirst) {
       setRenderRange({ first: 0, last: -1 });
     } else {
-      let minIdx = Infinity, maxIdx = -Infinity;
-      for (const attr of attrs) {
-        const fi = isSectioned
-          ? attrToFlatIndex(attr, flattenResult!.sectionStartFlatIndices, propSections!)
-          : attr.index;
-        if (fi === -1) continue;
-        if (fi < minIdx) minIdx = fi;
-        if (fi > maxIdx) maxIdx = fi;
-      }
-
-      rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} C++_attr_count=${attrs.length} -> max_fi=${maxIdx} min_fi=${minIdx}`);
-      const render = { first: minIdx === Infinity ? 0 : minIdx, last: maxIdx === -Infinity ? -1 : maxIdx };
-
-      const visAttrs = effectiveLayout.attributesForElements(isHoriz
-        ? { x: scrollX, y: 0, width: viewportWidth, height: viewportHeight }
-        : { x: 0, y: scrollY, width: viewportWidth, height: viewportHeight }
-      );
-      let visFirst = Infinity, visLast = -Infinity;
-      for (const a of visAttrs) {
-        const fi = isSectioned
-          ? attrToFlatIndex(a, flattenResult!.sectionStartFlatIndices, propSections!)
-          : a.index;
-        if (fi === -1) continue;
-        if (fi < visFirst) visFirst = fi;
-        if (fi > visLast) visLast = fi;
-      }
-      const visible = { first: visFirst === Infinity ? 0 : visFirst, last: visLast === -Infinity ? -1 : visLast };
-
-      const budgeted = nativeWindowController.applyBudget(render.first, render.last, visible.first, visible.last, effectiveMountedWindowSize, viewportHeight, budgetStride);
+      const budgeted = { first: layoutResult.renderFirst, last: layoutResult.renderLast };
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
 
       // Measure range: extend render range for pre-measurement of variable-height cells.
       if (isVariableHeight && measureAhead > 0) {
-        const ahead = Math.ceil(measureAhead * viewportHeight / stride);
-        const newMR = nativeWindowController.computeMeasureRange(budgeted.first, budgeted.last, ahead, itemCount);
+        const newMR = { first: layoutResult.measureFirst, last: layoutResult.measureLast };
         if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
           prevMeasureRef.current = newMR;
           setMeasureRange(newMR);
@@ -1289,6 +1289,7 @@ export function Riff<T = unknown>({
     effectiveLayout,
     layoutContentSize,
     layoutContentHeight,
+    sectionInfoPacked,
   ]);
 
   // P5.1 — start CADisplayLink when HUD is active, stop on unmount or HUD off.
@@ -1521,76 +1522,41 @@ export function Riff<T = unknown>({
       prevScrollXRef.current  = scrollX;
       prevScrollTimeRef.current = now;
 
-      // Check if ShadowNode wrote new measurements to LayoutCache.
-      // If so, bump layoutCacheVersion to trigger position recomputation.
-      const cacheVer = nativeLayoutCache.version();
-      if (cacheVer !== lastCacheVersionRef.current) {
-        lastCacheVersionRef.current = cacheVer;
+      const vpW = layoutMeasurement.width || viewportWidth;
+
+      // Single C++ call: version check + 2×spatial query + applyBudget + computeMeasureRange.
+      // Replaces 4-6 individual JSI calls. LayoutAttributes are never marshalled to JS —
+      // spatial queries run entirely in C++ and return 7 integers.
+      const scrollResult = nativeWindowController.processScroll(
+        isHorizontal ? scrollX : scrollY,        // scrollPrimary
+        isHorizontal ? vpW    : vpH,             // vpPrimary
+        isHorizontal ? vpH    : vpW,             // vpCross
+        isHorizontal,
+        renderMultiplier,
+        velocityRef.current,
+        budgetStride,
+        isVariableHeight && measureAhead > 0 ? measureAhead : 0,
+        effectiveMountedWindowSize,
+        itemCount,
+        sectionInfoPacked,                       // null for single-section
+      );
+
+      // Cache version — check after processScroll so we read the same version
+      // that was active during the spatial queries.
+      if (scrollResult.cacheVersion !== lastCacheVersionRef.current) {
+        lastCacheVersionRef.current = scrollResult.cacheVersion;
         setLayoutCacheVersion(v => v + 1);
       }
 
-      // Spatial query for render range — works for all layout types, both axes.
-      const speed = Math.abs(velocityRef.current);
-      const leadBoost = Math.min(4, speed) * renderMultiplier;
-      const leadMult = renderMultiplier + leadBoost;
-      // Horizontal lists have a wider item-to-viewport ratio than vertical lists,
-      // so the minimum trailing buffer needs to be larger to avoid premature unmounts.
-      const minTrail = isHorizontal ? 0.75 : 0.25;
-      const trailMult = Math.max(minTrail, renderMultiplier - leadBoost * 0.5);
-      const goingForward = velocityRef.current >= 0;
-      const vpW = layoutMeasurement.width || viewportWidth;
-
-      const renderRect = isHorizontal ? {
-        x: scrollX - (goingForward ? trailMult : leadMult) * vpW,
-        y: 0,
-        width: vpW + (leadMult + trailMult) * vpW,
-        height: vpH,
-      } : {
-        x: 0,
-        y: scrollY - (goingForward ? trailMult : leadMult) * vpH,
-        width: viewportWidth,
-        height: vpH + (leadMult + trailMult) * vpH,
-      };
-
-      const attrs = effectiveLayout.attributesForElements(renderRect);
-
-      let rFirst = Infinity, rLast = -Infinity;
-      for (const a of attrs) {
-        const fi = isSectioned
-          ? attrToFlatIndex(a, flattenResult!.sectionStartFlatIndices, propSections!)
-          : a.index;
-        if (fi === -1) continue;
-        if (fi < rFirst) rFirst = fi;
-        if (fi > rLast) rLast = fi;
-      }
-      const newR = { first: rFirst === Infinity ? 0 : rFirst, last: rLast === -Infinity ? -1 : rLast };
-
-      const visRect = isHorizontal
-        ? { x: scrollX, y: 0, width: vpW, height: vpH }
-        : { x: 0, y: scrollY, width: viewportWidth, height: vpH };
-      const visAttrs = effectiveLayout.attributesForElements(visRect);
-      let vFirst = Infinity, vLast = -Infinity;
-      for (const a of visAttrs) {
-        const fi = isSectioned
-          ? attrToFlatIndex(a, flattenResult!.sectionStartFlatIndices, propSections!)
-          : a.index;
-        if (fi === -1) continue;
-        if (fi < vFirst) vFirst = fi;
-        if (fi > vLast) vLast = fi;
-      }
-      const newV = { first: vFirst === Infinity ? 0 : vFirst, last: vLast === -Infinity ? -1 : vLast };
-
-      const budgetedR = applyBudget(newR, newV, effectiveMountedWindowSize, vpH, budgetStride);
-      const renderChanged = rangeChanged(prevRenderRef.current, budgetedR);
-      if (renderChanged) {
+      const budgetedR = { first: scrollResult.renderFirst, last: scrollResult.renderLast };
+      if (rangeChanged(prevRenderRef.current, budgetedR)) {
         prevRenderRef.current = budgetedR;
         setRenderRange(budgetedR);
       }
 
-      // Update measure range (same frame as render range).
+      // Measure range — returned by processScroll when measureAheadMult > 0.
       if (isVariableHeight && measureAhead > 0) {
-        const ahead = Math.ceil(measureAhead * vpH / stride);
-        const newMR = nativeWindowController.computeMeasureRange(budgetedR.first, budgetedR.last, ahead, itemCount);
+        const newMR = { first: scrollResult.measureFirst, last: scrollResult.measureLast };
         if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
           prevMeasureRef.current = newMR;
           setMeasureRange(newMR);

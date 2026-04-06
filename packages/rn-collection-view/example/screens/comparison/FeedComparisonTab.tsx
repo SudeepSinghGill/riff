@@ -10,7 +10,7 @@
  * - Riff renders each cell with its real identity — no recycling artifacts.
  * - Deep hierarchy (5-10 Views deep) stresses JS bridge in FlashList recycling.
  */
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Riff } from '../../components/CollectionView';
@@ -232,14 +232,15 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
   const vpHeightRef     = useRef(0);
   const [velocity,      setVelocity]     = useState(0);
   const [contentHeight, setContentH]     = useState(0);
-  // Tick drives re-renders so PerfHood picks up latest module-level mount counters.
-  const [, setTick] = useState(0);
   React.useEffect(() => {
-    // Reset blank area when switching engines.
     feedBlankAreaPct = -1;
-    const id = setInterval(() => setTick(t => t + 1), 500);
-    return () => clearInterval(id);
   }, [mode]);
+
+  // Stable getters — PerfHood reads module-level counters on its own tick
+  // so neither Riff nor FlashList re-renders just to update the HUD.
+  const getActiveMounts = useCallback(() => feedActiveMounts, []);
+  const getTotalMounts  = useCallback(() => feedTotalMounts,  []);
+  const getBlankAreaPct = useCallback(() => feedBlankAreaPct, []);
 
   const handleLayout = (e: LayoutChangeEvent) => {
     vpHeightRef.current = e.nativeEvent.layout.height;
@@ -264,10 +265,10 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
 
   const perfHood = (
     <PerfHood
-      activeMounts={feedActiveMounts}
-      totalMounts={feedTotalMounts}
+      getActiveMounts={getActiveMounts}
+      getTotalMounts={getTotalMounts}
       scrollVelocity={velocity}
-      blankAreaPct={feedBlankAreaPct}
+      getBlankAreaPct={getBlankAreaPct}
       scrollRef={listRef}
       engine={mode === 'cv' ? 'riff' : 'flash'}
       tab="feed"

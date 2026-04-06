@@ -37,14 +37,20 @@ import type { BenchmarkConfig, BenchmarkResult, RunResult } from '../utils/useBe
 // ── Public props ──────────────────────────────────────────────────────────────
 
 export interface PerfHoodProps {
-  /** Currently mounted cell count (decremented on unmount). */
-  activeMounts: number;
-  /** Total cells ever mounted (cumulative). */
-  totalMounts: number;
+  /**
+   * Getter for currently mounted cell count.
+   * Called on PerfHood's own 500ms tick — does NOT cause the list parent to re-render.
+   */
+  getActiveMounts: () => number;
+  /** Getter for total cells ever mounted (cumulative). */
+  getTotalMounts: () => number;
   /** Scroll velocity in pt/s from the parent's onScroll handler. */
   scrollVelocity?: number;
-  /** Blank area % (0-100) from Riff's onBlankArea; -1 = unavailable (FlashList). */
-  blankAreaPct?: number;
+  /**
+   * Getter for blank area % (0-100, or -1 if unavailable).
+   * Called on PerfHood's own tick.
+   */
+  getBlankAreaPct?: () => number;
   // ── Benchmark config (optional — omit to disable "▶ Bench" button) ──
   scrollRef?: React.RefObject<any>;
   engine?: 'riff' | 'flash';
@@ -175,10 +181,10 @@ function BenchmarkSummary({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function PerfHood({
-  activeMounts,
-  totalMounts,
+  getActiveMounts,
+  getTotalMounts,
   scrollVelocity = 0,
-  blankAreaPct = -1,
+  getBlankAreaPct,
   scrollRef,
   engine = 'riff',
   tab = 'feed',
@@ -190,6 +196,21 @@ export function PerfHood({
   const [showResult, setShowResult] = useState(false);
   const prevResultRef = useRef<BenchmarkResult | null>(null);
 
+  // Read module-level mount counters on our own tick — no list re-render needed.
+  const [activeMounts, setActiveMounts] = useState(0);
+  const [totalMounts,  setTotalMounts]  = useState(0);
+  const [blankAreaPct, setBlankAreaPct] = useState(-1);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setActiveMounts(getActiveMounts());
+      setTotalMounts(getTotalMounts());
+      setBlankAreaPct(getBlankAreaPct?.() ?? -1);
+    }, 500);
+    return () => clearInterval(id);
+  // Getters are stable useCallback refs — safe to omit from deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const benchmarkEnabled = !!scrollRef;
 
   const benchConfig: BenchmarkConfig = {
@@ -200,9 +221,9 @@ export function PerfHood({
     itemHeight,
     contentHeight,
     liveMetrics: m,
-    activeMounts,
-    totalMounts,
-    blankAreaPct,
+    getActiveMounts,
+    getTotalMounts,
+    getBlankAreaPct: getBlankAreaPct ?? (() => -1),
   };
 
   const bench = useBenchmark(benchConfig);

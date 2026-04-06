@@ -18,6 +18,8 @@ import type { LayoutAttributes, Rect, Size } from '../types';
 class CustomLayoutEngine implements CollectionViewLayout {
   readonly type = 'custom';
   readonly horizontal: boolean;
+  /** Custom layouts default to spatial query — items may not be contiguously ordered. */
+  readonly needsSpatialQuery = true;
   private readonly delegate: CustomLayoutDelegate;
   private _attrs: LayoutAttributes[] = [];
   private _contentWidth = 0;

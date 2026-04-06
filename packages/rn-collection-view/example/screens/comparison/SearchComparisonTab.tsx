@@ -9,7 +9,7 @@
  *
  * PerfHood shows JS FPS, mount count, and render count during the session.
  */
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Riff } from '../../components/CollectionView';
@@ -98,12 +98,13 @@ export default function SearchComparisonTab({ mode }: { mode: 'cv' | 'flash' }) 
   const vpHeightRef     = useRef(0);
   const [velocity,      setVelocity] = useState(0);
   const [contentHeight, setContentH] = useState(0);
-  const [, setTick] = useState(0);
   React.useEffect(() => {
     searchBlankAreaPct = -1;
-    const id = setInterval(() => setTick(t => t + 1), 500);
-    return () => clearInterval(id);
   }, [mode]);
+
+  const getActiveMounts = useCallback(() => searchActiveMounts, []);
+  const getTotalMounts  = useCallback(() => searchTotalMounts,  []);
+  const getBlankAreaPct = useCallback(() => searchBlankAreaPct, []);
 
   const handleLayout = (e: LayoutChangeEvent) => {
     vpHeightRef.current = e.nativeEvent.layout.height;
@@ -128,10 +129,10 @@ export default function SearchComparisonTab({ mode }: { mode: 'cv' | 'flash' }) 
 
   const perfHood = (
     <PerfHood
-      activeMounts={searchActiveMounts}
-      totalMounts={searchTotalMounts}
+      getActiveMounts={getActiveMounts}
+      getTotalMounts={getTotalMounts}
       scrollVelocity={velocity}
-      blankAreaPct={searchBlankAreaPct}
+      getBlankAreaPct={getBlankAreaPct}
       scrollRef={listRef}
       engine={mode === 'cv' ? 'riff' : 'flash'}
       tab="search"

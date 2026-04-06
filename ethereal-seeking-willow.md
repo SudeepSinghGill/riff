@@ -24,9 +24,13 @@
 | H-masonry: broken (all items same size) | ⬜ Future/research (see PLAN.md) |
 | H-flow demo | ⬜ Future scope (see PLAN.md) |
 | Flow/masonry separators | ⬜ Future scope (see PLAN.md) |
-| API audit across all 4 layouts | ⬜ Next |
-| 5g – Extend ShadowNode to grid/masonry/flow | ⬜ Future |
-| 5j – Remove JS cell wrapper positioning | ⬜ After 5g |
+| API audit across all 4 layouts + dead code cleanup | ✅ Done (branch: `cur-cleanup`, merged) |
+| 5j – Remove JS cell wrapper positioning | ✅ Done (branch: `cur-cleanup`, merged) |
+| Masonry windowing bug (Phase A stride + rectsIntersect boundary) | ✅ Done (branch: `cur-masonry-window-fix`, merged) |
+| RiffDemo: animated resize toggle + responsive column breakpoints | ✅ Done (branch: `cur-riff-resize`, merged) |
+| RiffDemo: circular and carousel tabs wired | ✅ Done (branch: `cur-riff-resize`, merged) |
+| FlashList comparison: Feed tab (150 hetero items) + Search tab (1500 items) | ✅ Done (branch: `cur-flashlist-comparison`, merged) |
+| 5g – Extend ShadowNode to grid/masonry/flow | ✅ Done (ShadowNode is layout-agnostic across all 4 types) |
 | Grid rowAlignment – 'top'\|'center'\|'bottom' for uneven heightForItem rows | ⬜ Future (see PLAN.md F-Grid.1) |
 | Flow justification (leading/center/trailing/spaceBetween/spaceEvenly) | ⬜ Future (see PLAN.md F-Flow.1) |
 | Flow item weight/stretching | ⬜ Future (see PLAN.md F-Flow.2) |

@@ -86,12 +86,12 @@ export interface BenchmarkConfig {
   contentHeight: number;
   /** Live performance metrics from usePerformanceMetrics(). */
   liveMetrics: PerformanceMetrics;
-  /** Current active mount count. */
-  activeMounts: number;
-  /** Current total mount count. */
-  totalMounts: number;
-  /** Blank area % (0-100) for Riff; -1 for FlashList (unavailable). */
-  blankAreaPct: number;
+  /** Getter for current active mount count — read fresh at sample time. */
+  getActiveMounts: () => number;
+  /** Getter for total mount count — read at benchmark end. */
+  getTotalMounts: () => number;
+  /** Getter for blank area % (0-100 or -1). Read fresh at sample time. */
+  getBlankAreaPct: () => number;
 }
 
 export interface BenchmarkHandle {
@@ -234,8 +234,8 @@ export function useBenchmark(config: BenchmarkConfig): BenchmarkHandle {
       const cpuSamples:    number[] = [];
       const memSamples:    number[] = [];
       const blankSamples:  number[] = [];
-      let   activeMountMin = configRef.current.activeMounts;
-      let   activeMountMax = configRef.current.activeMounts;
+      let   activeMountMin = configRef.current.getActiveMounts();
+      let   activeMountMax = configRef.current.getActiveMounts();
       const startTime = Date.now();
 
       const rounds = run.warmup ? 1 : ROUNDS_PER_RUN;
@@ -253,10 +253,11 @@ export function useBenchmark(config: BenchmarkConfig): BenchmarkHandle {
             idleSamples.push(lm.jsIdlePct);
             if (lm.mainThreadCPU >= 0) cpuSamples.push(lm.mainThreadCPU);
             memSamples.push(lm.memoryDeltaMB);
-            const blank = configRef.current.blankAreaPct;
+            const blank = configRef.current.getBlankAreaPct();
             if (blank >= 0) blankSamples.push(blank);
-            activeMountMin = Math.min(activeMountMin, configRef.current.activeMounts);
-            activeMountMax = Math.max(activeMountMax, configRef.current.activeMounts);
+            const am = configRef.current.getActiveMounts();
+            activeMountMin = Math.min(activeMountMin, am);
+            activeMountMax = Math.max(activeMountMax, am);
           }, 200);
         }
 
@@ -323,7 +324,7 @@ export function useBenchmark(config: BenchmarkConfig): BenchmarkHandle {
         peakMemDeltaMB: allMem.length > 0 ? Math.max(...allMem) : 0,
         avgBlankPct:    allBlank.length > 0 ? mean(allBlank) : -1,
         peakBlankPct:   allBlank.length > 0 ? peakBlank : -1,
-        totalMounts:    configRef.current.totalMounts,
+        totalMounts:    configRef.current.getTotalMounts(),
       },
     };
 

@@ -86,6 +86,22 @@ export interface CollectionViewLayout {
    * Called when an item's measured size differs from estimated.
    */
   invalidateFrom?(key: string, context: LayoutContext): void;
+
+  /**
+   * When false (default), the scroll handler uses C++ binary search on sorted item
+   * positions for O(log n) range computation — no per-item JSI marshalling.
+   *
+   * Set to true for layouts where visible items are NOT a contiguous index range
+   * (e.g. truly non-linear layouts like radial arc, circular grid) — these require
+   * a spatial query to find visible items.
+   *
+   * Built-in layouts (list, grid, masonry, flow) always leave this false.
+   * Custom layout authors: set to true only if your layout places items
+   * non-contiguously in the viewport. Linear custom layouts can leave it false.
+   *
+   * Default: false for built-in layouts, true for custom layouts (safe default).
+   */
+  readonly needsSpatialQuery?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════
