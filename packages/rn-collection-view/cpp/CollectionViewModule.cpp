@@ -445,6 +445,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           double measureAheadMult = count > 7 && args[7].isNumber() ? args[7].getNumber() : 0.0;
           double mountedWindowSz  = count > 8 && args[8].isNumber() ? args[8].getNumber() : 1e10;
           int    itemCount        = count > 9 && args[9].isNumber()  ? static_cast<int>(args[9].getNumber()) : 0;
+          int    budgetCols       = count > 11 && args[11].isNumber() ? static_cast<int>(args[11].getNumber()) : 1;
 
           // sectionInfoPacked: flat array [start0, headerOffset0, dataCount0, start1, ...]
           struct SecInfo { int start; int headerOffset; int dataCount; };
@@ -550,7 +551,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           rncv::Range render  = { rFirst, rLast };
           rncv::Range visible = { vFirst, vLast };
           auto budgeted = rncv::WindowController::applyBudget(
-            render, visible, mountedWindowSz, vpPrimary, stride);
+            render, visible, mountedWindowSz, vpPrimary, stride, budgetCols);
 
           // Measure range (optional — only when measureAheadMult > 0 and stride known)
           int mFirst = budgeted.first, mLast = budgeted.last;

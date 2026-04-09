@@ -191,3 +191,39 @@ Approach A naturally pairs with Opt 4 (cell recycling). SlotManager tracks enter
 7. **Sticky headers** — must still work with transform positioning (already use transforms)
 8. **Variable-height cells** — measurement feedback loop must still converge in 1 frame
 9. **MVC (maintain visible content position)** — offset correction must still work with transforms
+
+---
+
+## Commit status: Opt 1 + Opt 2
+
+**Recorded on branch:** `cur-cell-pooling` — message `perf(rncv): Opt 1+2 batched processScroll; document API audit` (includes `PERF-PLAN.md` appendix + C++/iOS/JS hot path; `example/yarn.lock` left unstaged). Use `git log -1 --oneline` for the current hash.
+
+**Scope:** Opt 1 (C++ spatial queries in `processScroll` + JS `windowController.processScroll`) and Opt 2 (single batched JSI call returning render/visible/measure ranges + `cacheVersion`) across `cpp/CollectionViewModule.cpp`, `cpp/WindowController.h`, related native/iOS glue, and `example/components/CollectionView.tsx`.
+
+---
+
+## API / packaging audit (post Opt 1+2)
+
+### Where `CollectionView` lives today
+
+The **consumer React component** (`Riff` / `CollectionView`) is implemented under **`packages/rn-collection-view/example/components/CollectionView.tsx`**, not under `packages/rn-collection-view/src/`.
+
+**Why (POC constraint):** The library package can resolve a **different React instance** than the host app (`node_modules/react` inside the package vs the app). Mounting hooks from the wrong instance causes crashes and broken context. The repo comment in [`packages/rn-collection-view/src/index.ts`](packages/rn-collection-view/src/index.ts) states the component will be **re-exported from `src/` once the monorepo uses workspace-hoisted React** (single React for app + library).
+
+**Implication:** [`src/index.ts`](packages/rn-collection-view/src/index.ts) today exports module, layouts, and types — **not** the `CollectionView` component as a drop-in import from the package root. Standalone-library ergonomics are incomplete until that move + Metro/tsconfig alignment.
+
+### Callback and prop surface (current vs desired)
+
+| Area | Current state | Gap vs “library should own internals” |
+|------|----------------|----------------------------------------|
+| Scroll callbacks | `onScroll` is wrapped internally then `scrollViewProps?.onScroll` is invoked. Drag/momentum handlers are passed **only** from `scrollViewProps` onto `RNCollectionViewContainer`. | Consumers still reach into `scrollViewProps` for several events; **not** a single top-level surface like FlatList. |
+| `onContentSizeChange` | Supported as **top-level** `onContentSizeChange` **or** `scrollViewProps.onContentSizeChange` (single winner: top-level overrides scrollViewProps). | Desired: **one** CollectionView-level API; internally consume, adjust, then **forward** to consumer (and if both provided, policy should be explicit — e.g. call both or deprecate one). |
+| Horizontal cross-axis height | **Internal:** auto-height from native `contentSize` with bootstrap guard (avoids latching full viewport height). **Demos:** `LayoutsTab` horizontal masonry / horizontal grid / adaptive H-grid still use **local `containerH` + `onContentSizeChange`** to size wrapper `View`s and show subtitles. | Demo code still duplicates work the component should own; should be removed once internal sizing is trusted everywhere. |
+| Types | [`src/types/protocol.ts`](packages/rn-collection-view/src/types/protocol.ts) defines a slimmer `CollectionViewProps` (`onScroll` shape, `scrollViewProps?: Record<string, unknown>`) that **does not match** the rich `RiffProps` in the example component. | Public TS contract for a standalone package should be **one** aligned interface. |
+
+### Recommended follow-ups (after perf branch is stable)
+
+1. **API cleanup milestone:** Hoist ScrollView-equivalent callbacks to `CollectionView` top-level; keep `scrollViewProps` only for pass-through props that are not events (or document deprecation).
+2. **Demo cleanup:** Remove `containerH` / `onContentSizeChange` wiring from horizontal demos in `LayoutsTab` so demos only use flex + `CollectionView` internal behavior.
+3. **Package export:** Re-export `CollectionView` from `src/index.ts` when React hoisting is guaranteed; update Metro/tsconfig and example imports accordingly.
+4. **Next perf work per this doc:** **Opt 3** (transform positioning) or **Opt 6** (range-stability skip), then **Opt 4+7** (recycling + incremental render), then **Opt 5** if spatial layouts remain hot.

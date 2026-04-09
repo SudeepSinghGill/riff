@@ -1882,7 +1882,7 @@ export function HorizontalListDemo() {
         </View>
       </ScrollView>
 
-      {/* List background + content-determined height container */}
+      {/* Horizontal mode now auto-sizes cross-axis height internally. */}
       <View style={HS.listBackground}>
         <CollectionView
           handle={cvRef}
@@ -1910,7 +1910,7 @@ const HS = StyleSheet.create({
   ctrlBar:            { backgroundColor: '#111', flexGrow: 0 },
   ctrlBarContent:     { flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
 
-  listBackground:     { height: 260, backgroundColor: '#0f1623', marginHorizontal: 0,
+  listBackground:     { backgroundColor: '#0f1623', marginHorizontal: 0,
                         borderRadius: 0, overflow: 'hidden' },
 
   // Section header — full cross-axis height via flex:1, narrow 20px primary-axis strip

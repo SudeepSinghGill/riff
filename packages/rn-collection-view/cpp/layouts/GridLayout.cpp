@@ -428,7 +428,7 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
       primarySizes[i] = (existing && existing->frame.width > 0)
           ? existing->frame.width
           : (estimatedPrimary > 0 ? estimatedPrimary : 200.0);
-      crossSizes[i] = (existing && existing->frame.height > 0)
+      crossSizes[i] = (existing && existing->frame.height > 0 && existing->sizingState == SizingState::Measured)
           ? existing->frame.height
           : itemCrossSize;
     } else {
@@ -779,7 +779,7 @@ bool GridLayout::applyMeasurements(
       double globalMaxH = 0.0;
       auto allNow = cache.getAll();
       for (const auto& attr : allNow) {
-        if (!attr.isDecoration && !attr.isSupplementary && attr.frame.height > 0) {
+        if (!attr.isDecoration && !attr.isSupplementary && attr.frame.height > 0 && attr.sizingState == SizingState::Measured) {
           globalMaxH = std::max(globalMaxH, attr.frame.height);
         }
       }

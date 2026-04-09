@@ -20,8 +20,9 @@ const config = {
   watchFolders: [libraryRoot],
   resolver: {
     extraNodeModules: {
-      react:          path.resolve(__dirname, 'node_modules/react'),
-      'react-native': path.resolve(__dirname, 'node_modules/react-native'),
+      react:            path.resolve(__dirname, 'node_modules/react'),
+      'react-native':   path.resolve(__dirname, 'node_modules/react-native'),
+      '@babel/runtime': path.resolve(__dirname, 'node_modules/@babel/runtime'),
     },
     resolveRequest: (context, moduleName, platform) => {
       if (moduleName.startsWith('@riff/')) {

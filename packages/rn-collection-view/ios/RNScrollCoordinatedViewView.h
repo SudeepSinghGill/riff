@@ -24,6 +24,10 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @interface RNScrollCoordinatedViewView : RCTViewComponentView
 
+/// Set by the container so this view can read positions directly from
+/// the LayoutCache in updateLayoutMetrics: (bypasses async state update).
+@property (nonatomic) int32_t layoutCacheId;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -3,6 +3,7 @@
 // Our custom ShadowNode and ComponentDescriptor (NOT the codegen-generated ones).
 #import "CollectionViewContainerComponentDescriptor.h"
 #import "CollectionViewContainerShadowNode.h"
+#import "RNScrollCoordinatedViewView.h"
 
 // Forward-declare registry helpers to avoid pulling in CollectionViewModule's heavy deps.
 #include <memory>
@@ -29,19 +30,11 @@ using namespace facebook::react;
 
 // Cross-platform logging — active only in DEBUG builds; no-op in release.
 #ifndef RNCV_ENABLE_NATIVE_LOGS
-#define RNCV_ENABLE_NATIVE_LOGS 0
+#define RNCV_ENABLE_NATIVE_LOGS 1
 #endif
 
 #if DEBUG && RNCV_ENABLE_NATIVE_LOGS
-static os_log_t rncvLog(void) {
-  static os_log_t log;
-  static dispatch_once_t onceToken;
-  dispatch_once(&onceToken, ^{
-    log = os_log_create("com.rncv", "nativeview");
-  });
-  return log;
-}
-#define RNCV_LOG(fmt, ...) os_log_info(rncvLog(), "[RNCV] " fmt, ##__VA_ARGS__)
+#define RNCV_LOG(fmt, ...) NSLog(@"[RNCV] " @ fmt, ##__VA_ARGS__)
 #else
 #define RNCV_LOG(fmt, ...) ((void)0)
 #endif
@@ -162,6 +155,13 @@ static os_log_t rncvLog(void) {
   RNCV_LOG("mountChild index=%ld tag=%ld beforeSubviews=%lu",
            (long)index, (long)childComponentView.tag, (unsigned long)_contentView.subviews.count);
   [_contentView insertSubview:childComponentView atIndex:index];
+
+  // Pass layoutCacheId to sticky children so they can read positions directly
+  // from the LayoutCache in updateLayoutMetrics: (bypasses async state update).
+  if ([childComponentView isKindOfClass:[RNScrollCoordinatedViewView class]]) {
+    ((RNScrollCoordinatedViewView *)childComponentView).layoutCacheId = _layoutCacheId;
+  }
+
   RNCV_LOG("mountChild index=%ld tag=%ld afterSubviews=%lu",
            (long)index, (long)childComponentView.tag, (unsigned long)_contentView.subviews.count);
 }
@@ -286,6 +286,11 @@ static os_log_t rncvLog(void) {
     }
   }
 
+  // Apply positions immediately — don't wait for layoutSubviews.
+  // Since updateLayoutMetrics: on children now preserves their OLD positions,
+  // we must correct them synchronously here so data mutations (deletion)
+  // don't show stale footer/header positions for even one frame.
+  [self applyPositionsFromState:@"updateState"];
   [self setNeedsLayout];
 }
 

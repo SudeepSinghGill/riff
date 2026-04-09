@@ -117,6 +117,19 @@ std::vector<double> LayoutCache::getItemHeights(int section, int count) const {
   return heights;
 }
 
+std::vector<double> LayoutCache::getItemHeightsByKeys(const std::vector<std::string>& keys) const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  const int count = static_cast<int>(keys.size());
+  std::vector<double> heights(count, 0.0);
+  for (int i = 0; i < count; ++i) {
+    auto it = _map.find(keys[i]);
+    if (it != _map.end()) {
+      heights[i] = it->second.frame.height;
+    }
+  }
+  return heights;
+}
+
 // ─── Aggregate queries ────────────────────────────────────────────────────────
 
 Size LayoutCache::getTotalContentSize() const {
@@ -527,6 +540,27 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
         int section = count >= 1 ? static_cast<int>(args[0].getNumber()) : 0;
         int itemCount = count >= 2 ? static_cast<int>(args[1].getNumber()) : 0;
         auto heights = getItemHeights(section, itemCount);
+        auto arr = Array(rt, heights.size());
+        for (size_t i = 0; i < heights.size(); ++i) {
+          arr.setValueAtIndex(rt, i, Value(heights[i]));
+        }
+        return Value(rt, arr);
+      }));
+
+  // getItemHeightsByKeys(keys: string[]) → number[]
+  target.setProperty(rt, "getItemHeightsByKeys",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "getItemHeightsByKeys"), 1,
+      [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count < 1 || !args[0].isObject()) return Value(rt, Array(rt, 0));
+        auto keysArr = args[0].getObject(rt).asArray(rt);
+        size_t len = keysArr.size(rt);
+        std::vector<std::string> keys;
+        keys.reserve(len);
+        for (size_t i = 0; i < len; ++i) {
+          keys.push_back(keysArr.getValueAtIndex(rt, i).getString(rt).utf8(rt));
+        }
+        auto heights = getItemHeightsByKeys(keys);
         auto arr = Array(rt, heights.size());
         for (size_t i = 0; i < heights.size(); ++i) {
           arr.setValueAtIndex(rt, i, Value(heights[i]));

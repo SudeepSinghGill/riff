@@ -49,6 +49,30 @@ using namespace facebook::react;
   return self;
 }
 
+// ── Fabric layout metrics ──────────────────────────────────────────────────────
+// Prevent Fabric's default updateLayoutMetrics: from overwriting the cache-based
+// position set by the container's applyPositionsFromState.  Yoga computes a
+// sequential flex-column layout (wrong for Collection View items).  We only
+// forward SIZE changes so Yoga-measured dimensions are applied; POSITION is
+// preserved so applyPositionsFromState remains the single source of truth.
+//
+// IMPORTANT: We use self.frame.origin (the ACTUAL current native position),
+// NOT oldLayoutMetrics.frame.origin (which contains the PREVIOUS Yoga position).
+// After applyPositionsFromState sets the correct cache-based position,
+// self.frame.origin holds that correct value.  oldLayoutMetrics would just
+// hold the prior Yoga-computed origin and re-applying it defeats the purpose.
+
+- (void)updateLayoutMetrics:(const facebook::react::LayoutMetrics &)layoutMetrics
+           oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
+{
+  auto adjusted = layoutMetrics;
+  // Preserve the current native position — it was set by applyPositionsFromState
+  // and is the source of truth.  Only let Yoga-measured SIZE through.
+  adjusted.frame.origin.x = self.frame.origin.x;
+  adjusted.frame.origin.y = self.frame.origin.y;
+  [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldLayoutMetrics];
+}
+
 // ── Layout ─────────────────────────────────────────────────────────────────────
 
 - (void)layoutSubviews

@@ -120,6 +120,12 @@ public:
    * Single-call alternative to N getAttributes() calls.
    */
   std::vector<double> getItemHeights(int section, int count) const;
+  
+  /**
+   * Returns heights for specifically named keys.
+   * Items without cache entries get height 0.
+   */
+  std::vector<double> getItemHeightsByKeys(const std::vector<std::string>& keys) const;
 
   /**
    * Y offset of each section's first item.

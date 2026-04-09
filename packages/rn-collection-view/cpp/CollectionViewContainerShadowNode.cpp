@@ -11,13 +11,13 @@
 // Cross-platform logging for ShadowNode (runs on background thread).
 // Active only in DEBUG builds; no-op in release.
 #ifndef RNCV_ENABLE_NATIVE_LOGS
-#define RNCV_ENABLE_NATIVE_LOGS 0
+#define RNCV_ENABLE_NATIVE_LOGS 1
 #endif
 
 #if DEBUG && RNCV_ENABLE_NATIVE_LOGS
   #ifdef __APPLE__
-    #include <os/log.h>
-    #define RNCV_SN_LOG(fmt, ...) os_log_info(os_log_create("com.rncv", "shadownode"), "[RNCV-SN] " fmt, ##__VA_ARGS__)
+    #include <cstdio>
+    #define RNCV_SN_LOG(fmt, ...) do { fprintf(stderr, "[RNCV-SN] " fmt "\n", ##__VA_ARGS__); fflush(stderr); } while(0)
   #else
     #include <android/log.h>
     #define RNCV_SN_LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "RNCV-SN", fmt, ##__VA_ARGS__)
@@ -431,7 +431,7 @@ void CollectionViewContainerShadowNode::updateStateIfNeeded() {
     changed = true;
   }
 
-  if (state.positions != correctedPositions_) {
+  if (state.positions != correctedPositions_ || state.childTags != childTags_) {
     // Offset correction is now handled entirely by JS + LayoutCache
     // (snapshotAnchor → computeCorrection → consumePendingCorrection).
     // The ShadowNode just forwards positions; the native view reads the

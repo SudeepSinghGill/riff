@@ -158,13 +158,14 @@ public:
     Range  visible,
     double mountedWindowSize,
     double vpHeight,
-    double stride
+    double stride,
+    int    cols = 1
   ) {
     if (stride <= 0 || vpHeight <= 0) return render;
     // mountedWindowSize == Infinity check: if > 1e9, treat as unlimited
     if (mountedWindowSize > 1e9) return render;
 
-    int budget = static_cast<int>(std::ceil((mountedWindowSize * vpHeight) / stride));
+    int budget = static_cast<int>(std::ceil((mountedWindowSize * vpHeight * cols) / stride));
     int size   = render.last - render.first + 1;
     if (size <= budget) return render;
 

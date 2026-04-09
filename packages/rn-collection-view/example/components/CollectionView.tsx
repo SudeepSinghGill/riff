@@ -82,6 +82,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     getAttributesInRect(rect: { x: number; y: number; width: number; height: number }): any[];
     removeAttributes(key: string): void;
     getItemHeights(section: number, count: number): number[];
+    getItemHeightsByKeys(keys: string[]): number[];
     getTotalContentSize(): { width: number; height: number };
     version(): number;
     /** MVC: enable/disable correction. Drives ShadowNode snapshotAnchorIfNeeded() gating. */
@@ -152,6 +153,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
       stride: number, measureAheadMult: number,
       mountedWindowSize: number, itemCount: number,
       sectionInfoPacked: number[] | null,
+      budgetCols?: number,
     ): {
       renderFirst: number; renderLast: number;
       visibleFirst: number; visibleLast: number;
@@ -355,6 +357,12 @@ export interface RiffProps<T = unknown> {
    * The layout itself re-computes automatically — this callback is for consumer side effects only.
    */
   onContainerSizeChange?: (width: number, height: number) => void;
+  /**
+   * ScrollView-compatible content size callback.
+   * Called when the native scroll content size changes.
+   * Supports legacy/top-level usage; equivalent to scrollViewProps.onContentSizeChange.
+   */
+  onContentSizeChange?: (width: number, height: number) => void;
 
   /**
    * P5.3 / FlashList-compatible blank area callback.
@@ -888,6 +896,7 @@ export function Riff<T = unknown>({
   style,
   showHUD = false,
   onContainerSizeChange,
+  onContentSizeChange,
   initialWidth,
   initialHeight,
   maintainVisibleContentPosition = false,
@@ -977,6 +986,8 @@ export function Riff<T = unknown>({
   const [viewportWidth,  setViewportWidth]  = useState(seedW);
   const [viewportHeight, setViewportHeight] = useState(seedH);
   const [contentHeight,  setContentHeight]  = useState(0);
+  const [internalHorizontalHeight, setInternalHorizontalHeight] = useState<number | null>(null);
+  const internalHorizontalHeightRef = useRef<number | null>(null);
 
   // null = not yet initialized. onContainerLayout computes an eager initial
   // range from stride estimates so the first screenful mounts immediately.
@@ -1080,9 +1091,9 @@ export function Riff<T = unknown>({
     const sec = propSections?.[section];
     const item = sec?.data[index];
     const key = (sec && propKeyExtractor && item !== undefined)
-      ? `${sec.key}:${propKeyExtractor(item, index)}`
-      : `item-${section}-${index}`;
-    const attr = nativeLayoutCache.getAttributes(key);
+      ? propKeyExtractor(item, index)
+      : (effectiveLayout.type === 'list' ? `item-${section}-${index}` : `${effectiveLayout.type}-${section}-${index}`);
+    const attr = nativeMod.layoutCache.getAttributes(key);
     return attr ? attr.frame.height : undefined;
   };
 
@@ -1202,6 +1213,11 @@ export function Riff<T = unknown>({
   // Budget stride for applyBudget: estimated stride for budget calculation.
   const budgetStride = stride;
 
+  // Resolve grid columns to scale the application budget natively
+  const budgetCols = typeof (effectiveLayout as any).delegate?.columns === 'function'
+    ? (effectiveLayout as any).delegate.columns(viewportWidth)
+    : ((effectiveLayout as any).delegate?.columns ?? 1);
+
   // ── processScroll inputs ─────────────────────────────────────────────────────
   // Packed section info for processScroll: [start0, headerOffset0, dataCount0, ...]
   // null for single-section (C++ uses attr.index directly as flat index).
@@ -1254,8 +1270,8 @@ export function Riff<T = unknown>({
       effectiveMountedWindowSize,
       itemCount,
       sectionInfoPacked,
+      budgetCols,
     );
-
     rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
 
     if (layoutResult.renderLast < layoutResult.renderFirst) {
@@ -1539,6 +1555,7 @@ export function Riff<T = unknown>({
         effectiveMountedWindowSize,
         itemCount,
         sectionInfoPacked,                       // null for single-section
+        budgetCols,
       );
 
       // Cache version — check after processScroll so we read the same version
@@ -1615,12 +1632,28 @@ export function Riff<T = unknown>({
       // Fabric event, so we detect size changes from the onScroll payload instead.
       // Native fires onScroll (with updated contentSize) from updateState: when
       // content size changes, even without user scrolling.
-      if (scrollViewProps?.onContentSizeChange) {
-        const cs = e.nativeEvent.contentSize;
-        const prev = prevContentSizeRef.current;
+      const cs = e.nativeEvent.contentSize;
+      const prev = prevContentSizeRef.current;
+      if (isHorizontal && cs) {
+        const vpCross = layoutMeasurement.height || viewportHeight;
+        const nextAuto = Math.ceil(Math.max(0, cs.height));
+        const looksLikeBootstrapViewportValue = Math.abs(nextAuto - vpCross) <= 1;
+        const hasStableAuto = internalHorizontalHeightRef.current != null;
+        // Avoid latching the initial full-viewport placeholder (creates a feedback loop).
+        // Accept values that differ from viewport, or any value after we've established a stable baseline.
+        if (nextAuto > 0 && (!looksLikeBootstrapViewportValue || hasStableAuto)) {
+          if (internalHorizontalHeightRef.current !== nextAuto) {
+            internalHorizontalHeightRef.current = nextAuto;
+            setInternalHorizontalHeight(nextAuto);
+          }
+        }
+      }
+
+      const contentSizeChangeCb = onContentSizeChange ?? scrollViewProps?.onContentSizeChange;
+      if (contentSizeChangeCb) {
         if (Math.abs(cs.width - prev.width) > 0.5 || Math.abs(cs.height - prev.height) > 0.5) {
           prevContentSizeRef.current = { width: cs.width, height: cs.height };
-          scrollViewProps.onContentSizeChange(cs.width, cs.height);
+          contentSizeChangeCb(cs.width, cs.height);
         }
       }
 
@@ -2228,9 +2261,15 @@ export function Riff<T = unknown>({
 
   const renderRangeStart = effFirst;
   const renderRangeEnd   = effLast;
+  const isHorizontalLayout = effectiveLayout.horizontal ?? false;
+  const fallbackHorizontalHeight = Math.max(1, Math.ceil(effectiveItemHeight + sectionInsetTop + sectionInsetBottom));
+  const horizontalAutoHeight = internalHorizontalHeight ?? fallbackHorizontalHeight;
+  const rootStyle = isHorizontalLayout
+    ? [{ height: horizontalAutoHeight }, style]
+    : [{ flex: 1 }, style];
 
   return (
-    <View style={[{ flex: 1 }, style]} onLayout={onContainerLayout}>
+    <View style={rootStyle} onLayout={onContainerLayout}>
       <RNCollectionViewContainer
         style={{ flex: 1 }}
         layoutCacheId={layoutCacheId}
