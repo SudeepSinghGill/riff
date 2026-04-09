@@ -73,6 +73,30 @@ void LayoutCache::clear() {
   ++_version;
 }
 
+// ── Height stash ──────────────────────────────────────────────────────────────
+
+void LayoutCache::stashHeights() {
+  // No mutex needed: stash is only accessed from the JS thread, sequentially
+  // with clear() and computeSections(). Never accessed from native threads.
+  std::lock_guard<std::mutex> lock(_mutex);
+  _heightStash.clear();
+  for (const auto& kv : _map) {
+    if (kv.second.sizingState == SizingState::Measured) {
+      const double sz = _horizontal ? kv.second.frame.width : kv.second.frame.height;
+      _heightStash[kv.first] = sz;
+    }
+  }
+}
+
+double LayoutCache::getStashedHeight(const std::string& key) const {
+  auto it = _heightStash.find(key);
+  return it != _heightStash.end() ? it->second : -1.0;
+}
+
+void LayoutCache::clearStash() {
+  _heightStash.clear();
+}
+
 // ─── Bulk access ─────────────────────────────────────────────────────────────
 
 std::vector<LayoutAttributes> LayoutCache::getAll() const {
@@ -599,6 +623,26 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
       PropNameID::forAscii(rt, "clear"), 0,
       [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
         clear();
+        return Value::undefined();
+      }));
+
+  // stashHeights() → undefined
+  // Call BEFORE clear() to preserve Yoga-measured heights across fingerprint clears.
+  target.setProperty(rt, "stashHeights",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "stashHeights"), 0,
+      [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
+        stashHeights();
+        return Value::undefined();
+      }));
+
+  // clearStash() → undefined
+  // Call AFTER computeSections() to release stash memory.
+  target.setProperty(rt, "clearStash",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "clearStash"), 0,
+      [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
+        clearStash();
         return Value::undefined();
       }));
 

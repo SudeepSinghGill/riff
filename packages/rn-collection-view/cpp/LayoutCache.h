@@ -102,6 +102,19 @@ public:
   void removeAttributes(const std::string& key);
   void clear();
 
+  // ── Height stash (survive fingerprint-clear during insert/delete) ──────────
+  // Usage: stashHeights() → clear() → computeSections() → clearStash()
+  // The stash lets measured Yoga heights survive the cache.clear() that happens
+  // on insert/delete (itemCount fingerprint change). computeSectionFromCache
+  // falls through to the stash when the main cache has no entry.
+
+  /** Save primary-axis size for every Measured entry. O(cache_size). */
+  void stashHeights();
+  /** Return stashed height for key, or -1 if not found. */
+  double getStashedHeight(const std::string& key) const;
+  /** Release stash memory after computeSections() is done. */
+  void clearStash();
+
   // ── Bulk access ───────────────────────────────────────────────────────────
 
   /** Returns all attributes in insertion order (matches layout order). */
@@ -219,6 +232,10 @@ private:
   double _prevScrollPrimary      = 0.0;
   double _prevScrollTimestamp     = 0.0;
   double _currentVelocity         = 0.0;  // px/ms, signed
+
+  // Height stash — survives fingerprint-triggered clear (not guarded by _mutex;
+  // only accessed from the JS thread synchronously around stash/clear/compute).
+  std::unordered_map<std::string, double> _heightStash;
 
   // MVC anchor snapshot state (guarded by _mutex)
   std::string _anchorKey;

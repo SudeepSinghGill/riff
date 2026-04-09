@@ -36,6 +36,10 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     getTotalContentSize(): Size;
     clear(): void;
     setHorizontal(horizontal: boolean): void;
+    /** Save primary-axis size for every Measured entry. Call before clear(). */
+    stashHeights(): void;
+    /** Release stash memory. Call after computeSections(). */
+    clearStash(): void;
   };
   listLayout: {
     computeListLayout(params: Record<string, unknown>): void;
@@ -168,11 +172,17 @@ class ListLayout implements CollectionViewLayout {
     // Include both dimensions in fingerprint: horizontal list invalidates on height change, vertical on width.
     const fp = `${context.containerWidth}x${context.containerHeight}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight},${s.emitSeparators},${s.emitSectionBackground},${s.sectionBackgroundInsetTop},${s.sectionBackgroundInsetBottom},${s.sectionBackgroundInsetLeft},${s.sectionBackgroundInsetRight}`).join(';')}`;
     if (fp !== this._lastFingerprint) {
+      // Stash measured heights before clearing so they survive the orphan cleanup.
+      // computeSectionFromCache falls through to the stash when the main cache
+      // has no entry (i.e. after an insert/delete that changed itemCount).
+      nativeMod.layoutCache.stashHeights();
       nativeMod.layoutCache.clear();
       this._lastFingerprint = fp;
     }
 
     nativeMod.listLayout.computeSections(sectionParams);
+    // Release stash memory now that computeSections has consumed what it needs.
+    nativeMod.layoutCache.clearStash();
 
     // Verification: immediately check if header was stored
     const headerCheck = nativeMod.layoutCache.getAttributes('item-0-header');

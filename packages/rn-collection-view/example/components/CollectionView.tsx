@@ -62,6 +62,8 @@ import RNMeasuredCell from './RNMeasuredCellNativeComponent';
 import RNScrollCoordinatedView from './RNScrollCoordinatedViewNativeComponent';
 import RNCollectionViewContainer from './RNCollectionViewContainerNativeComponent';
 import { RiffSnapshot } from './CollectionSnapshot';
+import { SlotManager } from './SlotManager';
+import type { SlotInfo } from './SlotManager';
 import type { CollectionViewLayout, LayoutContext } from '@riff/types/protocol';
 import type { LayoutAttributes } from '@riff/types/layout';
 import { list as listLayout } from '@riff/layouts/list';
@@ -93,6 +95,10 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     computeCorrection(): number;
     /** MVC: consume and clear pending correction (called by native view). */
     consumePendingCorrection(): number;
+    /** Stash API: save primary-axis size for every Measured entry. Call before clear(). */
+    stashHeights(): void;
+    /** Stash API: release stash memory. Call after computeSections(). */
+    clearStash(): void;
   };
   metrics: {
     startFrameTimer(): void;
@@ -940,7 +946,26 @@ export function Riff<T = unknown>({
   const sectionedKeyExtractorCb = useCallback((item: any, index: number) => {
     if (!propSections) return propKeyExtractor ? propKeyExtractor(item, index) : String(index);
     const fi = item as FlatItem<T>;
-    const k = sectionedKeyExtractor(propSections, propKeyExtractor, fi, index);
+    // For items: read from layoutContextRef.itemKeys — the single source of truth for canonical
+    // keys. This avoids re-invoking propKeyExtractor and keeps the key format consistent with
+    // what C++ LayoutCache stores (same array passed as params.keys in list.ts prepare()).
+    // For headers/footers: use the __h_/__f_ format (not in itemKeys, which covers items only).
+    let k: string;
+    if (fi._kind === 'item') {
+      const ctx = layoutContextRef.current;
+      const precomputed = ctx?.sections[fi.sectionIndex]?.itemKeys?.[fi.itemIndex];
+      if (precomputed !== undefined) {
+        k = precomputed;
+      } else {
+        // Fallback: layoutContext not yet computed (first render) — construct directly.
+        const sk = propSections[fi.sectionIndex]?.key ?? String(fi.sectionIndex);
+        k = propKeyExtractor
+          ? `${sk}:${propKeyExtractor(fi.item, fi.itemIndex)}`
+          : String(index);
+      }
+    } else {
+      k = sectionedKeyExtractor(propSections, propKeyExtractor, fi, index);
+    }
     if (fi._kind === 'header' || fi._kind === 'footer' || (fi._kind === 'item' && fi.itemIndex < 2)) {
       rncvLog('RNCV-JS-KEY', {
         op: 'sectionedKeyExtractorCb',
@@ -1003,6 +1028,39 @@ export function Riff<T = unknown>({
   const prevScrollYRef   = useRef(0);
   const prevScrollXRef   = useRef(0);  // for horizontal layouts
   const prevContentSizeRef = useRef({ width: 0, height: 0 }); // for onContentSizeChange synthesis
+
+  // Ref kept in sync with layoutContext each render so that sectionedKeyExtractorCb
+  // (defined before layoutContext via useCallback) can read pre-computed itemKeys
+  // without independently re-invoking propKeyExtractor.
+  const layoutContextRef = useRef<LayoutContext | null>(null);
+
+  // Opt 4: SlotManager for cell recycling. Stable slot keys replace per-item
+  // React keys so the Fiber survives recycling (prop UPDATE, not DELETE+CREATE).
+  const slotManagerRef = useRef<SlotManager<any>>(null as any);
+  if (!slotManagerRef.current) slotManagerRef.current = new SlotManager();
+
+  // Opt 7: element cache for incremental render loop.
+  // Maps slotKey → cached ReactElement. If slot state is unchanged AND no
+  // global rendering dep has changed, we reuse the element reference — React
+  // reconciler sees referential equality and skips diffing the subtree entirely.
+  type ElemCacheEntry = {
+    gen: number; dataKey: string; cacheKey: string;
+    measureOnly: boolean;
+    // item reference — checked by reference equality (like React.memo).
+    // If the consumer produces a new object for a changed item (React-idiomatic),
+    // this misses and the cell re-renders. See COLLECTIONVIEW_INTERNALS.md §
+    // "Consumer mutation contract" for the documented requirement and extraData
+    // escape hatch.
+    item: unknown;
+    element: React.ReactElement;
+  };
+  const elementCacheRef = useRef<Map<string, ElemCacheEntry>>(new Map());
+  // Monotonic counter — bumped whenever a rendering dep changes that requires
+  // all cached elements to be invalidated (extraData, stickyConfig, layout, vpWidth).
+  const renderGenRef = useRef(0);
+  const prevCacheDepsRef = useRef<{
+    extraData: unknown; stickyConfig: unknown; layout: unknown; vpWidth: number;
+  } | null>(null);
 
   // P5.1 — counters for the debug HUD. Plain refs — no state, no re-renders.
   const coldMountCountRef        = useRef(0);
@@ -1092,14 +1150,17 @@ export function Riff<T = unknown>({
   // Reads from LayoutCache (ShadowNode writes Yoga-measured heights there).
   const measuredHeightForItemRef = useRef<(index: number, section: number) => number | undefined>(() => undefined);
   measuredHeightForItemRef.current = (index: number, section: number): number | undefined => {
-    // Use the same identity key that list.ts writes to the cache when keyExtractor is set.
-    // Positional keys (item-S-I) always miss for identity-keyed lists, causing every
-    // prepare() call to fall back to estimates and producing false measurement deltas.
-    const sec = propSections?.[section];
-    const item = sec?.data[index];
-    const key = (sec && propKeyExtractor && item !== undefined)
-      ? propKeyExtractor(item, index)
-      : (effectiveLayout.type === 'list' ? `item-${section}-${index}` : `${effectiveLayout.type}-${section}-${index}`);
+    // Read the canonical key from the single source of truth: layoutContext.sections[s].itemKeys.
+    // This is the same array passed to C++ as params.keys — guaranteed to match what LayoutCache stores.
+    // DO NOT reconstruct the key here (sectionKey prefix + propKeyExtractor call) — that caused a
+    // regression when Opt 4+7 rewrote this callback without knowing about the prefix format.
+    // The closure captures layoutContext from the render scope; by the time prepare() calls this
+    // callback, layoutContext has already been computed (prepare useMemo depends on it).
+    const sectionKeys = layoutContext?.sections[section]?.itemKeys;
+    const key = sectionKeys?.[index]
+      ?? (effectiveLayout.type === 'list'
+        ? `item-${section}-${index}`
+        : `${effectiveLayout.type}-${section}-${index}`);
     const attr = nativeMod.layoutCache.getAttributes(key);
     return attr ? attr.frame.height : undefined;
   };
@@ -1149,6 +1210,9 @@ export function Riff<T = unknown>({
     };
   }, [viewportWidth, viewportHeight, propSections, propKeyExtractor, data.length,
       sectionInsetTop, sectionInsetBottom, sectionInsetLeft, sectionInsetRight]);
+
+  // Keep layoutContextRef in sync so sectionedKeyExtractorCb can read itemKeys.
+  layoutContextRef.current = layoutContext;
 
   // Sync MVC enabled state to LayoutCache so the ShadowNode's snapshotAnchorIfNeeded()
   // can gate on it for size-change mutations (where layoutContext doesn't change and
@@ -1422,9 +1486,27 @@ export function Riff<T = unknown>({
     snapshot: () => new RiffSnapshot(data, keyExtractor),
 
     apply: (snap: RiffSnapshot<T>, animated = true) => {
+      // Build a raw-key → canonical-key map from current sections BEFORE the mutation.
+      // Needed to normalize reloadedKeys (caller-supplied raw keys) to LayoutCache canonical format.
+      // sectionedKeyExtractorCb already produces canonical keys via layoutContextRef.itemKeys,
+      // so diff.removed is already canonical. Only reloadedKeys need this normalization.
+      const rawToCanonical = new Map<string, string>();
+      if (propSections && propKeyExtractor) {
+        const ctx = layoutContextRef.current;
+        for (let si = 0; si < propSections.length; si++) {
+          const s = propSections[si]!;
+          const sectionItemKeys = ctx?.sections[si]?.itemKeys;
+          for (let ii = 0; ii < s.data.length; ii++) {
+            const raw = propKeyExtractor(s.data[ii]!, ii);
+            rawToCanonical.set(raw, sectionItemKeys?.[ii] ?? `${s.key}:${raw}`);
+          }
+        }
+      }
+
       const { data: newData, reloadedKeys } = snap.apply();
 
       // Diff for LayoutAnimation — LayoutCache heights are managed by ShadowNode.
+      // keyExtractor in sectioned mode reads from layoutContextRef.itemKeys (canonical).
       const oldKeys = data.map((item, i) =>
         keyExtractor ? keyExtractor(item, i) : String(i));
       const newKeys = newData.map((item, i) =>
@@ -1432,8 +1514,12 @@ export function Riff<T = unknown>({
       const diff = nativeMod.diffEngine.diff(oldKeys, newKeys);
 
       // Evict removed/reloaded items from LayoutCache so they re-measure.
+      // diff.removed keys are canonical (from keyExtractor = sectionedKeyExtractorCb).
+      // reloadedKeys are caller-supplied raw keys — normalize via rawToCanonical.
       for (const k of diff.removed) nativeLayoutCache.removeAttributes(k);
-      for (const k of reloadedKeys) nativeLayoutCache.removeAttributes(k);
+      for (const k of reloadedKeys) {
+        nativeLayoutCache.removeAttributes(rawToCanonical.get(k) ?? k);
+      }
 
       // LayoutAnimation for position changes (moves, shifts after insert/delete).
       // 350ms spring gives a clearly visible animation on absolute-positioned cells.
@@ -1456,7 +1542,7 @@ export function Riff<T = unknown>({
       for (const k of keys) nativeLayoutCache.removeAttributes(k);
       setLayoutCacheVersion(v => v + 1);
     },
-  }), [data, keyExtractor, onDataChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Debug callbacks ──────────────────────────────────────────────────────────
 
@@ -1776,41 +1862,15 @@ export function Riff<T = unknown>({
   //   When the cell scrolls into the render range it is promoted in-place (just
   //   a style update — no unmount/remount) so positions are already known.
   // measureOnly=false → normal render-range cell (existing behaviour).
-  const renderCell = (item: T, index: number, measureOnly = false) => {
-    const key  = keyExtractor ? keyExtractor(item, index) : String(index);
-
+  // reactKey: when provided (slot mode), overrides the React key derived from
+  // keyExtractor. Stable slot keys let the Fiber survive recycling (Opt 4).
+  const renderCell = (item: T, index: number, measureOnly = false, reactKey?: string) => {
+    const key  = reactKey ?? (keyExtractor ? keyExtractor(item, index) : String(index));
+    // cacheKey: LayoutCache identity. Use the shared computeCacheKey helper so
+    // SlotManager and renderCell always produce the same key for a given index.
+    const cacheKey = computeCacheKey(index);
+    // fiDesc needed for attr lookup, supplementary detection, and sticky config below.
     const fiDesc = isSectioned ? flattenResult?.flatData[index] : null;
-    const sk = fiDesc ? fiDesc.sectionIndex : 0;
-    const ik = fiDesc && fiDesc._kind === 'item' ? fiDesc.itemIndex : index;
-    
-    let cacheKey: string;
-    if (fiDesc?._kind === 'header') {
-      // Use the layout engine's own key for supplementary views — avoids hardcoding "item-" prefix.
-      const suppAttr = effectiveLayout.attributesForSupplementary('header', sk);
-      cacheKey = suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-header`;
-    } else if (fiDesc?._kind === 'footer') {
-      const suppAttr = effectiveLayout.attributesForSupplementary('footer', sk);
-      cacheKey = suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-footer`;
-    } else {
-      // Use stable key from layoutContext when keyExtractor is available.
-      const sectionKeys = layoutContext?.sections[sk]?.itemKeys;
-      // Fallback key must match the C++ layout engine's default key format.
-      // ListLayout uses "item-{s}-{i}"; GridLayout uses "grid-{s}-{i}".
-      const defaultKey = effectiveLayout.type === 'list'
-        ? `item-${sk}-${ik}`
-        : `${effectiveLayout.type}-${sk}-${ik}`;
-      cacheKey = sectionKeys?.[ik] ?? defaultKey;
-    }
-    rncvLog('RNCV-JS-CELL', {
-      op: 'derive-cell-key',
-      index,
-      measureOnly,
-      layoutType: effectiveLayout.type,
-      kind: fiDesc?._kind,
-      sectionIndex: fiDesc?.sectionIndex,
-      itemIndex: (fiDesc as any)?.itemIndex,
-      cacheKey,
-    });
 
     // Render-range cells are Activity=visible. Measure-range cells use
     // Activity=hidden so Fabric computes their Yoga layout without painting.
@@ -1945,7 +2005,46 @@ export function Riff<T = unknown>({
   // In ShadowNode mode, the `cells` array no longer needs to be contiguous.
   // The C++ layer explicitly identifies each child by its `index` prop.
   // We can safely prepend sticky headers and skip them in the main loop!
-  
+
+  // ── Opt 7: render generation — bump when any global rendering dep changes ──
+  // extraData, stickyConfig, effectiveLayout, viewportWidth all affect how cells
+  // are rendered regardless of which slot they're in. When these change, all
+  // cached elements are stale and must be re-created on next render.
+  const _curCacheDeps = { extraData, stickyConfig: stickyConfigMap, layout: effectiveLayout, vpWidth: viewportWidth };
+  if (
+    prevCacheDepsRef.current === null ||
+    _curCacheDeps.extraData    !== prevCacheDepsRef.current.extraData ||
+    _curCacheDeps.stickyConfig !== prevCacheDepsRef.current.stickyConfig ||
+    _curCacheDeps.layout       !== prevCacheDepsRef.current.layout ||
+    _curCacheDeps.vpWidth      !== prevCacheDepsRef.current.vpWidth
+  ) {
+    renderGenRef.current++;
+    prevCacheDepsRef.current = _curCacheDeps;
+  }
+  const renderGen = renderGenRef.current;
+
+  // ── computeCacheKey: LayoutCache identity key for a flat index ─────────────
+  // Extracted from renderCell so SlotManager can pre-compute it in sync().
+  // Must stay in sync with the cacheKey derivation inside renderCell below.
+  const computeCacheKey = (index: number): string => {
+    const fd = isSectioned ? flattenResult?.flatData[index] : null;
+    const sk = fd ? fd.sectionIndex : 0;
+    const ik = fd && fd._kind === 'item' ? fd.itemIndex : index;
+    if (fd?._kind === 'header') {
+      const suppAttr = effectiveLayout.attributesForSupplementary('header', sk);
+      return suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-header`;
+    }
+    if (fd?._kind === 'footer') {
+      const suppAttr = effectiveLayout.attributesForSupplementary('footer', sk);
+      return suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-footer`;
+    }
+    const sectionKeys = layoutContext?.sections[sk]?.itemKeys;
+    const defaultKey = effectiveLayout.type === 'list'
+      ? `item-${sk}-${ik}`
+      : `${effectiveLayout.type}-${sk}-${ik}`;
+    return sectionKeys?.[ik] ?? defaultKey;
+  };
+
   let effFirst = 0;
   let effLast = -1;
 
@@ -2026,50 +2125,87 @@ export function Riff<T = unknown>({
   const scrollContent = (() => {
     if (!viewportWidth && rr !== null) return null;
 
-    let cells: React.ReactElement[];
+    // ── Opt 4 + Opt 7: SlotManager-based cell rendering ─────────────────────
+    //
+    // SlotManager assigns stable slot keys to flat indices. When the render
+    // window shifts, slots are recycled — the Fiber for slot_N survives and
+    // receives prop updates instead of being unmounted and remounted.
+    //
+    // Opt 7 (element cache): if a slot's state (dataKey, cacheKey, measureOnly)
+    // hasn't changed AND no global rendering dep has changed (same renderGen),
+    // we reuse the cached ReactElement reference. React's reconciler sees
+    // referential equality and skips diffing the subtree entirely — O(delta)
+    // render loop instead of O(window_size).
 
-    if (rr === null) {
-      effFirst = 0;
-      effLast = Math.min(initialNumToRender, itemCount) - 1;
-      effLast = Math.min(effLast, data.length - 1);
-      cells = [];
-      for (let i = effFirst; i <= effLast; i++) {
-        if (mountedStickySet?.has(i)) continue;
-        if (!data[i]) continue;
-        cells.push(renderCell(data[i]!, i, false));
+    const smFirst = rr !== null ? rr.first : 0;
+    const smLast  = rr !== null
+      ? Math.min(rr.last, data.length - 1)
+      : Math.min(initialNumToRender - 1, data.length - 1);
+    const hasMR = measureRange.last >= measureRange.first;
+
+    const activeSlots: Map<string, SlotInfo<any>> = slotManagerRef.current.sync(
+      smFirst,
+      smLast,
+      hasMR ? measureRange.first : null,
+      hasMR ? measureRange.last  : null,
+      (i) => keyExtractor ? keyExtractor(data[i], i) : String(i),
+      (i) => { const fd = isSectioned ? (flattenResult?.flatData[i] as any) : null; return fd?._kind ?? 'item'; },
+      computeCacheKey,
+      (i) => data[i],
+      data.length,
+      mountedStickySet,
+    );
+
+    // Build cells array from slots, using element cache for unchanged slots.
+    const cells: React.ReactElement[] = [];
+    let minIdx = data.length;
+    let maxIdx = -1;
+
+    for (const [slotKey, slot] of activeSlots) {
+      // Guard non-pooled slots against OOB indices (data shrink).
+      // Pooled slots always render (Activity=hidden, uses preserved slot.item)
+      // so the Fiber stays alive for the next pool reclaim.
+      if (!slot.isPooled && !data[slot.dataIndex]) continue;
+
+      // Track effFirst / effLast from active (non-pooled) slot indices.
+      if (!slot.isPooled) {
+        if (slot.dataIndex < minIdx) minIdx = slot.dataIndex;
+        if (slot.dataIndex > maxIdx) maxIdx = slot.dataIndex;
       }
-    } else if (measureRange.last < measureRange.first) {
-      effFirst = rr.first;
-      effLast = Math.min(rr.last, data.length - 1);
-      cells = [];
-      for (let i = effFirst; i <= effLast; i++) {
-        if (mountedStickySet?.has(i)) continue;
-        if (!data[i]) continue;
-        cells.push(renderCell(data[i]!, i, false));
+
+      // Opt 7: reuse element if slot state and render gen are unchanged.
+      // item reference check mirrors React.memo semantics — if the consumer
+      // produces a new object for a changed item, this misses and the cell
+      // re-renders. See COLLECTIONVIEW_INTERNALS.md § "Consumer mutation contract".
+      const prev = elementCacheRef.current.get(slotKey);
+      if (
+        prev &&
+        prev.gen         === renderGen &&
+        prev.dataKey     === slot.dataKey &&
+        prev.cacheKey    === slot.cacheKey &&
+        prev.measureOnly === slot.measureOnly &&
+        prev.item        === slot.item
+      ) {
+        cells.push(prev.element);
+        continue;
       }
-    } else {
-      effFirst = Math.min(rr.first, measureRange.first);
-      effLast  = Math.max(rr.last,  measureRange.last);
-      effLast  = Math.min(effLast, data.length - 1);
-      cells = [];
-      for (let i = effFirst; i <= effLast; i++) {
-        if (mountedStickySet?.has(i)) continue;
-        if (!data[i]) continue;
-        const measureOnly = i < rr.first || i > rr.last;
-        cells.push(renderCell(data[i]!, i, measureOnly));
-      }
+
+      // Slot changed — (re-)render and update cache.
+      const el = renderCell(slot.item as T, slot.dataIndex, slot.measureOnly, slotKey);
+      elementCacheRef.current.set(slotKey, {
+        gen: renderGen, dataKey: slot.dataKey, cacheKey: slot.cacheKey,
+        measureOnly: slot.measureOnly, item: slot.item, element: el,
+      });
+      cells.push(el);
     }
-    rncvLog('RNCV-JS-RANGE', {
-      op: 'scrollContent',
-      rr,
-      measureRange,
-      effFirst,
-      effLast,
-      cellsCount: cells.length,
-      stickyCellsCount: (stickyHeaderCells?.length ?? 0) + (stickyFooterCells?.length ?? 0),
-      mountedStickyIndices: mountedStickySet ? Array.from(mountedStickySet.values()) : [],
-      isVariableHeight,
-    });
+
+    // Evict cache entries for slots that no longer exist.
+    for (const k of elementCacheRef.current.keys()) {
+      if (!activeSlots.has(k)) elementCacheRef.current.delete(k);
+    }
+
+    effFirst = minIdx <= maxIdx ? minIdx : smFirst;
+    effLast  = minIdx <= maxIdx ? maxIdx : smLast;
 
     // ── Decoration views ─────────────────────────────────────────────────────
     // Query the layout cache for decoration entries (section backgrounds,

@@ -316,6 +316,8 @@ ref.current?.scrollToOffset({ y: 400 });   // vertical — x defaults to 0
 
 **Every key used to store a LayoutAttributes entry in C++ LayoutCache MUST be the same key used to read it in TS, AND the same key passed as `cacheKey` to the ShadowNode.**
 
+**`propKeyExtractor` is called ONCE per item**, in `layoutContext.sections[s].itemKeys`. All other code reads from that array. See "Key Identity: Single Source of Truth" section below for the full explanation and the `sectionedKeyExtractorCb` refactor that enforces this.
+
 There is exactly ONE key per item. It flows through the entire pipeline:
 
 ```
@@ -647,6 +649,188 @@ Native UIScrollView scrolls
 **Escape hatch**: If profiling later shows event delivery is a bottleneck, suppress onScroll from native when the offset is within the stable band. Single `if` in `scrollViewDidScroll:`, no architectural change.
 
 See `PERF-PLAN.md` → "Scroll Path Ownership" for the full analysis.
+
+---
+
+## Cell Recycling and Incremental Render Loop (Opt 4 + Opt 7)
+
+### Identity model: slotKey vs dataKey vs cacheKey
+
+Three distinct identities flow through the pooling system. Confusing them causes subtle bugs.
+
+| Identity | Value | Created by | Provided by consumer? | Purpose |
+|----------|-------|------------|----------------------|---------|
+| `slotKey` | `"slot_0"`, `"slot_1"`, ... | SlotManager (auto-increments a counter) | No — internal to SlotManager | React `key` prop — stable for the life of the slot. Lets the Fiber survive recycling. |
+| `dataKey` | `keyExtractor(item, index)` or `String(index)` | SlotManager calls `getDataKey(i)` which calls `keyExtractor` | **Yes** — consumer provides `keyExtractor` (optional; defaults to `String(index)`) | Which data item occupies this slot right now. Changes when a slot is recycled. Used to detect when an item's slot has been taken over by a different item. |
+| `cacheKey` | `"item-0-3"`, `"grid-1-7"`, etc. | `computeCacheKey(index)` inside CollectionView — derived from layout engine key format | No — internal, derived from layout engine | LayoutCache lookup key. Passed as `cacheKey` prop to `RNMeasuredCell`. Tells the C++ ShadowNode which position entry to apply. Changes when a slot is recycled. |
+
+**Flow of keyExtractor**: Consumer passes `keyExtractor?: (item: T, index: number) => string` as a prop. CollectionView wraps it as `(i) => keyExtractor ? keyExtractor(data[i], i) : String(i)` and passes this to `SlotManager.sync()`. SlotManager stores the result as `slot.dataKey`. The consumer never sees `slotKey` or `cacheKey` — only `keyExtractor` is their contract.
+
+Before Opt 4: React `key` = `dataKey` (keyExtractor result). Each scroll-out/in triggers Fiber DELETE+CREATE.
+After Opt 4: React `key` = `slotKey`. Scroll-out/in triggers prop UPDATE. Fiber survives.
+
+### Why sticky cells are excluded from the slot pool
+
+Sticky cells are still children of `_contentView` (the scroll content view) — they are NOT outside the scroll view. `RNScrollCoordinatedView` uses KVO on `contentOffset` and applies `CATransform3D` to float the cell at the viewport edge. Being in the scroll content is required for the transform origin to be correct.
+
+They are excluded from SlotManager for practical reasons:
+1. They use a different native component (`RNScrollCoordinatedView` vs `RNMeasuredCell`). A slot cannot be recycled between these two types — different Fiber type forces a remount anyway.
+2. The sticky pool is tiny (≤4 cells at once, managed by `STICKY_BUFFER_BEFORE/AFTER`). Recycling benefit is near-zero.
+3. Sticky cells have their own windowing loop (`activeSlot ± buffer`) above the `scrollContent` IIFE. They are skipped in the main loop via `mountedStickySet`, so they never enter the slot path.
+
+### Element cache (Opt 7) — what it skips and what it must not skip
+
+`elementCacheRef` maps `slotKey → { element, gen, dataKey, cacheKey, measureOnly, item }`.
+
+An element is reused if ALL of:
+- `gen === renderGen` — no global rendering dep changed (`extraData`, `stickyConfigMap`, `effectiveLayout`, `viewportWidth`)
+- `dataKey === prev.dataKey` — same item identity (slot not recycled)
+- `cacheKey === prev.cacheKey` — same LayoutCache position key
+- `measureOnly === prev.measureOnly` — visibility unchanged
+- `item === prev.item` — same item object reference (content unchanged)
+
+**The `item` reference check is critical.** Without it, if a consumer mutates an item's content while keeping the same ID (e.g. updating a counter), the `dataKey` stays the same, the cache says "unchanged", and the update is silently dropped — `MemoizedCellContent` never sees the new props.
+
+### Consumer mutation contract
+
+The element cache uses **reference equality** on the item object (`item === prev.item`). This means:
+
+**Required**: When item content changes, produce a new object:
+```typescript
+// ✅ Correct — new object reference, cache misses, cell re-renders
+setItems(prev => prev.map(it => it.id === 'x' ? { ...it, count: it.count + 1 } : it));
+
+// ❌ Wrong — mutating in place, same reference, cache hits, update dropped
+items[3].count++;
+setItems([...items]);
+```
+
+**Escape hatch for content that can't be tracked by reference**: pass `extraData`. When `extraData` changes, `renderGen` bumps and all elements in the cache are invalidated, forcing a full re-render. Use this for shared state (e.g. selection map, theme) that affects many cells but isn't in the item objects themselves.
+
+**Decision on `itemHasChanged` prop**: **Not added. Reference equality only.**
+
+Rationale:
+- FlatList and FlashList don't have `rowHasChanged` — consumers are already trained to produce new item objects on change. This is idiomatic React.
+- An `itemHasChanged` prop introduces API surface, risk of slow/incorrect equality functions (e.g. deep equals on large objects every scroll frame), and the mental overhead of "is my equality function correct?" for consumers.
+- The `extraData` escape hatch covers the main use case where referential comparison isn't enough: shared state that isn't in item objects (selection maps, theme, global counters).
+- If a consumer mutates in place and forgets `extraData`, they get a silent no-update — the same behavior they'd get from `React.memo` with a broken comparator. This is a known, diagnosable failure mode, not a silent corruption.
+
+**This decision is final.** Do not add `itemHasChanged`.
+
+### renderGen — global element cache invalidation
+
+`renderGen` is a monotonically increasing counter. When it bumps, every element in `elementCacheRef` is stale and must be re-created on the next render. It bumps when any of these change:
+
+| Dep | Why it requires full invalidation |
+|-----|-----------------------------------|
+| `extraData` | Passed to `MemoizedCellContent` — affects all cells' rendered output |
+| `stickyConfigMap` | Determines whether a cell is wrapped in `RNScrollCoordinatedView` vs `RNMeasuredCell` |
+| `effectiveLayout` | Affects `computeCacheKey()` format and cell width computation |
+| `viewportWidth` | Affects cell width prop on all cells |
+
+When `renderGen` is stable, only slots whose individual state changed are re-rendered. This is the O(delta) property.
+
+`renderGen` does NOT bump on scroll — that would defeat the purpose. Scroll changes `renderRange`, which changes which slots are active, but the per-slot check handles that via `dataKey`/`item` comparison.
+
+---
+
+## Key Identity: Single Source of Truth
+
+### The Problem We Solved
+
+When implementing the key pipeline, canonical keys (`sectionKey:rawKey`) were independently constructed in multiple places. Each construction site had to know the prefix format, and when one site drifted from the others — through a rewrite, an optimization pass, or a simple oversight — the mismatch was silent. The layout system kept running, but every LayoutCache lookup in `measuredHeightForItem` returned nothing, so every `prepare()` call fell back to estimated heights for all items.
+
+The specific regression: `measuredHeightForItem` was correctly fixed in commit `089188f` to use `${sec.key}:${propKeyExtractor(item, index)}`. The Opt 4+7 rewrite reverted it to raw `propKeyExtractor(item, index)`. Nobody noticed because there was no single authoritative source the function could just READ from.
+
+### The Rule (enforced since Opt 4+7 fix)
+
+**`propKeyExtractor` is called exactly ONCE per item, in `layoutContext.sections[s].itemKeys` (CollectionView.tsx line ~1148):**
+
+```typescript
+itemKeys: propKeyExtractor
+  ? s.data.map((item, ii) => `${s.key}:${propKeyExtractor!(item, ii)}`)
+  : undefined,
+```
+
+Every other site READS from this pre-computed array. No other site invokes `propKeyExtractor`.
+
+| Site | Pattern | Rule |
+|------|---------|------|
+| `layoutContext.itemKeys` | `${s.key}:${propKeyExtractor(item, ii)}` | **Only construction site** |
+| `computeCacheKey()` | `layoutContext.sections[sk].itemKeys[ik]` | Read (model for all other sites) |
+| `measuredHeightForItem` | `layoutContext?.sections[section]?.itemKeys[index]` | Read (was broken, now fixed) |
+| `sectionedKeyExtractorCb` | `layoutContextRef.current?.sections[si]?.itemKeys[ii]` | Read via ref (was duplicating construction) |
+| `apply()` reloadedKeys | map rawKey → canonical via layoutContextRef.current | Normalize caller-supplied keys |
+| C++ `computeSectionFromCache` | receives keys[] from `list.ts params.keys` | Pass-through, no construction |
+
+**Why `sectionedKeyExtractorCb` uses a ref**: It's a `useCallback` defined before `layoutContext` is computed. A `layoutContextRef` is kept in sync with `layoutContext` each render (assigned immediately after the `layoutContext` useMemo). The ref pattern lets the callback read the latest `itemKeys` without being in the `useCallback` dependency array.
+
+**Verification rule**: After any significant refactor, grep for `propKeyExtractor` — it should appear only at the prop destructure and at the single `itemKeys` construction site. Any other call site is a violation.
+
+### Key Format Reference
+
+| Context | Format | Example |
+|---------|--------|---------|
+| Consumer's `keyExtractor` return value | Raw, consumer-defined | `"item-42"`, `"abc123"` |
+| `layoutContext.itemKeys[i]` (sectioned) | `"${sectionKey}:${raw}"` | `"s0:item-42"` |
+| `layoutContext.itemKeys[i]` (flat) | `undefined` (no itemKeys; positional keys used) | — |
+| LayoutCache item entry | Same as itemKeys when provided; else `"${type}-${section}-${index}"` | `"s0:item-42"` or `"item-0-3"` |
+| LayoutCache header/footer | `"item-${section}-header"` / `"item-${section}-footer"` | `"item-0-header"` |
+
+---
+
+## Height Stash API (survive fingerprint-triggered cache clear)
+
+### The Problem
+
+The list layout fingerprint includes `itemCount` per section. Any insert/delete → itemCount changes → fingerprint mismatch → `layoutCache.clear()`. This wipes all Yoga-measured heights. On the next `prepare()`, `computeSectionFromCache` falls back to `p.itemHeight` (the estimated height, e.g. 56px) for all items.
+
+The MVC correction reads: `computeCorrection() = newAnchorY − snapshotAnchorY`. If the anchor was at Yoga-measured Y=4500 but after the clear it's placed at estimate-based Y=3200, the correction is −1300px — the user's view jumps 1300px upward. Same problem affects `scrollToItem` and `contentSize`.
+
+### Why we can't just remove itemCount from the fingerprint
+
+1. **Orphan item entries** — deleted items remain in the spatial index at stale positions. `processScroll` has no clamping on flat indices from spatial queries — orphans corrupt the render window range.
+2. **Orphan separator entries** — after section shrinks, old `separator-0-22` etc. remain at stale Y positions that now overlap with S1's content.
+3. **Index-based key collision** — `item-0-5` refers to a different data item after insert at 0. Without clear, `computeSections` reads the OLD item's measured height for the NEW item.
+4. **apply() key mismatch** — without the clear, stale orphan entries accumulate (the `removeAttributes` calls in `apply()` were previously dead code due to key format mismatch).
+
+### The Solution: Stash → Clear → Compute → ClearStash
+
+Measured heights survive the clear via a temporary stash. The clear still happens (orphan cleanup), but heights are preserved.
+
+**C++ API (LayoutCache):**
+```cpp
+void stashHeights();          // save {key → primary-axis size} for all Measured entries
+double getStashedHeight(const std::string& key) const;  // returns -1 if not found
+void clearStash();            // release stash memory
+```
+
+**JS call sequence (list.ts prepare()):**
+```javascript
+if (fp !== this._lastFingerprint) {
+  nativeMod.layoutCache.stashHeights();  // save before clear
+  nativeMod.layoutCache.clear();         // clean orphans
+  this._lastFingerprint = fp;
+}
+nativeMod.listLayout.computeSections(sectionParams);
+nativeMod.layoutCache.clearStash();      // release after compute
+```
+
+**C++ lookup sequence (ListLayout::computeSectionFromCache):**
+```cpp
+auto existing = _cache->getAttributes(key);
+double sz;
+if (existing) {
+    sz = H ? existing->frame.width : existing->frame.height;
+} else {
+    double stashed = _cache->getStashedHeight(key);  // ← new fallback
+    sz = (stashed > 0.0) ? stashed : p.itemHeight;
+}
+```
+
+**Thread safety note**: The stash is only accessed from the JS thread, synchronously across `stashHeights() → clear() → computeSections() → clearStash()`. No mutex needed for the stash itself.
+
+**Rotation / container-size change**: These also change the fingerprint (width/height included). The stash correctly preserves the measured heights from before the reflow. `computeSections` will use the stashed heights as starting positions and Yoga will re-measure cells that changed size.
 
 ---
 
