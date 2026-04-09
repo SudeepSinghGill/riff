@@ -866,13 +866,19 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
   for (int i = 0; i < p.itemCount; ++i) {
     const std::string key = itemKey(p, i, prefix);
     auto existing = _cache->getAttributes(key);
-    // Primary-axis size: cached (Measured) → stashed (survived fingerprint clear) → estimate.
+    // Primary-axis size: cached → stashed → JS per-item heights → scalar estimate.
     double sz;
     if (existing) {
       sz = H ? existing->frame.width : existing->frame.height;
     } else {
       const double stashed = _cache->getStashedHeight(key);
-      sz = (stashed > 0.0) ? stashed : p.itemHeight;
+      if (stashed > 0.0) {
+        sz = stashed;
+      } else if (!p.itemHeights.empty() && i < static_cast<int>(p.itemHeights.size())) {
+        sz = p.itemHeights[i];
+      } else {
+        sz = p.itemHeight;
+      }
     }
     // Cross-axis size: preserve cached height for horizontal, use crossContent for vertical.
     const double crossSz = H

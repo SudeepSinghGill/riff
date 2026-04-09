@@ -156,7 +156,13 @@ export class SlotManager<T> {
       if (pool.length > 0) {
         const slotKey = pool.pop()!;
         const slot = this.activeSlots.get(slotKey)!;
-        this.dataKeyToSlot.delete(slot.dataKey); // unlink old data key
+        // Guard: only delete the old dataKey mapping if it still points to THIS slot.
+        // It may have been re-assigned to a different active slot earlier in this Phase 3
+        // loop (e.g. insert→delete sequence where the same dataKey was recycled mid-loop).
+        // Deleting it unconditionally would corrupt the map and cause duplicate renders.
+        if (this.dataKeyToSlot.get(slot.dataKey) === slotKey) {
+          this.dataKeyToSlot.delete(slot.dataKey);
+        }
         slot.dataKey   = dataKey;
         slot.dataIndex = index;
         slot.cacheKey  = getCacheKey(index);
