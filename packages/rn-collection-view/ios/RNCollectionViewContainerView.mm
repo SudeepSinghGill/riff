@@ -307,7 +307,8 @@ using namespace facebook::react;
   {
     auto cache = facebook::react::layoutCacheForId(_layoutCacheId);
     if (cache) {
-      cache->setScrollOffset(scrollView.contentOffset.x, scrollView.contentOffset.y);
+      cache->setScrollOffset(scrollView.contentOffset.x, scrollView.contentOffset.y,
+                             CACurrentMediaTime() * 1000.0);
     }
   }
 
@@ -435,7 +436,7 @@ using namespace facebook::react;
     _applyingCorrection = NO;
     auto cache = facebook::react::layoutCacheForId(_layoutCacheId);
     if (cache) {
-      cache->setScrollOffset(offset.x, offset.y);
+      cache->setScrollOffset(offset.x, offset.y, CACurrentMediaTime() * 1000.0);
     }
     _pendingMVCCorrection = 0;
 

@@ -418,40 +418,40 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           return Value(rt, result);
         }));
 
-    // processScroll(scrollPrimary, vpPrimary, vpCross, isHorizontal, renderMult,
-    //              velocity, stride, measureAheadMult, mountedWindowSize,
-    //              itemCount, sectionInfoPacked?)
+    // processScroll(vpPrimary, vpCross, isHorizontal, renderMult,
+    //              stride, measureAheadMult, mountedWindowSize,
+    //              itemCount, sectionInfoPacked?, budgetCols?)
     //   → { renderFirst, renderLast, visibleFirst, visibleLast,
     //       measureFirst, measureLast, cacheVersion }
     //
-    // Batches 4-6 individual JSI calls into one:
-    //   version() + 2×attributesForElements + applyBudget + computeMeasureRange
-    // The two spatial queries run entirely in C++ — LayoutAttributes are never
-    // marshalled to JS. Result is 7 numbers, not ~300 JSI property writes.
+    // Scroll offset and velocity are read directly from LayoutCache — native
+    // scrollViewDidScroll: writes them on the UI thread via setScrollOffset().
+    // JS does NOT pass scroll position or velocity.
     //
-    // sectionInfoPacked (arg 10): JS Array [start0, headerOffset0, dataCount0, ...]
+    // Opt 6: Early return when cacheVersion is unchanged and scroll offset
+    // is within the stable band (±¼ viewport) — skips spatial queries entirely.
+    //
+    // sectionInfoPacked (arg 8): JS Array [start0, headerOffset0, dataCount0, ...]
     //   one triple per section. Omit / pass null for single-section lists.
     obj.setProperty(rt, "processScroll",
       Function::createFromHostFunction(rt,
-        PropNameID::forAscii(rt, "processScroll"), 11,
+        PropNameID::forAscii(rt, "processScroll"), 10,
         [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
-          double scrollPrimary    = count > 0 && args[0].isNumber() ? args[0].getNumber() : 0.0;
-          double vpPrimary        = count > 1 && args[1].isNumber() ? args[1].getNumber() : 0.0;
-          double vpCross          = count > 2 && args[2].isNumber() ? args[2].getNumber() : 0.0;
-          bool   isHoriz          = count > 3 && args[3].isBool()   ? args[3].getBool()   : false;
-          double renderMult       = count > 4 && args[4].isNumber() ? args[4].getNumber() : 1.0;
-          double velocity         = count > 5 && args[5].isNumber() ? args[5].getNumber() : 0.0;
-          double stride           = count > 6 && args[6].isNumber() ? args[6].getNumber() : 0.0;
-          double measureAheadMult = count > 7 && args[7].isNumber() ? args[7].getNumber() : 0.0;
-          double mountedWindowSz  = count > 8 && args[8].isNumber() ? args[8].getNumber() : 1e10;
-          int    itemCount        = count > 9 && args[9].isNumber()  ? static_cast<int>(args[9].getNumber()) : 0;
-          int    budgetCols       = count > 11 && args[11].isNumber() ? static_cast<int>(args[11].getNumber()) : 1;
+          double vpPrimary        = count > 0 && args[0].isNumber() ? args[0].getNumber() : 0.0;
+          double vpCross          = count > 1 && args[1].isNumber() ? args[1].getNumber() : 0.0;
+          bool   isHoriz          = count > 2 && args[2].isBool()   ? args[2].getBool()   : false;
+          double renderMult       = count > 3 && args[3].isNumber() ? args[3].getNumber() : 1.0;
+          double stride           = count > 4 && args[4].isNumber() ? args[4].getNumber() : 0.0;
+          double measureAheadMult = count > 5 && args[5].isNumber() ? args[5].getNumber() : 0.0;
+          double mountedWindowSz  = count > 6 && args[6].isNumber() ? args[6].getNumber() : 1e10;
+          int    itemCount        = count > 7 && args[7].isNumber()  ? static_cast<int>(args[7].getNumber()) : 0;
+          int    budgetCols       = count > 9 && args[9].isNumber() ? static_cast<int>(args[9].getNumber()) : 1;
 
           // sectionInfoPacked: flat array [start0, headerOffset0, dataCount0, start1, ...]
           struct SecInfo { int start; int headerOffset; int dataCount; };
           std::vector<SecInfo> sections;
-          if (count > 10 && args[10].isObject()) {
-            auto sArr = args[10].getObject(rt);
+          if (count > 8 && args[8].isObject()) {
+            auto sArr = args[8].getObject(rt);
             if (sArr.isArray(rt)) {
               auto arr = sArr.getArray(rt);
               size_t n = arr.size(rt);
@@ -466,6 +466,11 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             }
           }
           bool sectioned = !sections.empty();
+
+          // Read scroll offset + velocity from LayoutCache (set by native scrollViewDidScroll:)
+          auto snapshot = _layoutCache->getScrollOffsetAndVelocity();
+          double scrollPrimary = isHoriz ? snapshot.offset.x : snapshot.offset.y;
+          double velocity = snapshot.velocity;
 
           // Flat-index computation — mirrors JS attrToFlatIndex()
           auto toFlatIdx = [&](const rncv::LayoutAttributes& a) -> int {
@@ -501,6 +506,24 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           };
 
           if (vpPrimary <= 0.0 || itemCount == 0) return makeEmpty();
+
+          // ── Opt 6: Stable-band early return ────────────────────────────
+          // If cacheVersion is unchanged and scroll offset is within the band
+          // where the integer ranges wouldn't change, return cached result.
+          int32_t curVersion = static_cast<int32_t>(_layoutCache->version());
+          if (curVersion == _lastScrollResult.cacheVersion &&
+              scrollPrimary >= _lastScrollResult.bandLow &&
+              scrollPrimary <= _lastScrollResult.bandHigh) {
+            Object r(rt);
+            r.setProperty(rt, "renderFirst",  Value(_lastScrollResult.renderFirst));
+            r.setProperty(rt, "renderLast",   Value(_lastScrollResult.renderLast));
+            r.setProperty(rt, "visibleFirst", Value(_lastScrollResult.visibleFirst));
+            r.setProperty(rt, "visibleLast",  Value(_lastScrollResult.visibleLast));
+            r.setProperty(rt, "measureFirst", Value(_lastScrollResult.measureFirst));
+            r.setProperty(rt, "measureLast",  Value(_lastScrollResult.measureLast));
+            r.setProperty(rt, "cacheVersion", Value(static_cast<double>(curVersion)));
+            return Value(rt, r);
+          }
 
           // Velocity-adaptive multipliers — mirrors CollectionView.tsx scroll handler
           double speed     = std::abs(velocity);
@@ -563,6 +586,18 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           }
 
           double ver = static_cast<double>(_layoutCache->version());
+
+          // ── Cache result for Opt 6 stable-band skip ─────────────────────
+          _lastScrollResult.renderFirst  = budgeted.first;
+          _lastScrollResult.renderLast   = budgeted.last;
+          _lastScrollResult.visibleFirst = vFirst;
+          _lastScrollResult.visibleLast  = vLast;
+          _lastScrollResult.measureFirst = mFirst;
+          _lastScrollResult.measureLast  = mLast;
+          _lastScrollResult.cacheVersion = curVersion;
+          // Stable band: ±¼ viewport from current scroll position.
+          _lastScrollResult.bandLow  = scrollPrimary - vpPrimary * 0.25;
+          _lastScrollResult.bandHigh = scrollPrimary + vpPrimary * 0.25;
 
           Object result(rt);
           result.setProperty(rt, "renderFirst",  Value(budgeted.first));

@@ -133,12 +133,31 @@ Applies to any layout that opts into spatial queries (custom layouts by default,
 
 **Files**: `cpp/LayoutCache.cpp`, JS consumer code
 
-### Opt 6: Skip spatial query when range won't change ⬜ (reverted — too aggressive; needs smarter threshold)
-**Impact: LOW** — pure JS optimization
+### Opt 6: C++ early return in processScroll (stable-band skip) ⬜
+**Impact: LOW-MEDIUM** — eliminates spatial query work when ranges haven't changed
 
-Before calling into C++, check: `scrollOffset` is still within `(renderFirst_position + buffer, renderLast_position - buffer)`. If so, skip all JSI calls. Simple arithmetic in JS.
+The previous approach (JS-side range-stability check) was reverted as too aggressive. The correct location for this optimization is **inside C++ `processScroll`**, not in JS.
 
-**Files**: `example/components/CollectionView.tsx`
+**Mechanism**: After computing ranges, `processScroll` records a "stable band" — the range of scroll offsets where the integer indices don't change (approximately ±¼ viewport). On the next call, if `cacheVersion` is unchanged AND `scrollPrimary` is within the band, the cached result is returned immediately — no spatial queries, no budget computation. Cost: ~200ns vs 50-200μs for full computation.
+
+```cpp
+struct LastScrollResult {
+    int32_t renderFirst, renderLast, visibleFirst, visibleLast;
+    int32_t measureFirst, measureLast;
+    int32_t cacheVersion;
+    double bandLow, bandHigh;
+};
+// At top of processScroll:
+if (curVersion == _last.cacheVersion &&
+    scrollPrimary >= _last.bandLow &&
+    scrollPrimary <= _last.bandHigh) {
+    return _last; // skip all spatial queries
+}
+```
+
+**Why C++, not JS**: The JSI hop is ~100ns — negligible. The cost is inside `getAttributesInRect` (spatial bucket walk + candidate filtering). Skipping at the C++ level avoids this work while keeping the architecture simple. JS doesn't need to know about scroll bands.
+
+**Files**: `cpp/CollectionViewModule.cpp`
 
 ### Opt 7: Incremental render loop (O(delta) instead of O(window_size)) ⬜
 **Impact: MEDIUM** — reduces per-render JS work
@@ -157,13 +176,46 @@ Approach A naturally pairs with Opt 4 (cell recycling). SlotManager tracks enter
 
 ---
 
+## Scroll Path Ownership (architecture cleanup — pre-Opt 3)
+
+During Opt 3 preparation, we identified three architectural misalignments in the scroll hot path:
+
+### 1. Velocity round-trips through JS unnecessarily
+
+**Before**: Native `scrollViewDidScroll:` writes offset to `LayoutCache.setScrollOffset()` on every UI-thread tick → emits throttled `onScroll` to JS → JS computes `velocity = Δoffset / Δt` using `Date.now()` → JS passes both `scrollOffset` and `velocity` back to C++ `processScroll`.
+
+**After**: `setScrollOffset(x, y, timestamp)` derives velocity internally using `CACurrentMediaTime()` (strictly more accurate than JS `Date.now()`). `processScroll` reads both scroll offset and velocity directly from `LayoutCache`. JS passes **neither** — fewer JSI args, zero physics estimation in JS.
+
+### 2. Dimension-estimate invariant
+
+**Principle**: All consumer-provided dimensions (`itemHeight`, `estimatedItemHeight`, `heightForItem`, `sizeForItem`, etc.) are **estimates**. Actual dimensions always come from Yoga via the LayoutCache (`measuredHeightForItem`). No code path should treat consumer inputs as final.
+
+**Audit result (2026-04-09)**: All 4 layout engines (list, grid, masonry, flow) correctly use the priority chain: `measured (Yoga) → delegate callback → prop fallback`. The only violation was `isVariableHeight` being used as a gate for `measureAhead` — decoupled (see COLLECTIONVIEW_INTERNALS.md).
+
+### 3. Push vs pull for range updates
+
+**Question**: If native owns offset, velocity, and windowing, should native push range updates instead of JS pulling via `processScroll`?
+
+**Answer: Pull wins.** Three reasons:
+
+1. **Threading**: Running spatial queries in `scrollViewDidScroll:` (UI thread) would contend with `ShadowNode::layout()` (Fabric BG thread) on `LayoutCache._mutex` — the ShadowNode holds it for 50-500μs during `correctChildPositionsIfNeeded` + `applyMeasurements`. Main-thread blocking = scroll jank.
+
+2. **Cost**: With the C++ early return (Opt 6), the total JS cost when ranges don't change is ~1-2μs (JSI hop + band check + return). That's 0.01% of a 16ms frame budget. Not worth architectural complexity to eliminate.
+
+3. **Custom layouts**: Push from native would bypass JS custom layout engines that compute their own positions. The pull model keeps JS as the orchestrator — it decides when to call `processScroll` and how to apply the result.
+
+**Escape hatch**: If profiling shows event delivery itself is a bottleneck, suppress `onScroll` from native when scroll offset is within the stable band — incremental, single `if` in `scrollViewDidScroll:`, no architectural change.
+
+---
+
 ## Recommended Execution Order
 
-1. **Opt 1 + Opt 2 together** — combine sorted-range computation and batching into a single `processScroll` JSI call. This is the biggest bang-for-buck: removes 4-6 JSI calls and replaces them with 1 returning ~8 integers.
-2. **Opt 3** — transform positioning. Independent of Opt 1/2, can be done in parallel.
-3. **Opt 6** — quick JS-side win, add range-stability check before any JSI call.
-4. **Opt 4 + Opt 7 together** — revisit recycling (SlotManager) + incremental render loop. SlotManager tracks the delta; render loop only creates elements for changed slots. Combined: fewer Fibers created AND less element creation per render.
-5. **Opt 5** — only needed if spatial query layouts prove to be a bottleneck.
+1. **Opt 1 + Opt 2 together** — combine sorted-range computation and batching into a single `processScroll` JSI call. This is the biggest bang-for-buck: removes 4-6 JSI calls and replaces them with 1 returning ~8 integers. ✅
+2. **Scroll ownership cleanup** — move velocity/offset to native-owned, simplify `processScroll` interface, fix `measureAhead` gating.
+3. **Opt 6** — C++ early return in `processScroll` (stable-band skip). Natural follow-on from scroll ownership cleanup.
+4. **Opt 3** — transform positioning. Independent, can be done in parallel.
+5. **Opt 4 + Opt 7 together** — revisit recycling (SlotManager) + incremental render loop.
+6. **Opt 5** — only needed if spatial query layouts prove to be a bottleneck.
 
 ---
 
@@ -226,4 +278,14 @@ The **consumer React component** (`Riff` / `CollectionView`) is implemented unde
 1. **API cleanup milestone:** Hoist ScrollView-equivalent callbacks to `CollectionView` top-level; keep `scrollViewProps` only for pass-through props that are not events (or document deprecation).
 2. **Demo cleanup:** Remove `containerH` / `onContentSizeChange` wiring from horizontal demos in `LayoutsTab` so demos only use flex + `CollectionView` internal behavior.
 3. **Package export:** Re-export `CollectionView` from `src/index.ts` when React hoisting is guaranteed; update Metro/tsconfig and example imports accordingly.
-4. **Next perf work per this doc:** **Opt 3** (transform positioning) or **Opt 6** (range-stability skip), then **Opt 4+7** (recycling + incremental render), then **Opt 5** if spatial layouts remain hot.
+4. **Next perf work per this doc:** **Opt 6** (C++ stable-band skip — already implemented), then **Opt 3** (transform positioning), then **Opt 4+7** (recycling + incremental render), then **Opt 5** if spatial layouts remain hot.
+
+---
+
+## Known Issues (observed during manual testing, 2026-04-09)
+
+1. **Vertical list — separator toggle causes scroll position shifts.** Toggling separators on/off while scrolling (or when scrolled to the lower half of the list) sometimes causes the scroll position to jump. Likely cause: decoration insertion/removal changes content size and the MVC anchor correction doesn't fully compensate for the separator height deltas.
+
+2. **Horizontal grid — cross-axis height flicker on section boundary.** In horizontal grid, after changing the size of `s[0][0]` and scrolling past section 0, the list sometimes shrinks to a smaller cross-axis height then grows back to the correct height when scrolling back to `s[0][0]`. Likely cause: `_maxCrossAxisHeight` re-derivation from visible items (not all items) when the mutated item scrolls off-screen.
+
+3. **MVC should anchor on resize.** When the list container is resized (e.g., orientation change, split view), the currently visible item should remain visually anchored. Currently no MVC correction is triggered on resize — it only activates on data mutations (insert/delete). This needs a resize-triggered MVC path.

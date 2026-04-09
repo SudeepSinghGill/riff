@@ -137,8 +137,16 @@ public:
   // Stored here instead of component state to avoid triggering Fabric commits
   // from the native scroll handler, which races with JS render updates.
 
-  void setScrollOffset(double x, double y);
+  void setScrollOffset(double x, double y, double timestampMs = 0.0);
   Point getScrollOffset() const;
+
+  /// Return current estimated scroll velocity (px/ms, signed).
+  /// Derived internally from consecutive setScrollOffset calls.
+  double getVelocity() const;
+
+  /// Atomic read of offset + velocity (single mutex acquisition).
+  struct ScrollSnapshot { Point offset; double velocity; };
+  ScrollSnapshot getScrollOffsetAndVelocity() const;
 
   // ── MVC (maintainVisibleContentPosition) correction ───────────────────
   // Three-step API called from the JS prepare() useMemo:
@@ -206,6 +214,11 @@ private:
   mutable std::mutex                                _mutex;
   SpatialIndex                                      _index;   // M1.4
   Point                                             _scrollOffset{0, 0};
+
+  // Velocity tracking — updated by setScrollOffset on every native scroll tick.
+  double _prevScrollPrimary      = 0.0;
+  double _prevScrollTimestamp     = 0.0;
+  double _currentVelocity         = 0.0;  // px/ms, signed
 
   // MVC anchor snapshot state (guarded by _mutex)
   std::string _anchorKey;

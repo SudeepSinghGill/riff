@@ -171,14 +171,39 @@ uint64_t LayoutCache::version() const {
   return _version;
 }
 
-void LayoutCache::setScrollOffset(double x, double y) {
+void LayoutCache::setScrollOffset(double x, double y, double timestampMs) {
   std::lock_guard<std::mutex> lock(_mutex);
+  // Derive velocity from consecutive offset/timestamp pairs.
+  // timestampMs comes from CACurrentMediaTime() * 1000 on iOS (native scroll handler).
+  if (timestampMs > 0) {
+    const double primary = _horizontal ? x : y;
+    const double dt = timestampMs - _prevScrollTimestamp;
+    if (dt > 0 && dt <= 100.0) {
+      // Within 100ms gap — reasonable consecutive scroll events.
+      _currentVelocity = (primary - _prevScrollPrimary) / dt;
+    } else if (dt > 100.0) {
+      // Too long between events — user stopped scrolling or new gesture.
+      _currentVelocity = 0.0;
+    }
+    _prevScrollPrimary = primary;
+    _prevScrollTimestamp = timestampMs;
+  }
   _scrollOffset = {x, y};
 }
 
 Point LayoutCache::getScrollOffset() const {
   std::lock_guard<std::mutex> lock(_mutex);
   return _scrollOffset;
+}
+
+double LayoutCache::getVelocity() const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  return _currentVelocity;
+}
+
+LayoutCache::ScrollSnapshot LayoutCache::getScrollOffsetAndVelocity() const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  return {_scrollOffset, _currentVelocity};
 }
 
 // ─── MVC correction ──────────────────────────────────────────────────────────

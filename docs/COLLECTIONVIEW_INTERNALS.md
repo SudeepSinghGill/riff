@@ -542,6 +542,114 @@ These map to `UIScrollViewDelegate` methods in native:
 
 ---
 
+## Dimension-Estimate Invariant
+
+**All consumer-provided dimensions are estimates. Actual dimensions always come from Yoga via the LayoutCache.**
+
+This applies universally to every sizing API across all four layout engines:
+
+| Layout | Consumer APIs | All estimates? |
+|--------|--------------|----------------|
+| List | `itemHeight`, `estimatedItemHeight`, `heightForItem(i,s,w)` | ✅ |
+| Grid | `rowHeight`, `heightForItem(i,s,w)` | ✅ |
+| Masonry | `heightForItem(i,s,w)` | ✅ |
+| Flow | `sizeForItem(i,s,w)` (both width & height) | ✅ |
+| All | `headerHeight`, `footerHeight`, `estimatedHeaderHeight`, `estimatedFooterHeight` | ⚠️ Not measured by Yoga (declared heights) — correct for now |
+
+Every layout engine uses the same priority chain in `prepare()`:
+
+```
+Actual (Yoga-measured via measuredHeightForItem)
+  → Delegate callback (heightForItem / sizeForItem)
+    → Prop value (itemHeight / rowHeight)
+      → Estimated prop (estimatedItemHeight)
+        → Hardcoded fallback (44)
+```
+
+The ShadowNode's `correctChildPositionsIfNeeded()` (Phase 2) diffs Yoga-measured dimensions against cache entries and calls `engine->applyMeasurements()` to cascade position corrections. This is the mechanism that makes estimates converge to reality in a single frame.
+
+**Rule**: No code path should assume consumer-provided dimensions are final. Any gate or optimization that relies on "sizes won't change" must use cache version or measurement state — never prop names.
+
+---
+
+## `isVariableHeight` — What It Actually Means
+
+```typescript
+const isVariableHeight = estimatedItemHeight !== undefined;  // ~line 1051
+```
+
+This flag means **"the consumer used the `estimatedItemHeight` API."** It does NOT mean:
+- Heights are fixed when `false`
+- It is safe to skip measurement when `false`
+- Layout positions won't change when `false`
+
+All consumer dimensions are estimates regardless of which prop was used (see Dimension-Estimate Invariant above).
+
+**Current usages** (as of 2026-04-09):
+
+| Location | Usage | Correct? |
+|----------|-------|----------|
+| L1076-1077 | Default layout factory: `itemHeight` vs `estimatedItemHeight` delegation | ✅ Controls which list() delegate field is populated — legitimate |
+| L1269, L1554 | `measureAheadMult` to processScroll: `isVariableHeight && measureAhead > 0` | ❌ Should be `measureAhead > 0` — measure-ahead should be gated by its own prop |
+| L1285, L1575 | Measure-range state update: `if (isVariableHeight && measureAhead > 0)` | ❌ Same fix |
+| L2048 | Render path: `!isVariableHeight \|\| measureRange.last < measureRange.first` | ❌ Should be just `measureRange.last < measureRange.first` |
+
+**Fix**: Decouple `measureAhead` from `isVariableHeight`. The variable itself stays (it controls default layout delegation), but it should never be used as a proxy for "safe to skip measurement" or "sizes won't change."
+
+---
+
+## Scroll Path Ownership
+
+### Current scroll data flow (before cleanup)
+
+```
+Native UIScrollView scrolls
+  → scrollViewDidScroll: writes offset to LayoutCache (UI thread, every tick)     ← NATIVE OWNS
+  → scrollViewDidScroll: emits throttled onScroll event to JS                     ← SIGNAL
+  → JS reads contentOffset from event                                              ← REDUNDANT
+  → JS computes velocity = Δoffset / Δt using Date.now()                          ← WRONG OWNER
+  → JS calls processScroll(scrollOffset, ..., velocity) via JSI                    ← ROUND-TRIP
+  → C++ processScroll uses scrollOffset + velocity for range computation           ← WORK
+```
+
+### Target scroll data flow (after cleanup)
+
+```
+Native UIScrollView scrolls
+  → scrollViewDidScroll: writes offset + timestamp to LayoutCache (UI thread)     ← NATIVE OWNS
+    [LayoutCache derives velocity internally using CACurrentMediaTime]
+  → scrollViewDidScroll: emits throttled onScroll event to JS                     ← SIGNAL
+  → JS calls processScroll(vpPrimary, vpCross, ...) — NO offset, NO velocity      ← LEAN
+  → C++ processScroll reads offset + velocity from LayoutCache                     ← ZERO ROUND-TRIP
+  → C++ early-return if scroll within stable band (±¼ viewport)                   ← OPT 6
+  → C++ runs spatial queries only when ranges actually need recomputation          ← WORK
+```
+
+### Why velocity belongs in LayoutCache, not JS
+
+1. **`setScrollOffset()` already fires on every UI-thread tick** (not throttled) — it has the highest-frequency, most accurate offset data available.
+2. **`CACurrentMediaTime()`** is the same timing source CoreAnimation uses — strictly more accurate than JS `Date.now()` for frame-aligned work.
+3. **Velocity is consumed only by C++ `processScroll`** for padding computation — JS never uses it for anything else.
+4. **Eliminates 2 JSI args** from `processScroll` (scrollPrimary, velocity) — simpler interface.
+
+### Why pull (not push) for range updates
+
+**Question**: If native owns everything, should native push range updates to JS instead of JS pulling via `processScroll`?
+
+**Answer: Pull wins.** Three reasons:
+
+1. **Threading**: Running spatial queries in `scrollViewDidScroll:` (UI thread) would contend with `ShadowNode::layout()` (Fabric BG thread) on `LayoutCache._mutex`. The ShadowNode holds the mutex for 50-500μs during `correctChildPositionsIfNeeded` + `applyMeasurements`. Main-thread blocking = scroll jank.
+
+2. **Cost**: With the C++ early return (Opt 6), when ranges don't change the total JS cost is ~1-2μs (JSI hop + band check + return). That's 0.01% of a 16ms frame budget.
+
+3. **Custom layouts**: Push from native would bypass JS custom layouts that compute their own positions. The pull model keeps JS as the orchestrator.
+
+**Escape hatch**: If profiling later shows event delivery is a bottleneck, suppress onScroll from native when the offset is within the stable band. Single `if` in `scrollViewDidScroll:`, no architectural change.
+
+See `PERF-PLAN.md` → "Scroll Path Ownership" for the full analysis.
+
+---
+
 ## Codegen Setup (for native pod install)
 
 The library is NOT in `node_modules`. Auto-linking and codegen are driven by:

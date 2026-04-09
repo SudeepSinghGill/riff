@@ -128,6 +128,18 @@ private:
   std::atomic<double> _scrollY{0.0};
   std::atomic<double> _scrollX{0.0};
 
+  // processScroll early-return state (Opt 6 — stable-band skip).
+  // When cacheVersion hasn't changed and scroll offset is within the band,
+  // processScroll returns the cached result without re-running spatial queries.
+  struct LastScrollResult {
+    int32_t renderFirst = 0, renderLast = -1;
+    int32_t visibleFirst = 0, visibleLast = -1;
+    int32_t measureFirst = 0, measureLast = -1;
+    int32_t cacheVersion = -1;
+    double bandLow = 0.0, bandHigh = 0.0;
+  };
+  LastScrollResult _lastScrollResult;
+
   // Called when JS invokes windowController.attachScrollView(tag).
   std::function<void(int)> _attachScrollViewCallback;
 

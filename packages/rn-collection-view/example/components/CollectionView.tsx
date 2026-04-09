@@ -146,10 +146,11 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     ): NativeRange;
     // Batched scroll computation — replaces 4-6 individual JSI calls.
     // Spatial queries run entirely in C++; returns 7 integers (no LayoutAttributes marshalled).
+    // Scroll offset + velocity are read from LayoutCache (set by native scrollViewDidScroll:).
     processScroll(
-      scrollPrimary: number, vpPrimary: number, vpCross: number,
+      vpPrimary: number, vpCross: number,
       isHorizontal: boolean,
-      renderMult: number, velocity: number,
+      renderMult: number,
       stride: number, measureAheadMult: number,
       mountedWindowSize: number, itemCount: number,
       sectionInfoPacked: number[] | null,
@@ -996,12 +997,12 @@ export function Riff<T = unknown>({
   // Previous range for O(1) change detection — compared by value, not string.
   const prevRenderRef = useRef<Range | null>(null);
 
-  // Velocity tracking for M3.4 adaptive window (px/ms, positive = down/right).
+  // Scroll position tracking — used for onContentSizeChange synthesis and
+  // blank area computation. Velocity is now derived natively in LayoutCache
+  // (setScrollOffset with CACurrentMediaTime) — see PERF-PLAN.md.
   const prevScrollYRef   = useRef(0);
   const prevScrollXRef   = useRef(0);  // for horizontal layouts
-  const prevScrollTimeRef = useRef(0);
   const prevContentSizeRef = useRef({ width: 0, height: 0 }); // for onContentSizeChange synthesis
-  const velocityRef      = useRef(0);
 
   // P5.1 — counters for the debug HUD. Plain refs — no state, no re-renders.
   const coldMountCountRef        = useRef(0);
@@ -1046,8 +1047,14 @@ export function Riff<T = unknown>({
 
   const itemCount = data.length;
 
-  // Variable-height mode (M4.1) — active when estimatedItemHeight is set.
-  // Still used to choose fixed vs variable window controller path.
+  // NOTE: isVariableHeight means "the estimatedItemHeight API was used."
+  // It does NOT mean heights are fixed when false. ALL consumer-provided
+  // dimensions (itemHeight, estimatedItemHeight, heightForItem, sizeForItem,
+  // etc.) are estimates. Actual dimensions always come from Yoga via the
+  // LayoutCache. This flag exists only to control the default layout
+  // factory delegation (itemHeight vs estimatedItemHeight on the list
+  // delegate) — it should never be used as a proxy for "safe to skip
+  // measurement" or "sizes won't change."
   const isVariableHeight  = estimatedItemHeight !== undefined;
   const effectiveItemHeight = estimatedItemHeight ?? itemHeight ?? 44;
   const stride    = effectiveItemHeight + itemSpacing;
@@ -1259,14 +1266,12 @@ export function Riff<T = unknown>({
     const isHoriz = effectiveLayout.horizontal ?? false;
 
     const layoutResult = nativeWindowController.processScroll(
-      isHoriz ? scrollX : scrollY,               // scrollPrimary
       isHoriz ? viewportWidth  : viewportHeight, // vpPrimary
       isHoriz ? viewportHeight : viewportWidth,  // vpCross
       isHoriz,
       renderMultiplier,
-      velocityRef.current,
       budgetStride,
-      isVariableHeight && measureAhead > 0 ? measureAhead : 0,
+      measureAhead > 0 ? measureAhead : 0,
       effectiveMountedWindowSize,
       itemCount,
       sectionInfoPacked,
@@ -1282,7 +1287,7 @@ export function Riff<T = unknown>({
       setRenderRange(budgeted);
 
       // Measure range: extend render range for pre-measurement of variable-height cells.
-      if (isVariableHeight && measureAhead > 0) {
+      if (measureAhead > 0) {
         const newMR = { first: layoutResult.measureFirst, last: layoutResult.measureLast };
         if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
           prevMeasureRef.current = newMR;
@@ -1523,20 +1528,10 @@ export function Riff<T = unknown>({
       const vpH     = layoutMeasurement.height || viewportHeight;
       const isHorizontal = effectiveLayout.horizontal ?? false;
 
-      // Update velocity estimate (px/ms). Ignore readings with stale timestamps
-      // (> 100ms gap means the user paused, velocity should reset toward 0).
-      const now = Date.now();
-      const dt  = now - prevScrollTimeRef.current;
-      const prevPrimary = isHorizontal ? prevScrollXRef.current : prevScrollYRef.current;
-      const curPrimary  = isHorizontal ? scrollX : scrollY;
-      if (dt > 0 && dt <= 100) {
-        velocityRef.current = (curPrimary - prevPrimary) / dt;
-      } else if (dt > 100) {
-        velocityRef.current = 0;
-      }
+      // Velocity is now derived natively in LayoutCache via CACurrentMediaTime —
+      // no JS-side estimation needed. See PERF-PLAN.md "Scroll Path Ownership".
       prevScrollYRef.current  = scrollY;
       prevScrollXRef.current  = scrollX;
-      prevScrollTimeRef.current = now;
 
       const vpW = layoutMeasurement.width || viewportWidth;
 
@@ -1544,14 +1539,12 @@ export function Riff<T = unknown>({
       // Replaces 4-6 individual JSI calls. LayoutAttributes are never marshalled to JS —
       // spatial queries run entirely in C++ and return 7 integers.
       const scrollResult = nativeWindowController.processScroll(
-        isHorizontal ? scrollX : scrollY,        // scrollPrimary
         isHorizontal ? vpW    : vpH,             // vpPrimary
         isHorizontal ? vpH    : vpW,             // vpCross
         isHorizontal,
         renderMultiplier,
-        velocityRef.current,
         budgetStride,
-        isVariableHeight && measureAhead > 0 ? measureAhead : 0,
+        measureAhead > 0 ? measureAhead : 0,
         effectiveMountedWindowSize,
         itemCount,
         sectionInfoPacked,                       // null for single-section
@@ -1572,7 +1565,7 @@ export function Riff<T = unknown>({
       }
 
       // Measure range — returned by processScroll when measureAheadMult > 0.
-      if (isVariableHeight && measureAhead > 0) {
+      if (measureAhead > 0) {
         const newMR = { first: scrollResult.measureFirst, last: scrollResult.measureLast };
         if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
           prevMeasureRef.current = newMR;
@@ -2045,7 +2038,7 @@ export function Riff<T = unknown>({
         if (!data[i]) continue;
         cells.push(renderCell(data[i]!, i, false));
       }
-    } else if (!isVariableHeight || measureRange.last < measureRange.first) {
+    } else if (measureRange.last < measureRange.first) {
       effFirst = rr.first;
       effLast = Math.min(rr.last, data.length - 1);
       cells = [];
