@@ -7,7 +7,7 @@
  * And the _correctionConsumed flag that prevents re-arming during animated scrollTo.
  */
 
-#include <gtest/gtest.h>
+#include "TestRunner.h"
 #include "LayoutCache.h"
 
 using namespace rncv;
@@ -138,7 +138,7 @@ TEST(MVCCorrection, CorrectionConsumed_PreventsSnapshotAnchorIfNeeded) {
   // Phase 1: JS snapshotAnchor (simulates prepare useMemo).
   cache.setAttributes(makeItem("item-0-0", 0));
   cache.setAttributes(makeItem("item-0-1", 56));
-  setScroll(cache, 0);
+  setScroll(cache, 56);  // anchor = item-0-1 at y=56
   cache.snapshotAnchor();  // _correctionConsumed = false, _hasAnchor = true
 
   // Phase 2: positions shift (insert), computeCorrection fires.
@@ -168,7 +168,7 @@ TEST(MVCCorrection, SnapshotAnchor_ResetsCorrectionConsumed) {
 
   cache.setAttributes(makeItem("item-0-0", 0));
   cache.setAttributes(makeItem("item-0-1", 56));
-  setScroll(cache, 0);
+  setScroll(cache, 56);  // anchor = item-0-1 at y=56
 
   // Transaction 1: snapshot → shift → correct → consumed.
   cache.snapshotAnchor();

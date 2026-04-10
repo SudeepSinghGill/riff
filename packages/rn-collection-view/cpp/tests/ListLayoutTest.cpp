@@ -9,7 +9,7 @@
  *   4. applyMeasurements cascade correctness.
  */
 
-#include <gtest/gtest.h>
+#include "TestRunner.h"
 #include "LayoutCache.h"
 #include "layouts/ListLayout.h"
 
