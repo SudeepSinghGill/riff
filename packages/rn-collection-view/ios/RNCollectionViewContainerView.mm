@@ -30,7 +30,7 @@ using namespace facebook::react;
 
 // Cross-platform logging — active only in DEBUG builds; no-op in release.
 #ifndef RNCV_ENABLE_NATIVE_LOGS
-#define RNCV_ENABLE_NATIVE_LOGS 1
+#define RNCV_ENABLE_NATIVE_LOGS 0
 #endif
 
 // Set RNCV_ENABLE_MVC_TRACE=1 to enable verbose MVC lifecycle tracing.
@@ -74,7 +74,8 @@ using namespace facebook::react;
 
   // MVC correction deferred from updateState: to layoutSubviews (after applyPositionsFromState).
   // Ensures sticky-view KVO fires after children have their final positions.
-  double _pendingMVCCorrection;
+  double _pendingMVCCorrection;       // delta (for threshold check only)
+  double _pendingMVCScrollTarget;     // absolute target offset (snapshotScroll + delta)
 
   // LayoutCache registry ID — cached from props for scroll offset wiring.
   int32_t _layoutCacheId;
@@ -106,6 +107,7 @@ using namespace facebook::react;
     _hasReceivedFirstState = NO;
     _applyingCorrection = NO;
     _pendingMVCCorrection = 0;
+    _pendingMVCScrollTarget = 0;
 
     // Create internal UIScrollView.
     _scrollView = [[UIScrollView alloc] initWithFrame:self.bounds];
@@ -133,6 +135,7 @@ using namespace facebook::react;
   _hasReceivedFirstState = NO;
   _lastScrollEventTime = 0;
   _pendingMVCCorrection = 0;
+  _pendingMVCScrollTarget = 0;
   [_scrollView setContentOffset:CGPointZero animated:NO];
   _scrollView.contentSize = CGSizeZero;
   _scrollView.zoomScale = 1.0;
@@ -158,7 +161,19 @@ using namespace facebook::react;
   );
   RNCV_MVC_TRACE("scrollTo x=%.1f y=%.1f animated=%s target=(%.1f,%.1f)",
                  x, y, animated ? "YES" : "NO", target.x, target.y);
+  if (animated) {
+    // Block MVC re-arming (snapshotAnchorIfNeeded) while the animation runs.
+    // Cleared in all scroll-end callbacks to guard against animation cancellation.
+    auto cache = facebook::react::layoutCacheForId(_layoutCacheId);
+    if (cache) cache->setProgrammaticScrollActive(true);
+  }
   [_scrollView setContentOffset:target animated:animated];
+}
+
+- (void)_clearProgrammaticScrollFlag
+{
+  auto cache = facebook::react::layoutCacheForId(_layoutCacheId);
+  if (cache) cache->setProgrammaticScrollActive(false);
 }
 
 // ── Child management ────────────────────────────────────────────────────────
@@ -298,7 +313,8 @@ using namespace facebook::react;
       RNCV_MVC_TRACE("updateState: computeCorrection=%.1f pendingMVCBefore=%.1f",
                      correction, _pendingMVCCorrection);
       if (std::abs(correction) > 0.5) {
-        _pendingMVCCorrection = correction;
+        _pendingMVCCorrection   = correction;
+        _pendingMVCScrollTarget = cache->consumePendingScrollTarget();
       }
     }
   }
@@ -372,6 +388,8 @@ using namespace facebook::react;
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
 {
+  // User touch can cancel an animated scrollTo; clear the flag defensively.
+  if (!decelerate) [self _clearProgrammaticScrollFlag];
   if (!_eventEmitter) return;
   auto emitter = std::static_pointer_cast<
       const RNCollectionViewContainerEventEmitter>(_eventEmitter);
@@ -400,8 +418,16 @@ using namespace facebook::react;
   emitter->onMomentumScrollBegin(event);
 }
 
+- (void)scrollViewDidEndScrollingAnimation:(UIScrollView *)scrollView
+{
+  [self _clearProgrammaticScrollFlag];
+}
+
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
 {
+  // Also clear here: if user drags during animated scrollTo, deceleration
+  // ends the motion but scrollViewDidEndScrollingAnimation: won't fire.
+  [self _clearProgrammaticScrollFlag];
   if (!_eventEmitter) return;
   auto emitter = std::static_pointer_cast<
       const RNCollectionViewContainerEventEmitter>(_eventEmitter);
@@ -440,19 +466,27 @@ using namespace facebook::react;
   RNCV_MVC_TRACE("layoutSubviews: pendingMVCCorrection=%.1f offset=(%.1f,%.1f)",
                  _pendingMVCCorrection, _scrollView.contentOffset.x, _scrollView.contentOffset.y);
   if (std::abs(_pendingMVCCorrection) > 0.5) {
+    // Use the absolute scroll target (snapshotScroll + delta), not current + delta.
+    // This prevents double-correction when UIKit auto-clamps contentOffset on
+    // contentSize shrink (e.g. delete at bottom of list, UIKit snaps first, then
+    // current + delta would overshoot by the amount UIKit already moved).
+    CGFloat maxPrimary = _horizontal
+      ? MAX(0.0, _scrollView.contentSize.width  - _scrollView.bounds.size.width)
+      : MAX(0.0, _scrollView.contentSize.height - _scrollView.bounds.size.height);
+    CGFloat target = MAX(0.0, MIN((CGFloat)_pendingMVCScrollTarget, maxPrimary));
     CGPoint offset = _scrollView.contentOffset;
     if (_horizontal) {
       RNCV_LOG("applying MVC correction=%.1f oldX=%.1f newX=%.1f",
-               _pendingMVCCorrection, offset.x, offset.x + _pendingMVCCorrection);
+               _pendingMVCCorrection, offset.x, target);
       RNCV_MVC_TRACE("layoutSubviews: APPLYING correction=%.1f oldX=%.1f newX=%.1f",
-                     _pendingMVCCorrection, offset.x, offset.x + _pendingMVCCorrection);
-      offset.x += (CGFloat)_pendingMVCCorrection;
+                     _pendingMVCCorrection, offset.x, target);
+      offset.x = target;
     } else {
       RNCV_LOG("applying MVC correction=%.1f oldY=%.1f newY=%.1f",
-               _pendingMVCCorrection, offset.y, offset.y + _pendingMVCCorrection);
+               _pendingMVCCorrection, offset.y, target);
       RNCV_MVC_TRACE("layoutSubviews: APPLYING correction=%.1f oldY=%.1f newY=%.1f",
-                     _pendingMVCCorrection, offset.y, offset.y + _pendingMVCCorrection);
-      offset.y += (CGFloat)_pendingMVCCorrection;
+                     _pendingMVCCorrection, offset.y, target);
+      offset.y = target;
     }
     _applyingCorrection = YES;
     [_scrollView setContentOffset:offset animated:NO];
@@ -461,7 +495,8 @@ using namespace facebook::react;
     if (cache) {
       cache->setScrollOffset(offset.x, offset.y, CACurrentMediaTime() * 1000.0);
     }
-    _pendingMVCCorrection = 0;
+    _pendingMVCCorrection   = 0;
+    _pendingMVCScrollTarget = 0;
 
     // Notify JS of the corrected scroll position so it can recompute the render
     // range. Without this, the render window stays computed for the pre-correction

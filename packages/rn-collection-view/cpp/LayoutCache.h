@@ -190,9 +190,23 @@ public:
   /// Call AFTER prepare() writes new positions. Returns the correction delta.
   double computeCorrection();
 
-  /// Return and atomically clear the pending correction. Called once by the
-  /// native view in updateState: to adjust UIScrollView.contentOffset.
+  /// Return and atomically clear the pending correction delta. Used by unit tests
+  /// and JSI to inspect the raw delta. Prefer consumePendingScrollTarget() for
+  /// native view application.
   double consumePendingCorrection();
+
+  /// Return and atomically clear the absolute scroll target computed as
+  /// (snapshotScrollOffset + correctionDelta). Called by the native view in
+  /// updateState: to set UIScrollView.contentOffset directly, avoiding
+  /// double-correction when UIKit auto-clamps contentOffset on contentSize change.
+  double consumePendingScrollTarget();
+
+  /// Set/clear the programmatic-scroll-active flag. Called by the native view:
+  ///   set=true  when _scrollToX:y:animated:YES begins
+  ///   set=false in all scroll-end delegate callbacks
+  /// While true, snapshotAnchorIfNeeded() is a no-op to prevent MVC correction
+  /// from cancelling an in-flight animated scrollTo.
+  void setProgrammaticScrollActive(bool active);
 
   // ── Versioning ────────────────────────────────────────────────────────────
 
@@ -244,11 +258,15 @@ private:
   bool        _hasAnchor           = false;
   bool        _mvcEnabled          = false;
   bool        _horizontal          = false; // when true, anchor by X; correction on X axis
-  // One-shot flag: set by computeCorrection(), cleared by snapshotAnchor().
-  // snapshotAnchorIfNeeded() is a no-op while true, preventing re-arming
-  // during animated scrollTo (which would cancel the animation via setContentOffset).
-  bool        _correctionConsumed  = false;
-  double      _pendingCorrectionY  = 0;
+  // Set true by _scrollToX:y:animated: when animated=YES; cleared in all scroll-end
+  // delegate callbacks (scrollViewDidEndScrollingAnimation:, scrollViewDidEndDecelerating:,
+  // scrollViewDidEndDragging:willDecelerate: when !decelerate).
+  // snapshotAnchorIfNeeded() is a no-op while true, preventing MVC re-arming
+  // during an animated scrollTo (which would cancel the animation via setContentOffset).
+  bool        _programmaticScrollActive = false;
+  double      _snapshotScrollPrimary = 0; // scroll offset (Y or X) at snapshotAnchor time
+  double      _pendingCorrectionY  = 0;   // delta (newAnchorPos - oldAnchorPos)
+  double      _pendingScrollTarget = 0;   // absolute: _snapshotScrollPrimary + delta
   bool        _hasPendingCorrection = false;
 
   // Internal helpers (call with lock held)

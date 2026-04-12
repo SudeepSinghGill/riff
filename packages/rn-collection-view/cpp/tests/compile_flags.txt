@@ -1,0 +1,6 @@
+-std=c++17
+-I..
+-I./stubs
+-I.
+-DRNCV_ENABLE_NATIVE_LOGS=0
+-DRNCV_ENABLE_MVC_TRACE=0

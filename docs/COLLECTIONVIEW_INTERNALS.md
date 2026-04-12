@@ -893,23 +893,24 @@ App calls CollectionView insert/delete
                  ├─ MVC: snapshotAnchor()
                  │    ← finds first item at or below scrollY in old cache
                  │    ← stores {anchorKey, anchorY}
-                 │    ← resets _correctionConsumed = false (new transaction)
                  │
                  └─ list.ts prepare():
-                      sectionParams.itemHeights[] built from measuredHeightForItemRef
-                        → reads from LayoutCache by key → EMPTY (cache was just cleared)
-                        → returns undefined for all items → itemHeights stays []
+                      sectionParams built (including itemHeights[] from measuredHeightForItemRef)
+                        → reads from LIVE LayoutCache by key (cache still populated at this point)
+                        → returns measured heights for all visible items  ✓
 
                       fingerprint changed (itemCount changed) → stashHeights() + clear()
                         ← stashHeights() saves {key → measured height} for all Measured entries
                         ← clear() wipes the cache (orphan cleanup)
+                        NOTE: itemHeights[] is populated BEFORE stashHeights()+clear(),
+                              so it reads from the live cache, not an empty one.
 
                       computeSections(sectionParams)
                         → computeSectionFromCache() per section (FIXED: was computeSection)
                            item loop:
                              cache miss (just cleared)
                              → stash hit → uses MEASURED height  ✓  ← KEY FIX
-                             → (if no stash) p.itemHeights[i]   (estimate, from JS)
+                             → (if no stash) p.itemHeights[i]   (estimate from JS, built above)
                              → (if no itemHeights) p.itemHeight  (scalar estimate)
 
                       clearStash()
@@ -924,7 +925,6 @@ Fabric commit → ShadowNode.layout()
             correction = newAnchorY - snapshotAnchorY
             ← with stash fix: newAnchorY ≈ snapshotAnchorY → correction ≈ 0  ✓
             ← without fix: newAnchorY was estimate-based → large wrong correction
-            _correctionConsumed = true  (prevents re-arming during scrollTo)
 
        └─ layoutSubviews: applies _pendingMVCCorrection to contentOffset
 ```
@@ -951,15 +951,17 @@ primary = computeSectionFromCache(sections[s], s, primary);  // ← was computeS
 
 **Root cause**: After the insert correction, `_hasAnchor = false` (consumed). During the scrollTo animation, new cells entered the render range → Yoga measured them → deltas in ShadowNode → `snapshotAnchorIfNeeded()` re-armed (hasAnchor=false, mvcEnabled=true) → `applyMeasurements` cascaded → `computeCorrection()` fired → `setContentOffset:animated:NO` cancelled the ongoing scrollTo animation.
 
-**Fix** (`cpp/LayoutCache.h` + `.cpp`):
-```cpp
-// _correctionConsumed = true after computeCorrection().
-// snapshotAnchorIfNeeded() checks it and skips → no re-arm during scrollTo.
-// snapshotAnchor() resets it (new transaction).
-bool _correctionConsumed = false;
+**Fix** (`ios/RNCollectionViewContainerView.mm` + `cpp/LayoutCache.h/.cpp`):
+```objc
+// Native view sets _programmaticScrollActive=true when animated scrollTo begins.
+// Cleared in all scroll-end delegates (scrollViewDidEndScrollingAnimation:,
+// scrollViewDidEndDecelerating:, scrollViewDidEndDragging:willDecelerate: when !decelerate).
+// snapshotAnchorIfNeeded() skips when _programmaticScrollActive=true.
 ```
 
-**Why this is correct**: The correction is conceptually one-shot per data mutation. The `snapshotAnchor()` call in the JS prepare useMemo marks the start of each mutation transaction and resets the flag. Re-arming during an animated scroll is always wrong — the anchor position at the START of the mutation is what matters for offset preservation.
+**Why clearing in all scroll-end delegates**: If the user touches the screen during a scrollTo, UIKit cancels the animation and `scrollViewDidEndScrollingAnimation:` may never fire. Clearing in all scroll-end paths prevents the flag from getting permanently stuck.
+
+**Why not `_correctionConsumed`**: The old flag was permanent — set by `computeCorrection()` and only reset by `snapshotAnchor()`. This caused Bug 1: after the initial render's correction fired, `_correctionConsumed = true` permanently blocked `snapshotAnchorIfNeeded()` for all subsequent size changes (no JS mutation → no `snapshotAnchor()` call → flag never reset). `_programmaticScrollActive` is transient and event-driven — it only blocks during the exact window of an animated scrollTo.
 
 ---
 
@@ -996,8 +998,8 @@ RNCV_ENABLE_MVC_TRACE = 0  // logs: updateState computeCorrection value,
 
 To enable all trace: set all four flags to `true`/`1` and clean-build. Expected log sequence for a delete:
 ```
-[MVC-TRACE] prepare: calling snapshotAnchor() (MVC enabled, correctionConsumed reset)
-[MVC-TRACE] snapshotAnchor: correctionConsumed reset, hasAnchor was=NO mvcEnabled=YES
+[MVC-TRACE] prepare: calling snapshotAnchor() (MVC enabled)
+[MVC-TRACE] snapshotAnchor: hasAnchor was=NO mvcEnabled=YES
 [MVC-TRACE] snapshotAnchor: FOUND key=item-0-5 pos=280.0 scrollOffset=280.0
 [MVC-TRACE] prepare: fingerprintChanged=true sections=1 totalItems=97
 [MVC-TRACE] prepare: stashHeights + clear (fingerprint changed)
@@ -1009,7 +1011,7 @@ To enable all trace: set all four flags to `true`/`1` and clean-build. Expected 
 ...
 [MVC-TRACE] snapshotAnchorIfNeeded: SKIP hasAnchor=YES
 [MVC-TRACE] applyMeasurements: 3 deltas first={key=item-0-2 old=56.0 new=62.0}
-[MVC-TRACE] computeCorrection: key=item-0-5 oldPos=280.0 newPos=280.0 correction=0.0 → correctionConsumed=YES
+[MVC-TRACE] computeCorrection: key=item-0-5 oldPos=280.0 newPos=280.0 correction=0.0
 [MVC-TRACE] updateState: computeCorrection=0.0 pendingMVCBefore=0.0
 [MVC-TRACE] layoutSubviews: pendingMVCCorrection=0.0 offset=(0.0,280.0)
 ```

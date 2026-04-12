@@ -16,6 +16,9 @@ Pod::Spec.new do |s|
     "ios/**/*.{h,m,mm}",
     "cpp/**/*.{h,cpp}"
   ]
+  s.exclude_files = [
+    "cpp/tests/**/*"
+  ]
 
   s.pod_target_xcconfig = {
     "CLANG_CXX_LANGUAGE_STANDARD" => "c++20",

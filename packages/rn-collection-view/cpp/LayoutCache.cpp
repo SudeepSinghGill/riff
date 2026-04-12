@@ -285,10 +285,11 @@ void LayoutCache::_snapshotAnchorLocked() {
     }
   }
   if (found) {
-    _anchorKey = std::move(bestKey);
-    _anchorY   = bestPrimary;  // always stored in _anchorY for simplicity
-    _anchorX   = bestPrimary;  // same value; caller uses _horizontal to pick
-    _hasAnchor = true;
+    _anchorKey             = std::move(bestKey);
+    _anchorY               = bestPrimary;  // always stored in _anchorY for simplicity
+    _anchorX               = bestPrimary;  // same value; caller uses _horizontal to pick
+    _snapshotScrollPrimary = scrollPrimary; // saved so correction can compute absolute target
+    _hasAnchor             = true;
     RNCV_MVC_LOG("snapshotAnchor: key=%s oldY=%.1f scrollOffset=%.1f",
                  _anchorKey.c_str(), bestPrimary, scrollPrimary);
     RNCV_MVC_TRACE("snapshotAnchor: FOUND key=%s pos=%.1f scrollOffset=%.1f",
@@ -304,8 +305,7 @@ void LayoutCache::_snapshotAnchorLocked() {
 
 void LayoutCache::snapshotAnchor() {
   std::lock_guard<std::mutex> lock(_mutex);
-  _correctionConsumed = false;  // new transaction — re-arm allowed
-  RNCV_MVC_TRACE("snapshotAnchor: correctionConsumed reset, hasAnchor was=%s mvcEnabled=%s",
+  RNCV_MVC_TRACE("snapshotAnchor: hasAnchor was=%s mvcEnabled=%s",
                   _hasAnchor ? "YES" : "NO", _mvcEnabled ? "YES" : "NO");
   _snapshotAnchorLocked();
 }
@@ -330,9 +330,9 @@ void LayoutCache::snapshotAnchorIfNeeded() {
     RNCV_MVC_TRACE("snapshotAnchorIfNeeded: SKIP mvcEnabled=NO");
     return;   // MVC disabled — don't auto-snapshot
   }
-  if (_correctionConsumed) {
-    RNCV_MVC_TRACE("snapshotAnchorIfNeeded: SKIP correctionConsumed=YES (prevents re-arm during scrollTo)");
-    return;   // already corrected this transaction — don't re-arm
+  if (_programmaticScrollActive) {
+    RNCV_MVC_TRACE("snapshotAnchorIfNeeded: SKIP programmaticScrollActive=YES (prevents re-arm during animated scrollTo)");
+    return;   // animated scrollTo in flight — re-arming would cancel the animation
   }
   RNCV_MVC_TRACE("snapshotAnchorIfNeeded: SNAPSHOTTING (size-change path)");
   _snapshotAnchorLocked();
@@ -342,22 +342,32 @@ double LayoutCache::computeCorrection() {
   std::lock_guard<std::mutex> lock(_mutex);
   if (!_hasAnchor) return 0;
   _hasAnchor = false;          // one-shot
-  _correctionConsumed = true;  // prevent snapshotAnchorIfNeeded re-arming this transaction
   auto it = _map.find(_anchorKey);
   if (it == _map.end()) {
     // Anchor was deleted — no correction
     return 0;
   }
-  const double newPos = _horizontal ? it->second.frame.x : it->second.frame.y;
-  const double oldPos = _horizontal ? _anchorX : _anchorY;
+  const double newPos     = _horizontal ? it->second.frame.x : it->second.frame.y;
+  const double oldPos     = _horizontal ? _anchorX : _anchorY;
   const double correction = newPos - oldPos;
-  RNCV_MVC_LOG("computeCorrection: key=%s oldY=%.1f newY=%.1f correction=%.1f consumed=true",
-               _anchorKey.c_str(), oldPos, newPos, correction);
-  RNCV_MVC_TRACE("computeCorrection: key=%s oldPos=%.1f newPos=%.1f correction=%.1f → correctionConsumed=YES",
-                  _anchorKey.c_str(), oldPos, newPos, correction);
+  // Absolute target: use the scroll at snapshot time, not the current scroll.
+  // This prevents double-correction when UIKit auto-clamps contentOffset on
+  // contentSize shrink (e.g. delete at bottom of list).
+  const double scrollTarget = _snapshotScrollPrimary + correction;
+  RNCV_MVC_LOG("computeCorrection: key=%s oldY=%.1f newY=%.1f correction=%.1f scrollTarget=%.1f",
+               _anchorKey.c_str(), oldPos, newPos, correction, scrollTarget);
+  RNCV_MVC_TRACE("computeCorrection: key=%s oldPos=%.1f newPos=%.1f correction=%.1f scrollTarget=%.1f",
+                  _anchorKey.c_str(), oldPos, newPos, correction, scrollTarget);
   _pendingCorrectionY   = correction;
+  _pendingScrollTarget  = scrollTarget;
   _hasPendingCorrection = true;
   return correction;
+}
+
+void LayoutCache::setProgrammaticScrollActive(bool active) {
+  std::lock_guard<std::mutex> lock(_mutex);
+  RNCV_MVC_TRACE("setProgrammaticScrollActive: %s", active ? "YES" : "NO");
+  _programmaticScrollActive = active;
 }
 
 double LayoutCache::consumePendingCorrection() {
@@ -365,8 +375,19 @@ double LayoutCache::consumePendingCorrection() {
   if (!_hasPendingCorrection) return 0;
   const double correction = _pendingCorrectionY;
   _pendingCorrectionY   = 0;
+  _pendingScrollTarget  = 0;
   _hasPendingCorrection = false;
   return correction;
+}
+
+double LayoutCache::consumePendingScrollTarget() {
+  std::lock_guard<std::mutex> lock(_mutex);
+  if (!_hasPendingCorrection) return 0;
+  const double target   = _pendingScrollTarget;
+  _pendingCorrectionY   = 0;
+  _pendingScrollTarget  = 0;
+  _hasPendingCorrection = false;
+  return target;
 }
 
 // ─── JSI conversion helpers ───────────────────────────────────────────────────

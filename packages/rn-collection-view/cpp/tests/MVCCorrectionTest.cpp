@@ -129,66 +129,69 @@ TEST(MVCCorrection, ComputeCorrection_OneShotPerTransaction) {
   EXPECT_NEAR(c2, 0.0, 0.5) << "computeCorrection is one-shot; second call must return 0";
 }
 
-// ─── _correctionConsumed flag ─────────────────────────────────────────────────
+// ─── _programmaticScrollActive flag ──────────────────────────────────────────
+// Replaces the old _correctionConsumed flag. Only blocks snapshotAnchorIfNeeded
+// during an active animated scrollTo; never blocks JS-initiated snapshotAnchor().
 
-TEST(MVCCorrection, CorrectionConsumed_PreventsSnapshotAnchorIfNeeded) {
+TEST(MVCCorrection, ProgrammaticScroll_BlocksSnapshotAnchorIfNeeded) {
   LayoutCache cache;
   cache.setMVCEnabled(true);
 
-  // Phase 1: JS snapshotAnchor (simulates prepare useMemo).
   cache.setAttributes(makeItem("item-0-0", 0));
   cache.setAttributes(makeItem("item-0-1", 56));
   setScroll(cache, 56);  // anchor = item-0-1 at y=56
-  cache.snapshotAnchor();  // _correctionConsumed = false, _hasAnchor = true
+  cache.snapshotAnchor();
 
-  // Phase 2: positions shift (insert), computeCorrection fires.
+  // Mutation correction fires.
   cache.setAttributes(makeItem("item-0-1", 112));
   const double correction = cache.computeCorrection();
-  // After computeCorrection: _hasAnchor = false, _correctionConsumed = true.
-  EXPECT_NE(correction, 0.0); // non-zero correction happened
+  EXPECT_NE(correction, 0.0);
 
-  // Phase 3: ShadowNode calls snapshotAnchorIfNeeded (simulates scrollTo animation path).
-  // Should be a no-op because _correctionConsumed = true.
+  // Animated scrollTo begins — set the flag (native view calls this).
+  cache.setProgrammaticScrollActive(true);
+
+  // Phase 3: ShadowNode calls snapshotAnchorIfNeeded (size change during animation).
+  // Should be a no-op because programmaticScrollActive=true.
   cache.setAttributes(makeItem("item-0-2", 168));
-  setScroll(cache, 10); // different scroll position
+  setScroll(cache, 10);
   cache.snapshotAnchorIfNeeded();
-
-  // If snapshotAnchorIfNeeded fired, it would set _hasAnchor = true.
-  // computeCorrection would then return a non-zero delta.
-  // Expected: returns 0 because snapshotAnchorIfNeeded was blocked.
-  cache.setAttributes(makeItem("item-0-2", 200)); // shift anchor's position
+  cache.setAttributes(makeItem("item-0-2", 200));
   const double c2 = cache.computeCorrection();
   EXPECT_NEAR(c2, 0.0, 0.5)
-    << "_correctionConsumed should prevent snapshotAnchorIfNeeded from re-arming";
+    << "programmaticScrollActive should block snapshotAnchorIfNeeded during animated scrollTo";
+
+  // Animation ends — clear the flag (native view calls this).
+  cache.setProgrammaticScrollActive(false);
+
+  // Now snapshotAnchorIfNeeded should work again.
+  // Scroll to 200 so item-0-2 (at y=200) is the anchor candidate.
+  setScroll(cache, 200);
+  cache.snapshotAnchorIfNeeded();
+  cache.setAttributes(makeItem("item-0-2", 250));  // shift by 50
+  const double c3 = cache.computeCorrection();
+  EXPECT_NE(c3, 0.0) << "After clearing programmaticScrollActive, correction should fire again";
 }
 
-TEST(MVCCorrection, SnapshotAnchor_ResetsCorrectionConsumed) {
+TEST(MVCCorrection, SizeChange_CorrectionNotBlockedAfterInitialRender) {
   LayoutCache cache;
   cache.setMVCEnabled(true);
 
+  // Initial render: JS snapshotAnchor → compute correction.
   cache.setAttributes(makeItem("item-0-0", 0));
   cache.setAttributes(makeItem("item-0-1", 56));
-  setScroll(cache, 56);  // anchor = item-0-1 at y=56
-
-  // Transaction 1: snapshot → shift → correct → consumed.
+  cache.setAttributes(makeItem("item-0-2", 112));
+  setScroll(cache, 56);  // anchor = item-0-1
   cache.snapshotAnchor();
-  cache.setAttributes(makeItem("item-0-1", 100));
-  const double c1 = cache.computeCorrection();
-  EXPECT_NE(c1, 0.0);
+  cache.setAttributes(makeItem("item-0-1", 60));  // slight shift
+  cache.computeCorrection();  // fires; old flag would set _correctionConsumed=true here
 
-  // At this point _correctionConsumed = true.
-  // snapshotAnchorIfNeeded should be blocked.
-  cache.snapshotAnchorIfNeeded();
-  cache.setAttributes(makeItem("item-0-1", 150));
-  EXPECT_NEAR(cache.computeCorrection(), 0.0, 0.5)
-    << "snapshotAnchorIfNeeded must be blocked while correctionConsumed=true";
-
-  // Transaction 2: snapshotAnchor() resets _correctionConsumed.
-  setScroll(cache, 100);
-  cache.snapshotAnchor(); // _correctionConsumed = false again
-  cache.setAttributes(makeItem("item-0-1", 200));
-  const double c2 = cache.computeCorrection();
-  EXPECT_NE(c2, 0.0) << "After snapshotAnchor(), correction should work again";
+  // Size change (no data mutation): snapshotAnchorIfNeeded should NOT be blocked.
+  setScroll(cache, 60);
+  cache.snapshotAnchorIfNeeded();  // would be blocked by old _correctionConsumed
+  cache.setAttributes(makeItem("item-0-1", 80));  // another shift
+  const double correction = cache.computeCorrection();
+  EXPECT_NE(correction, 0.0)
+    << "Size change after initial render must still produce correction (Bug 1 regression)";
 }
 
 TEST(MVCCorrection, MVCDisabled_SnapshotAnchorIfNeeded_IsNoOp) {
@@ -205,6 +208,56 @@ TEST(MVCCorrection, MVCDisabled_SnapshotAnchorIfNeeded_IsNoOp) {
   const double correction = cache.computeCorrection();
   EXPECT_NEAR(correction, 0.0, 0.5)
     << "snapshotAnchorIfNeeded must be a no-op when MVC is disabled";
+}
+
+// ─── consumePendingScrollTarget ───────────────────────────────────────────────
+
+TEST(MVCCorrection, ConsumeScrollTarget_IsSnapshotScrollPlusDelta) {
+  LayoutCache cache;
+  cache.setMVCEnabled(true);
+
+  cache.setAttributes(makeItem("item-0-0", 0));
+  cache.setAttributes(makeItem("item-0-1", 56));
+  setScroll(cache, 56);  // snapshotScrollPrimary = 56
+
+  cache.snapshotAnchor();
+  cache.setAttributes(makeItem("item-0-1", 112)); // shift by +56
+  cache.computeCorrection();  // delta = 56, scrollTarget = 56 + 56 = 112
+
+  const double target = cache.consumePendingScrollTarget();
+  EXPECT_NEAR(target, 112.0, 0.5) << "target should be snapshotScroll + delta = 56 + 56 = 112";
+
+  // One-shot: second call returns 0.
+  const double target2 = cache.consumePendingScrollTarget();
+  EXPECT_NEAR(target2, 0.0, 0.5) << "consumePendingScrollTarget is one-shot";
+}
+
+TEST(MVCCorrection, ScrollTarget_AccountsForUIKitClamp) {
+  // Simulates the delete-at-bottom bug:
+  // snapshotScroll=300, anchor at 350, delete shifts anchor to 260 (-90 delta).
+  // Between snapshot and layout, UIKit clamps scroll from 300 to 270 (-30).
+  // Old approach: currentScroll(270) + delta(-90) = 180 → WRONG (overcorrects by 30).
+  // New approach: snapshotScroll(300) + delta(-90) = 210 → CORRECT.
+  LayoutCache cache;
+  cache.setMVCEnabled(true);
+
+  cache.setAttributes(makeItem("item-0-0", 0));
+  cache.setAttributes(makeItem("item-0-1", 100));
+  cache.setAttributes(makeItem("item-0-2", 200));
+  cache.setAttributes(makeItem("item-0-3", 300));
+  cache.setAttributes(makeItem("item-0-4", 350)); // anchor candidate at snapshot
+  setScroll(cache, 300);  // snapshotScroll = 300
+
+  cache.snapshotAnchor();  // anchor = item-0-3 at y=300 (first at-or-below 300)
+
+  // Simulate delete: item-0-2 removed, item-0-3 shifts from 300 to 210.
+  cache.setAttributes(makeItem("item-0-3", 210));
+  const double delta = cache.computeCorrection();
+  EXPECT_NEAR(delta, -90.0, 0.5);  // delta = 210 - 300
+
+  const double target = cache.consumePendingScrollTarget();
+  EXPECT_NEAR(target, 210.0, 0.5)  // 300 + (-90) = 210 (ignores UIKit clamp)
+    << "scroll target should be snapshotScroll+delta, not currentScroll+delta";
 }
 
 // ─── consumePendingCorrection ─────────────────────────────────────────────────
