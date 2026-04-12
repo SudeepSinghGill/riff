@@ -502,6 +502,8 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             r.setProperty(rt, "measureFirst", Value(0));
             r.setProperty(rt, "measureLast",  Value(-1));
             r.setProperty(rt, "cacheVersion", Value(ver));
+            r.setProperty(rt, "blankBefore",  Value(0.0));
+            r.setProperty(rt, "blankAfter",   Value(0.0));
             return Value(rt, r);
           };
 
@@ -522,6 +524,8 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             r.setProperty(rt, "measureFirst", Value(_lastScrollResult.measureFirst));
             r.setProperty(rt, "measureLast",  Value(_lastScrollResult.measureLast));
             r.setProperty(rt, "cacheVersion", Value(static_cast<double>(curVersion)));
+            r.setProperty(rt, "blankBefore",  Value(_lastScrollResult.blankBefore));
+            r.setProperty(rt, "blankAfter",   Value(_lastScrollResult.blankAfter));
             return Value(rt, r);
           }
 
@@ -587,6 +591,28 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
           double ver = static_cast<double>(_layoutCache->version());
 
+          // ── Blank area (Fix 3) ──────────────────────────────────────────
+          // Compute blank px before the first render item and after the last,
+          // avoiding 2 per-scroll JSI attributesForItem() calls from JS.
+          double blankBefore = 0.0, blankAfter = 0.0;
+          {
+            double firstPos = -1.0, lastPos = -1.0, lastExtent = 0.0;
+            for (const auto& a : renderAttrs) {
+              int fi = toFlatIdx(a);
+              if (fi == budgeted.first) {
+                firstPos = isHoriz ? a.frame.x : a.frame.y;
+              }
+              if (fi == budgeted.last) {
+                lastPos    = isHoriz ? a.frame.x : a.frame.y;
+                lastExtent = isHoriz ? a.frame.width : a.frame.height;
+              }
+            }
+            if (firstPos >= 0.0)
+              blankBefore = std::max(0.0, firstPos - scrollPrimary);
+            if (lastPos >= 0.0)
+              blankAfter  = std::max(0.0, scrollPrimary + vpPrimary - (lastPos + lastExtent));
+          }
+
           // ── Cache result for Opt 6 stable-band skip ─────────────────────
           _lastScrollResult.renderFirst  = budgeted.first;
           _lastScrollResult.renderLast   = budgeted.last;
@@ -595,6 +621,8 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           _lastScrollResult.measureFirst = mFirst;
           _lastScrollResult.measureLast  = mLast;
           _lastScrollResult.cacheVersion = curVersion;
+          _lastScrollResult.blankBefore  = blankBefore;
+          _lastScrollResult.blankAfter   = blankAfter;
           // Stable band: ±¼ viewport from current scroll position.
           _lastScrollResult.bandLow  = scrollPrimary - vpPrimary * 0.25;
           _lastScrollResult.bandHigh = scrollPrimary + vpPrimary * 0.25;
@@ -607,6 +635,8 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           result.setProperty(rt, "measureFirst", Value(mFirst));
           result.setProperty(rt, "measureLast",  Value(mLast));
           result.setProperty(rt, "cacheVersion", Value(ver));
+          result.setProperty(rt, "blankBefore",  Value(blankBefore));
+          result.setProperty(rt, "blankAfter",   Value(blankAfter));
           return Value(rt, result);
         }));
 

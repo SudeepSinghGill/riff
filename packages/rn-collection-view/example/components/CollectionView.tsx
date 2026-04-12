@@ -166,6 +166,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
       visibleFirst: number; visibleLast: number;
       measureFirst: number; measureLast: number;
       cacheVersion: number;
+      blankBefore: number; blankAfter: number;
     };
   };
 };
@@ -1670,15 +1671,10 @@ export function Riff<T = unknown>({
         }
       }
 
-      // P5.3 / onBlankArea — compute blank px at top and bottom of viewport.
+      // P5.3 / onBlankArea — blank px computed inside processScroll (C++), no extra JSI calls.
       if (budgetedR.last >= budgetedR.first) {
-        const firstAttr = effectiveLayout.attributesForItem(budgetedR.first, 0);
-        const lastAttr  = effectiveLayout.attributesForItem(budgetedR.last, 0);
-        const firstTop  = firstAttr ? firstAttr.frame.y : sectionInsetTop + budgetedR.first * stride;
-        const lastTop   = lastAttr ? lastAttr.frame.y : sectionInsetTop + budgetedR.last * stride;
-        const lastH     = lastAttr ? lastAttr.frame.height : effectiveItemHeight;
-        const offsetStart = Math.max(0, firstTop - scrollY);
-        const offsetEnd   = Math.max(0, scrollY + vpH - (lastTop + lastH));
+        const offsetStart = scrollResult.blankBefore ?? 0;
+        const offsetEnd   = scrollResult.blankAfter  ?? 0;
         lastBlankAreaRef.current = { offsetStart, offsetEnd };
         onBlankArea?.({ offsetStart, offsetEnd });
       }
@@ -1859,9 +1855,10 @@ export function Riff<T = unknown>({
     }
     return map;
   }, [hasStickyHeaders, hasStickyFooters, stickyHeaderFlatIndices, stickyFooterFlatIndices,
-      effectiveLayout, effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult, propSections,
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      layoutCacheVersion]);
+      effectiveLayout, effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult, propSections]);
+  // layoutCacheVersion intentionally excluded: sticky naturalY is derived from effectiveLayout
+  // (which changes on data mutations). Including layoutCacheVersion caused a new Map reference
+  // on every Yoga measurement flush → renderGen cascade → O(window_size) element cache miss.
 
   // ── Content ──────────────────────────────────────────────────────────────────
 
@@ -2018,16 +2015,21 @@ export function Riff<T = unknown>({
   // We can safely prepend sticky headers and skip them in the main loop!
 
   // ── Opt 7: render generation — bump when any global rendering dep changes ──
-  // extraData, stickyConfig, effectiveLayout, viewportWidth all affect how cells
-  // are rendered regardless of which slot they're in. When these change, all
-  // cached elements are stale and must be re-created on next render.
-  const _curCacheDeps = { extraData, stickyConfig: stickyConfigMap, layout: effectiveLayout, vpWidth: viewportWidth };
+  // extraData, effectiveLayout, viewportWidth all affect how cells are rendered
+  // regardless of which slot they're in. When these change, all cached elements
+  // are stale and must be re-created on next render.
+  //
+  // stickyConfigMap is intentionally excluded: sticky cells are rendered outside
+  // the slot-based element cache loop (prepended separately). Including it caused
+  // a cascade: layoutCacheVersion bump → new stickyConfigMap reference → renderGen++
+  // → ALL element cache entries invalidated → O(window_size) re-render on every
+  // scroll tick where a Yoga measurement occurred (defeating Opt 4+7 entirely).
+  const _curCacheDeps = { extraData, layout: effectiveLayout, vpWidth: viewportWidth };
   if (
     prevCacheDepsRef.current === null ||
-    _curCacheDeps.extraData    !== prevCacheDepsRef.current.extraData ||
-    _curCacheDeps.stickyConfig !== prevCacheDepsRef.current.stickyConfig ||
-    _curCacheDeps.layout       !== prevCacheDepsRef.current.layout ||
-    _curCacheDeps.vpWidth      !== prevCacheDepsRef.current.vpWidth
+    _curCacheDeps.extraData !== prevCacheDepsRef.current.extraData ||
+    _curCacheDeps.layout    !== prevCacheDepsRef.current.layout ||
+    _curCacheDeps.vpWidth   !== prevCacheDepsRef.current.vpWidth
   ) {
     renderGenRef.current++;
     prevCacheDepsRef.current = _curCacheDeps;
@@ -2413,7 +2415,10 @@ export function Riff<T = unknown>({
       <RNCollectionViewContainer
         style={{ flex: 1 }}
         layoutCacheId={layoutCacheId}
-        layoutCacheVersion={layoutCacheVersion}
+        // layoutCacheVersion intentionally omitted: ShadowNode + ObjC view never read it.
+        // Passing it caused a Fabric prop diff + ShadowNode re-layout on every Yoga
+        // measurement flush — a redundant pass since applyMeasurements → updateStateIfNeeded
+        // already triggers the native update.
         layoutType={effectiveLayout.type as any}
         estimatedItemHeight={effectiveItemHeight}
         renderRangeStart={renderRangeStart}

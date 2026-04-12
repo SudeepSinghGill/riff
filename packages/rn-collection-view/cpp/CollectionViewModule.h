@@ -137,6 +137,7 @@ private:
     int32_t measureFirst = 0, measureLast = -1;
     int32_t cacheVersion = -1;
     double bandLow = 0.0, bandHigh = 0.0;
+    double blankBefore = 0.0, blankAfter = 0.0;
   };
   LastScrollResult _lastScrollResult;
 
