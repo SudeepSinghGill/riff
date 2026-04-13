@@ -90,7 +90,7 @@ const INITIAL: PerformanceMetrics = {
 
 const EXPECTED_FRAME_MS = 1000 / 60; // 16.67ms
 
-export function usePerformanceMetrics(): PerformanceMetrics {
+export function usePerformanceMetrics(disabled = false): PerformanceMetrics {
   const [metrics, setMetrics] = useState<PerformanceMetrics>(INITIAL);
 
   // rAF idle tracker — writes to refs, never calls setState directly.
@@ -101,6 +101,8 @@ export function usePerformanceMetrics(): PerformanceMetrics {
   const memBaselineRef   = useRef<number>(-1);
 
   useEffect(() => {
+    if (disabled) return; // No rAF loop, no timer, no CADisplayLink — zero overhead.
+
     // Start CADisplayLink for native FPS.
     nativeMod.metrics.startFrameTimer();
 
@@ -157,7 +159,7 @@ export function usePerformanceMetrics(): PerformanceMetrics {
       clearInterval(interval);
       nativeMod.metrics.stopFrameTimer();
     };
-  }, []);
+  }, [disabled]);
 
   return metrics;
 }

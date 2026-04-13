@@ -198,7 +198,7 @@ export function PerfHood({
   itemHeight = 56,
   getContentHeight,
 }: PerfHoodProps) {
-  const m = usePerformanceMetrics();
+  const m = usePerformanceMetrics(disabled);
   const [showResult, setShowResult] = useState(false);
   const prevResultRef = useRef<BenchmarkResult | null>(null);
 
