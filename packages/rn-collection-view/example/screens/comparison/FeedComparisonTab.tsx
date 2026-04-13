@@ -309,6 +309,9 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
         keyExtractor={item => String(item.id)}
         renderItem={renderItem}
         layout={LAYOUT}
+        renderMultiplier={0.5}
+        mountedWindowSize={2.0}
+        measureAhead={0.5}
         onBlankArea={({ offsetStart, offsetEnd }) => {
           const vpH = vpHeightRef.current;
           feedBlankAreaPct = vpH > 0
