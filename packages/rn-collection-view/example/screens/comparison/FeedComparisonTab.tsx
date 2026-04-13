@@ -267,6 +267,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
 
   const perfHood = (
     <PerfHood
+      disabled
       getActiveMounts={getActiveMounts}
       getTotalMounts={getTotalMounts}
       getScrollVelocity={getScrollVelocity}

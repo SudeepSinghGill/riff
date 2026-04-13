@@ -37,6 +37,10 @@ import type { BenchmarkConfig, BenchmarkResult, RunResult } from '../utils/useBe
 // ── Public props ──────────────────────────────────────────────────────────────
 
 export interface PerfHoodProps {
+  /** When true, the 500ms metrics timer is stopped. PerfHood stays mounted
+   *  with static/stale values but adds zero overhead. Use RN's built-in
+   *  perf monitor for JS FPS measurement instead. */
+  disabled?: boolean;
   /**
    * Getter for currently mounted cell count.
    * Called on PerfHood's own 500ms tick — does NOT cause the list parent to re-render.
@@ -182,6 +186,7 @@ function BenchmarkSummary({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function PerfHood({
+  disabled = false,
   getActiveMounts,
   getTotalMounts,
   getScrollVelocity,
@@ -204,6 +209,7 @@ export function PerfHood({
   const [scrollVelocity, setScrollVelocity] = useState(0);
   const [contentHeight, setContentHeight] = useState(0);
   useEffect(() => {
+    if (disabled) return;
     const id = setInterval(() => {
       setActiveMounts(getActiveMounts());
       setTotalMounts(getTotalMounts());
@@ -214,7 +220,7 @@ export function PerfHood({
     return () => clearInterval(id);
   // Getters are stable useCallback refs — safe to omit from deps.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [disabled]);
 
   const benchmarkEnabled = !!scrollRef;
 
