@@ -58,13 +58,26 @@ void LayoutCache::setAttributes(const LayoutAttributes& attrs) {
 void LayoutCache::_setAttributesLocked(const LayoutAttributes& attrs) {
   auto it = _map.find(attrs.key);
   if (it == _map.end()) {
+    // New entry — always bump version.
     _insertionOrder.push_back(attrs.key);
     _index.insert(attrs.key, attrs.frame);
+    _map[attrs.key] = attrs;
+    ++_version;
   } else {
-    _index.update(attrs.key, it->second.frame, attrs.frame);
+    // Existing entry — only bump version if frame changed.
+    // Non-frame fields (sizingState, alpha, zIndex) are still updated but don't
+    // affect visibility ranges, scroll behavior, or the stable-band skip.
+    const auto& oldFrame = it->second.frame;
+    bool frameChanged = oldFrame.x != attrs.frame.x ||
+                        oldFrame.y != attrs.frame.y ||
+                        oldFrame.width != attrs.frame.width ||
+                        oldFrame.height != attrs.frame.height;
+    if (frameChanged) {
+      _index.update(attrs.key, it->second.frame, attrs.frame);
+      ++_version;
+    }
+    it->second = attrs;
   }
-  _map[attrs.key] = attrs;
-  ++_version;
 }
 
 std::optional<LayoutAttributes> LayoutCache::getAttributes(

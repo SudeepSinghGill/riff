@@ -44,8 +44,8 @@ export interface PerfHoodProps {
   getActiveMounts: () => number;
   /** Getter for total cells ever mounted (cumulative). */
   getTotalMounts: () => number;
-  /** Scroll velocity in pt/s from the parent's onScroll handler. */
-  scrollVelocity?: number;
+  /** Getter for scroll velocity in pt/s. Called on PerfHood's own 500ms tick. */
+  getScrollVelocity?: () => number;
   /**
    * Getter for blank area % (0-100, or -1 if unavailable).
    * Called on PerfHood's own tick.
@@ -57,7 +57,8 @@ export interface PerfHoodProps {
   tab?: string;
   itemCount?: number;
   itemHeight?: number;
-  contentHeight?: number;
+  /** Getter for content height. Called on PerfHood's own 500ms tick. */
+  getContentHeight?: () => number;
 }
 
 // ── Color helpers ─────────────────────────────────────────────────────────────
@@ -183,28 +184,32 @@ function BenchmarkSummary({
 export function PerfHood({
   getActiveMounts,
   getTotalMounts,
-  scrollVelocity = 0,
+  getScrollVelocity,
   getBlankAreaPct,
   scrollRef,
   engine = 'riff',
   tab = 'feed',
   itemCount = 0,
   itemHeight = 56,
-  contentHeight = 0,
+  getContentHeight,
 }: PerfHoodProps) {
   const m = usePerformanceMetrics();
   const [showResult, setShowResult] = useState(false);
   const prevResultRef = useRef<BenchmarkResult | null>(null);
 
-  // Read module-level mount counters on our own tick — no list re-render needed.
+  // Read all metrics on our own 500ms tick — no list parent re-render needed.
   const [activeMounts, setActiveMounts] = useState(0);
   const [totalMounts,  setTotalMounts]  = useState(0);
   const [blankAreaPct, setBlankAreaPct] = useState(-1);
+  const [scrollVelocity, setScrollVelocity] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
   useEffect(() => {
     const id = setInterval(() => {
       setActiveMounts(getActiveMounts());
       setTotalMounts(getTotalMounts());
       setBlankAreaPct(getBlankAreaPct?.() ?? -1);
+      setScrollVelocity(getScrollVelocity?.() ?? 0);
+      setContentHeight(getContentHeight?.() ?? 0);
     }, 500);
     return () => clearInterval(id);
   // Getters are stable useCallback refs — safe to omit from deps.

@@ -577,7 +577,7 @@ interface FlattenResult<T> {
   declaredHeights:           Map<string, number>;
 }
 
-const RNCV_DEBUG_LOGS = false;
+const RNCV_DEBUG_LOGS = true;
 // Set to true to enable verbose MVC lifecycle tracing across the JS layer.
 // Covers: snapshotAnchor, fingerprint change + stash, computeSections heights,
 // measuredHeightForItem lookups, processScroll ranges, onScroll events.
@@ -1014,6 +1014,9 @@ export function Riff<T = unknown>({
   const viewportWidthRef  = useRef(seedW);
   const viewportHeightRef = useRef(seedH);
   const decorationCountRef = useRef(0);
+  // Decoration cache — avoids JSI getAttributesInRect call on re-renders
+  // where layoutCacheVersion and scroll position haven't changed.
+  const lastDecoCacheRef = useRef<{ lcv: number; scrollY: number; scrollX: number; elements: React.ReactElement[] }>({ lcv: -1, scrollY: -1, scrollX: -1, elements: [] });
   // contentHeightRef / layoutContentSizeRef mirror state/memo values.
   // useImperativeHandle closes over its deps once — refs let scrollToItem read
   // the current value without requiring those values in the deps array
@@ -1360,11 +1363,17 @@ export function Riff<T = unknown>({
     rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
 
     if (layoutResult.renderLast < layoutResult.renderFirst) {
-      setRenderRange({ first: 0, last: -1 });
+      const empty = { first: 0, last: -1 };
+      if (rangeChanged(prevRenderRef.current, empty)) {
+        prevRenderRef.current = empty;
+        setRenderRange(empty);
+      }
     } else {
       const budgeted = { first: layoutResult.renderFirst, last: layoutResult.renderLast };
-      prevRenderRef.current = budgeted;
-      setRenderRange(budgeted);
+      if (rangeChanged(prevRenderRef.current, budgeted)) {
+        prevRenderRef.current = budgeted;
+        setRenderRange(budgeted);
+      }
 
       // Measure range: extend render range for pre-measurement of variable-height cells.
       if (measureAhead > 0) {
@@ -2283,6 +2292,18 @@ export function Riff<T = unknown>({
       const isHorizDeco = effectiveLayout.horizontal ?? false;
       const scrollX = prevScrollXRef.current;
       const scrollY = prevScrollYRef.current;
+
+      // Decoration cache: skip JSI query when lcv and scroll position match.
+      // Decorations only change when positions shift (lcv bump) or scroll moves
+      // enough that different decorations enter/leave the render window.
+      const _decoCacheHit =
+        lastDecoCacheRef.current.lcv === layoutCacheVersion &&
+        Math.abs(lastDecoCacheRef.current.scrollY - scrollY) < 1.0 &&
+        Math.abs(lastDecoCacheRef.current.scrollX - scrollX) < 1.0;
+      if (_decoCacheHit) {
+        decorationElements = lastDecoCacheRef.current.elements;
+      } else {
+
       const vpH = viewportHeightRef.current || viewportHeight;
       const vpW = viewportWidth;
       const margin = (isHorizDeco ? vpW : vpH) * renderMultiplier;
@@ -2353,6 +2374,9 @@ export function Riff<T = unknown>({
           </RNMeasuredCell>,
         );
       }
+
+      lastDecoCacheRef.current = { lcv: layoutCacheVersion, scrollY, scrollX, elements: decorationElements };
+      } // end else (decoration cache miss)
     }
 
     decorationCountRef.current = decorationElements.length;

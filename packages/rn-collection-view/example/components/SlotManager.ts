@@ -52,6 +52,13 @@ export class SlotManager<T> {
   /** Max idle slots per type kept alive between renders. Default 4. */
   maxPoolSize = 4;
 
+  // Short-circuit state — when all inputs match, sync() returns cached result in O(1).
+  private _prevFirst = -1;
+  private _prevLast = -1;
+  private _prevMF: number | null = null;
+  private _prevML: number | null = null;
+  private _prevLen = -1;
+
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /**
@@ -82,6 +89,19 @@ export class SlotManager<T> {
     dataLength: number,
     stickySet: Set<number> | null,
   ): Map<string, SlotInfo<T>> {
+    // ── Short-circuit: if all inputs match previous call, return cached result ─
+    // Safe because: when data content changes (same length), the consumer changes
+    // data reference or extraData → Riff calls prepare() → layoutContext changes →
+    // renderGen bumps → element cache misses → renderCell calls computeCacheKey
+    // with new keys → Phase 3 Case A/B dataKey checks detect the change.
+    // This short-circuit only fires when the index ranges and array length are
+    // identical — the minimum condition for neededIndices to be the same Set.
+    if (renderFirst === this._prevFirst && renderLast === this._prevLast &&
+        measureFirst === this._prevMF && measureLast === this._prevML &&
+        dataLength === this._prevLen) {
+      return this.activeSlots;
+    }
+
     // ── Phase 1: Build the set of indices we need this render ───────────────
     const neededIndices = new Set<number>();
     const effectiveMeasureFirst = measureFirst ?? renderFirst;
@@ -206,6 +226,13 @@ export class SlotManager<T> {
     }
 
 
+    // Store inputs for short-circuit check on next call.
+    this._prevFirst = renderFirst;
+    this._prevLast = renderLast;
+    this._prevMF = measureFirst;
+    this._prevML = measureLast;
+    this._prevLen = dataLength;
+
     return this.activeSlots;
   }
 
@@ -220,6 +247,11 @@ export class SlotManager<T> {
     this.recyclePools.clear();
     this.dataKeyToSlot.clear();
     this.slotCounter = 0;
+    this._prevFirst = -1;
+    this._prevLast = -1;
+    this._prevMF = null;
+    this._prevML = null;
+    this._prevLen = -1;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────

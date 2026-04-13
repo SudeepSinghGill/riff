@@ -10,7 +10,7 @@
  * - Riff renders each cell with its real identity — no recycling artifacts.
  * - Deep hierarchy (5-10 Views deep) stresses JS bridge in FlashList recycling.
  */
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Riff } from '../../components/CollectionView';
@@ -230,17 +230,19 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
   const prevTimeRef     = useRef(0);
   const listRef         = useRef<any>(null);
   const vpHeightRef     = useRef(0);
-  const [velocity,      setVelocity]     = useState(0);
-  const [contentHeight, setContentH]     = useState(0);
+  const velocityRef    = useRef(0);
+  const contentHRef    = useRef(0);
   React.useEffect(() => {
     feedBlankAreaPct = -1;
   }, [mode]);
 
   // Stable getters — PerfHood reads module-level counters on its own tick
   // so neither Riff nor FlashList re-renders just to update the HUD.
-  const getActiveMounts = useCallback(() => feedActiveMounts, []);
-  const getTotalMounts  = useCallback(() => feedTotalMounts,  []);
-  const getBlankAreaPct = useCallback(() => feedBlankAreaPct, []);
+  const getActiveMounts   = useCallback(() => feedActiveMounts, []);
+  const getTotalMounts    = useCallback(() => feedTotalMounts,  []);
+  const getBlankAreaPct   = useCallback(() => feedBlankAreaPct, []);
+  const getScrollVelocity = useCallback(() => velocityRef.current, []);
+  const getContentHeight  = useCallback(() => contentHRef.current, []);
 
   const handleLayout = (e: LayoutChangeEvent) => {
     vpHeightRef.current = e.nativeEvent.layout.height;
@@ -252,7 +254,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
     const dt     = now - prevTimeRef.current;
     if (dt > 0 && dt < 300) {
       const vel = Math.abs(offset - prevOffsetRef.current) / (dt / 1000);
-      setVelocity(Math.round(vel));
+      velocityRef.current = Math.round(vel);
     }
     prevOffsetRef.current = offset;
     prevTimeRef.current   = now;
@@ -267,14 +269,14 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
     <PerfHood
       getActiveMounts={getActiveMounts}
       getTotalMounts={getTotalMounts}
-      scrollVelocity={velocity}
+      getScrollVelocity={getScrollVelocity}
       getBlankAreaPct={getBlankAreaPct}
       scrollRef={listRef}
       engine={mode === 'cv' ? 'riff' : 'flash'}
       tab="feed"
       itemCount={FEED_DATA.length}
       itemHeight={140}
-      contentHeight={contentHeight}
+      getContentHeight={getContentHeight}
     />
   );
 
@@ -291,7 +293,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
           overrideItemLayout={(layout, item) => { layout.size = TYPE_HEIGHTS[item.type]; }}
           onScroll={handleScroll}
           scrollEventThrottle={100}
-          onContentSizeChange={(_, h) => setContentH(h)}
+          onContentSizeChange={(_, h) => { contentHRef.current = h; }}
         />
         {perfHood}
       </View>
@@ -315,7 +317,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
         scrollViewProps={{
           onScroll: handleScroll,
           scrollEventThrottle: 100,
-          onContentSizeChange: (_, h) => setContentH(h),
+          onContentSizeChange: (_, h) => { contentHRef.current = h; },
         }}
       />
       {perfHood}
