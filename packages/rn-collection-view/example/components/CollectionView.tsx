@@ -1671,12 +1671,13 @@ export function Riff<T = unknown>({
         }
       }
 
-      // P5.3 / onBlankArea — blank px computed inside processScroll (C++), no extra JSI calls.
-      if (budgetedR.last >= budgetedR.first) {
+      // P5.3 / onBlankArea — blank px computed inside processScroll (C++), zero marginal cost.
+      // JS work (ref write + callback) only runs when consumer provides onBlankArea.
+      if (onBlankArea && budgetedR.last >= budgetedR.first) {
         const offsetStart = scrollResult.blankBefore ?? 0;
         const offsetEnd   = scrollResult.blankAfter  ?? 0;
         lastBlankAreaRef.current = { offsetStart, offsetEnd };
-        onBlankArea?.({ offsetStart, offsetEnd });
+        onBlankArea({ offsetStart, offsetEnd });
       }
 
       // F1.3 — Prefetch/evict callbacks.
@@ -1855,10 +1856,9 @@ export function Riff<T = unknown>({
     }
     return map;
   }, [hasStickyHeaders, hasStickyFooters, stickyHeaderFlatIndices, stickyFooterFlatIndices,
-      effectiveLayout, effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult, propSections]);
-  // layoutCacheVersion intentionally excluded: sticky naturalY is derived from effectiveLayout
-  // (which changes on data mutations). Including layoutCacheVersion caused a new Map reference
-  // on every Yoga measurement flush → renderGen cascade → O(window_size) element cache miss.
+      effectiveLayout, effectiveItemHeight, sectionInsetTop, stride, isSectioned, flattenResult, propSections,
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      layoutCacheVersion]);
 
   // ── Content ──────────────────────────────────────────────────────────────────
 
@@ -2415,10 +2415,7 @@ export function Riff<T = unknown>({
       <RNCollectionViewContainer
         style={{ flex: 1 }}
         layoutCacheId={layoutCacheId}
-        // layoutCacheVersion intentionally omitted: ShadowNode + ObjC view never read it.
-        // Passing it caused a Fabric prop diff + ShadowNode re-layout on every Yoga
-        // measurement flush — a redundant pass since applyMeasurements → updateStateIfNeeded
-        // already triggers the native update.
+        layoutCacheVersion={layoutCacheVersion}
         layoutType={effectiveLayout.type as any}
         estimatedItemHeight={effectiveItemHeight}
         renderRangeStart={renderRangeStart}
