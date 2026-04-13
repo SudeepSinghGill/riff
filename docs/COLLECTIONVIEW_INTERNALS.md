@@ -724,9 +724,10 @@ Rationale:
 | Dep | Why it requires full invalidation |
 |-----|-----------------------------------|
 | `extraData` | Passed to `MemoizedCellContent` — affects all cells' rendered output |
-| `stickyConfigMap` | Determines whether a cell is wrapped in `RNScrollCoordinatedView` vs `RNMeasuredCell` |
 | `effectiveLayout` | Affects `computeCacheKey()` format and cell width computation |
 | `viewportWidth` | Affects cell width prop on all cells |
+
+**`stickyConfigMap` is intentionally excluded from renderGen deps.** Sticky cells are rendered outside the slot-based element cache loop (prepended separately before the main loop). Including `stickyConfigMap` in renderGen caused a cascade: every Yoga measurement bumped `layoutCacheVersion` → rebuilt `stickyConfigMap` with a new Map reference → bumped `renderGen` → invalidated ALL element cache entries → O(window_size) re-render with ~30 JSI calls on every scroll frame where a measurement occurred. `stickyConfigMap` still depends on `layoutCacheVersion` for correctness (sticky positions must reflect measured item heights); it just no longer triggers `renderGen`.
 
 When `renderGen` is stable, only slots whose individual state changed are re-rendered. This is the O(delta) property.
 
@@ -1075,3 +1076,147 @@ The library is NOT in `node_modules`. Auto-linking and codegen are driven by:
 - Codegen finds `codegenConfig` in `packages/rn-collection-view/package.json` and generates `RNCollectionViewSpec` headers
 
 If you remove or break `react-native.config.js`, pod install will print `Removing RNCollectionView` and the TurboModule won't register at runtime.
+
+---
+
+## LayoutCache Architecture
+
+### What it is
+
+`LayoutCache` is a C++ in-memory store (hash map + spatial index) that is the **single source of truth** for every cell's position, size, and state. It lives in C++ (`cpp/LayoutCache.h/.cpp`) and is shared between:
+
+- **JS thread** — reads positions (`attributesForItem`, spatial queries) to compute render windows; writes initial estimates during `prepare()`
+- **ShadowNode (Fabric BG thread)** — writes corrected heights after Yoga measures cells; reads all positions to diff against Yoga output and cascade corrections
+- **Native UI thread (ObjC)** — reads final positions in `updateState:` to set `child.frame` on every cell
+
+Access is guarded by a single mutex. All three threads can be in-flight simultaneously.
+
+### Why it exists (not in React state, not in JS)
+
+Storing positions in React state would mean every position change triggers a React commit. During scroll, positions update constantly — this would serialize everything through the JS thread and block native scrolling. The LayoutCache sits at the C++ JSI boundary: native can write positions without touching React, and JS reads via a thin JSI wrapper with a single mutex acquisition.
+
+### Version counter
+
+Every `setAttributes()` call increments `_version`. Callers use this to detect staleness without comparing attribute contents. `processScroll` returns the current version; JS compares it against `lastCacheVersionRef` and bumps `layoutCacheVersion` state when it changes.
+
+### Spatial index
+
+A bucket-based 2D spatial index (`SpatialIndex`) sits alongside the hash map. When `setAttributes()` is called, the frame is inserted into the appropriate buckets. `getAttributesInRect()` queries only the intersecting buckets — O(buckets_intersected + k) instead of O(n). Used by `processScroll` to find the render and visible windows.
+
+### SizingState enum
+
+Each entry has a `SizingState`:
+- `Placeholder` — estimated height, Yoga hasn't measured yet
+- `Measured` — Yoga has measured; this height is authoritative
+- `Dirty` — previously measured but data changed; re-measure pending
+
+`applyMeasurements` in the ShadowNode only triggers position cascades when a `Measured` height differs from the Yoga output by more than 0.5px.
+
+---
+
+## JS Scroll Hot Path — Architecture and Optimizations
+
+### How a scroll frame works (simplified)
+
+```
+User scroll
+  │
+  ├─ Native: scrollViewDidScroll: (UI thread)
+  │    setScrollOffset(x, y, CACurrentMediaTime())   [LayoutCache, writes velocity internally]
+  │    emits throttled onScroll event to JS
+  │
+  └─ JS: onScroll handler
+       processScroll(vpH, vpW, isH, renderMult, ...)  [1 JSI call → C++]
+         └─ C++: reads scroll offset + velocity from LayoutCache
+                 runs spatial query (render rect + visible rect)
+                 applies budget
+                 computes measure-ahead range
+                 computes blank area
+                 returns { renderFirst, renderLast, visibleFirst, visibleLast,
+                           measureFirst, measureLast, cacheVersion, blankBefore, blankAfter }
+       checks cacheVersion → may setLayoutCacheVersion(v+1)
+       checks renderRange changed → may setRenderRange(...)
+       React commit (if state changed) → scrollContent IIFE re-runs
+         └─ SlotManager.sync(first, last) → computes slot assignments O(delta)
+            element cache loop → O(delta) cell renders (hits: renderGen unchanged)
+```
+
+### Per-scroll JSI call count
+
+| When | JSI calls |
+|------|-----------|
+| Stable scroll (band skip — cache version unchanged, offset in band) | **1** (processScroll returns cached result immediately in C++) |
+| Active scroll (range moving) | **1** processScroll + ~2N sticky JSI calls per re-render (N = sticky items) |
+| Measurement flush (new cells Yoga-measured) | **1** processScroll + rebuild: ~2N sticky + ~2S section-height JSI calls (S = sections) |
+
+FlashList comparison: **0** JSI calls per scroll (pure JS binary search returning 2 integers).
+
+### Optimizations implemented (Opt 1–7)
+
+#### Opt 1: C++ spatial query instead of JS spatial marshalling
+**Before**: JS called `getAttributesInRect(rect)` which returned ~30 JSI objects each with ~10 properties — ~300 JSI property constructions per scroll tick.
+**After**: The spatial query runs entirely inside C++ `processScroll`. Only 4-8 integers cross the JSI boundary.
+**How found**: Per-frame cost analysis comparing Riff vs FlashList — this was the #1 JS thread cost.
+
+#### Opt 2: Batched processScroll — one JSI call per scroll tick
+**Before**: 4-6 separate JSI calls per scroll: version check, 2× spatial query, budget, measure range, blank area.
+**After**: Single `processScroll()` call returns everything.
+**How found**: Same analysis — each JSI crossing is ~100ns, but the aggregate was 400-600ns of pure overhead before any useful work.
+
+#### Opt 6: C++ stable-band skip (early return)
+**Before**: Every scroll event ran the full spatial query.
+**After**: `processScroll` records a ±¼-viewport "stable band". If `cacheVersion` unchanged AND offset within band, returns cached result immediately (~200ns vs 50-200μs for full query).
+**How found**: Observation that during momentum scroll most ticks don't change render indices — O(1) check to avoid all O(buckets+k) work.
+
+#### Opt 4: SlotManager cell recycling
+**Before**: React key = `keyExtractor` result. Scrolling a cell off-screen → Fiber DELETE. New cell on-screen → Fiber CREATE. Mount cost ~1-5ms per cell.
+**After**: React key = `slotKey` (stable: "slot_0", "slot_1"). SlotManager maintains a pool of retired slots. When a new cell is needed, a pooled slot is reclaimed — React sees a prop UPDATE on an existing Fiber, not CREATE/DELETE.
+**How found**: Observation that FlashList v2's recycled-key approach means Fiber UPDATE (cheap) not CREATE (expensive). SlotManager.ts is the Riff equivalent.
+
+#### Opt 7: Element cache — O(delta) renders
+**Before**: Every scroll re-render rebuilt React elements for all ~30 cells in the window (even unchanged ones). React's reconciler efficiently diffs, but `React.createElement` for 30 cells is still O(window_size) JS work.
+**After**: `elementCacheRef` maps `slotKey → ReactElement`. For unchanged slots (same `gen`, `dataKey`, `cacheKey`, `measureOnly`, `item` reference), the exact same `ReactElement` object is reused — React sees referential equality and **skips diffing entirely**, not just skips DOM work.
+**How found**: Opt 4 enabled this: stable `slotKey` means the same slot appears in consecutive renders. Cache hit = zero React work for that cell.
+
+**Bug discovered (2026-04-13)**: `stickyConfigMap` was in `renderGen` deps. `stickyConfigMap` useMemo depends on `layoutCacheVersion`. Every Yoga measurement bumped `layoutCacheVersion` → new Map reference → `renderGen++` → all 30 cache entries invalidated → O(window_size) full re-render on every measurement frame. Fix: remove `stickyConfigMap` from `renderGen` deps (sticky cells are rendered outside the element cache loop anyway).
+
+#### Opt 3 (deferred): Transform-based cell positioning
+**Why deferred**: Analysis showed `setFrame:` for position-only changes already calls `setCenter:` without triggering `layoutSubviews`. Gain smaller than estimated. Also: `layer.transform` breaks `hitTest:withEvent:` since the view's natural frame is at `(0,0)`. Would need `hitTest:` override in `_contentView`.
+
+#### Opt 5 (deferred): Flat Float64Array from spatial queries
+**Why deferred**: Only applies to custom layouts with `needsSpatialQuery: true`. List/grid/masonry already use binary search inside `processScroll`. Low priority.
+
+### Remaining bottleneck (known, not yet fixed)
+
+Every `layoutCacheVersion` bump (Yoga measurement during scroll) triggers a full React re-render that:
+1. Rebuilds `stickyConfigMap` useMemo — 2N-5N JSI calls (N = sticky items)
+2. Rebuilds `sectionHeights` useMemo — ~2S JSI calls (S = sections)
+3. Calls the range `useEffect` — 1 processScroll JSI call
+4. Triggers Fabric re-commit via `layoutCacheVersion` native prop
+
+This happens every frame where a new cell enters the render window and gets Yoga-measured. After all cells are measured (stable scroll through already-seen content), version stops bumping and this overhead disappears.
+
+**What this means in practice**: Initial scroll through unseen content (first time): expensive. Repeat scrolling through already-measured content: cheap (stable-band skip + element cache hits).
+
+### Diagnostic: element cache hit counter
+
+Enable with `RNCV_DEBUG_LOGS = true` in CollectionView.tsx. Filter logs by `[RNCV-CACHE]`.
+
+```
+[RNCV-CACHE] hits=28 misses=2 total=30 hitRate=93% renderGen=5 lcv=14
+```
+
+- **hitRate** — percentage of cells that used cached elements (target: >90% during steady scroll)
+- **misses** — cells actually re-rendered (expected: only newly entering/exiting cells)
+- **renderGen** — how many times global cache deps changed (should be low)
+- **lcv** — layoutCacheVersion (bumps on Yoga measurements; high during initial scroll)
+
+If `hitRate` < 80% during steady scroll, something is causing spurious `renderGen` bumps. If `hitRate` > 90% but FPS is still bad, the bottleneck is the JSI overhead from `stickyConfigMap`/`sectionHeights` rebuilds (not the element creation cost).
+
+### onBlankArea — zero-cost in production
+
+Blank area computation happens inside C++ `processScroll` at zero marginal cost (uses the `renderAttrs` vector already in hand). The JS callback (`onBlankArea` prop) only fires if the consumer provides the prop. Use `onBlankArea` only in debug/profiling builds:
+
+```typescript
+onBlankArea={__DEV__ ? myBlankAreaHandler : undefined}
+```

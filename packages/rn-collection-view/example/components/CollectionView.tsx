@@ -2173,6 +2173,7 @@ export function Riff<T = unknown>({
     const cells: React.ReactElement[] = [];
     let minIdx = data.length;
     let maxIdx = -1;
+    let _cacheHits = 0, _cacheMisses = 0; // Opt 7 hit counter
 
     for (const [slotKey, slot] of activeSlots) {
       // Guard non-pooled slots against OOB indices (data shrink).
@@ -2200,6 +2201,7 @@ export function Riff<T = unknown>({
         prev.item        === slot.item
       ) {
         cells.push(prev.element);
+        _cacheHits++;
         continue;
       }
 
@@ -2210,6 +2212,14 @@ export function Riff<T = unknown>({
         measureOnly: slot.measureOnly, item: slot.item, element: el,
       });
       cells.push(el);
+      _cacheMisses++;
+    }
+
+    // Opt 7 diagnostic — enable RNCV_DEBUG_LOGS to see element cache effectiveness.
+    if (__DEV__ && RNCV_DEBUG_LOGS) {
+      const total = _cacheHits + _cacheMisses;
+      const pct = total > 0 ? Math.round(100 * _cacheHits / total) : 0;
+      console.log(`[RNCV-CACHE] hits=${_cacheHits} misses=${_cacheMisses} total=${total} hitRate=${pct}% renderGen=${renderGen} lcv=${layoutCacheVersion}`);
     }
 
     // Evict cache entries for slots that no longer exist.
