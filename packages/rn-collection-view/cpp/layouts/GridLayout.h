@@ -44,6 +44,11 @@ struct GridLayoutParams {
   double sectionBackgroundInsetLeft   = 0;
   double sectionBackgroundInsetRight  = 0;
 
+  // Flat index mapping (for processScroll binary search)
+  int flatIndexBase     = 0;
+  int headerFlatIndex   = -1;
+  int footerFlatIndex   = -1;
+
   // Horizontal mode
   bool   horizontal               = false;
   double estimatedCrossAxisHeight = 200.0;

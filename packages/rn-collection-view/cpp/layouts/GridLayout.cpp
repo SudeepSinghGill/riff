@@ -103,13 +103,13 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     hdr.key               = prefix + "header";
     hdr.section           = sectionIndex;
     hdr.index             = -1;
+    hdr.flatIndex         = p.headerFlatIndex;
     hdr.isSupplementary   = true;
     hdr.supplementaryKind = "header";
     hdr.sizingState       = SizingState::Measured;
     hdr.isDirty           = false;
     hdr.alpha             = 1.0;
     if (H) {
-      // Header height = full cross extent: insets + items area + insets.
       const double hdrCrossH = p.sectionInsetTop + crossContent + p.sectionInsetBottom;
       hdr.frame = { primary, 0, p.headerHeight, hdrCrossH };
     } else {
@@ -269,12 +269,10 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     attrs.key         = key;
     attrs.section     = sectionIndex;
     attrs.index       = i;
+    attrs.flatIndex   = p.flatIndexBase + i;
     attrs.zIndex      = 0;
     attrs.alpha       = 1.0;
     attrs.frame       = { frames[i].x, frames[i].y, frames[i].width, frames[i].height };
-    // H: always Placeholder (Yoga measures widths).
-    // V fixedPrimary: Measured (no Yoga measurement needed).
-    // V dynamic: Placeholder (Yoga measures heights).
     attrs.sizingState = (H || !fixedPrimary) ? SizingState::Placeholder : SizingState::Measured;
     _cache->setAttributes(attrs);
   }
@@ -319,6 +317,7 @@ double GridLayout::computeSection(const GridLayoutParams& p,
     ftr.key               = prefix + "footer";
     ftr.section           = sectionIndex;
     ftr.index             = -1;
+    ftr.flatIndex         = p.footerFlatIndex;
     ftr.isSupplementary   = true;
     ftr.supplementaryKind = "footer";
     ftr.sizingState       = SizingState::Measured;
@@ -386,13 +385,13 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     hdr.key               = hdrKey;
     hdr.section           = sectionIndex;
     hdr.index             = -1;
+    hdr.flatIndex         = p.headerFlatIndex;
     hdr.isSupplementary   = true;
     hdr.supplementaryKind = "header";
     hdr.sizingState       = SizingState::Measured;
     hdr.isDirty           = false;
     hdr.alpha             = 1.0;
     if (H) {
-      // Preserve measured header width (primary axis); height = full cross extent.
       const double hW = (existingHdr && existingHdr->frame.width > 0)
           ? existingHdr->frame.width
           : p.headerHeight;
@@ -572,6 +571,7 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     attrs.key         = key;
     attrs.section     = sectionIndex;
     attrs.index       = i;
+    attrs.flatIndex   = p.flatIndexBase + i;
     attrs.zIndex      = 0;
     attrs.alpha       = 1.0;
     attrs.frame       = { frames[i].x, frames[i].y, frames[i].width, frames[i].height };
@@ -620,6 +620,7 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     ftr.key               = ftrKey;
     ftr.section           = sectionIndex;
     ftr.index             = -1;
+    ftr.flatIndex         = p.footerFlatIndex;
     ftr.isSupplementary   = true;
     ftr.supplementaryKind = "footer";
     ftr.sizingState       = SizingState::Measured;
@@ -914,6 +915,11 @@ GridLayoutParams GridLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.sectionBackgroundInsetBottom = gdbl(rt, obj, "sectionBackgroundInsetBottom", 0.0);
   p.sectionBackgroundInsetLeft   = gdbl(rt, obj, "sectionBackgroundInsetLeft",   0.0);
   p.sectionBackgroundInsetRight  = gdbl(rt, obj, "sectionBackgroundInsetRight",  0.0);
+
+  // Flat index mapping for processScroll binary search
+  p.flatIndexBase   = gi32(rt, obj, "flatIndexBase", 0);
+  p.headerFlatIndex = gi32(rt, obj, "headerFlatIndex", -1);
+  p.footerFlatIndex = gi32(rt, obj, "footerFlatIndex", -1);
 
   // itemHeights: number[]
   auto hv = obj.getProperty(rt, "itemHeights");

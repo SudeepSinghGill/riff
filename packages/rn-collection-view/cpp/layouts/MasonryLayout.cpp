@@ -102,6 +102,7 @@ double MasonryLayout::computeSection(const MasonryLayoutParams& p,
     hdr.key               = prefix + "header";
     hdr.section           = sectionIndex;
     hdr.index             = -1;
+    hdr.flatIndex         = p.headerFlatIndex;
     hdr.isSupplementary   = true;
     hdr.supplementaryKind = "header";
     hdr.sizingState       = SizingState::Measured;
@@ -153,15 +154,16 @@ double MasonryLayout::computeSection(const MasonryLayoutParams& p,
     attrs.key       = key;
     attrs.section   = sectionIndex;
     attrs.index     = i;
+    attrs.flatIndex = p.flatIndexBase + i;
     attrs.zIndex    = 0;
     attrs.alpha     = 1.0;
     attrs.isDirty   = false;
     if (H) {
       attrs.frame       = { lanePrimary[shortestLane], crossPos, itemPrimary, itemCross };
-      attrs.sizingState = SizingState::Placeholder; // Yoga measures both width and height
+      attrs.sizingState = SizingState::Placeholder;
     } else {
       attrs.frame       = { crossPos, lanePrimary[shortestLane], itemCross, itemPrimary };
-      attrs.sizingState = SizingState::Placeholder; // Yoga measures height
+      attrs.sizingState = SizingState::Placeholder;
     }
     _cache->setAttributes(attrs);
 
@@ -251,6 +253,7 @@ double MasonryLayout::computeSection(const MasonryLayoutParams& p,
     ftr.key               = prefix + "footer";
     ftr.section           = sectionIndex;
     ftr.index             = -1;
+    ftr.flatIndex         = p.footerFlatIndex;
     ftr.isSupplementary   = true;
     ftr.supplementaryKind = "footer";
     ftr.sizingState       = SizingState::Measured;
@@ -316,6 +319,7 @@ double MasonryLayout::computeSectionFromCache(const MasonryLayoutParams& p,
     hdr.key               = hdrKey;
     hdr.section           = sectionIndex;
     hdr.index             = -1;
+    hdr.flatIndex         = p.headerFlatIndex;
     hdr.isSupplementary   = true;
     hdr.supplementaryKind = "header";
     hdr.sizingState       = SizingState::Measured;
@@ -373,6 +377,7 @@ double MasonryLayout::computeSectionFromCache(const MasonryLayoutParams& p,
     attrs.key       = key;
     attrs.section   = sectionIndex;
     attrs.index     = i;
+    attrs.flatIndex = p.flatIndexBase + i;
     attrs.zIndex    = 0;
     attrs.alpha     = 1.0;
     attrs.isDirty   = false;
@@ -468,6 +473,7 @@ double MasonryLayout::computeSectionFromCache(const MasonryLayoutParams& p,
     ftr.key               = ftrKey;
     ftr.section           = sectionIndex;
     ftr.index             = -1;
+    ftr.flatIndex         = p.footerFlatIndex;
     ftr.isSupplementary   = true;
     ftr.supplementaryKind = "footer";
     ftr.sizingState       = SizingState::Measured;
@@ -699,6 +705,11 @@ MasonryLayoutParams MasonryLayout::paramsFromJSI(Runtime& rt, const Object& obj)
   p.sectionBackgroundInsetBottom = mdbl(rt, obj, "sectionBackgroundInsetBottom", 0.0);
   p.sectionBackgroundInsetLeft   = mdbl(rt, obj, "sectionBackgroundInsetLeft",   0.0);
   p.sectionBackgroundInsetRight  = mdbl(rt, obj, "sectionBackgroundInsetRight",  0.0);
+
+  // Flat index mapping for processScroll binary search
+  p.flatIndexBase   = mi32(rt, obj, "flatIndexBase", 0);
+  p.headerFlatIndex = mi32(rt, obj, "headerFlatIndex", -1);
+  p.footerFlatIndex = mi32(rt, obj, "footerFlatIndex", -1);
 
   // itemHeights: number[]
   auto hv = obj.getProperty(rt, "itemHeights");

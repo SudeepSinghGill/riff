@@ -72,7 +72,12 @@ class MasonryLayoutEngine implements CollectionViewLayout {
 
     const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
 
+    let runningFlatBase = 0;
     const sections = context.sections.map((sec, sectionIndex) => {
+      const hasHeader = sec.supplementaryItems.some(s => s.kind === 'header');
+      const hasFooter = sec.supplementaryItems.some(s => s.kind === 'footer');
+      const sectionFlatBase = runningFlatBase;
+      runningFlatBase += (hasHeader ? 1 : 0) + sec.itemCount + (hasFooter ? 1 : 0);
       // Build per-item heights.
       // V-masonry: heights determine which lane is shortest → placement.
       // H-masonry: Yoga measures widths (primary axis); heights are uniform (cross axis).
@@ -100,6 +105,9 @@ class MasonryLayoutEngine implements CollectionViewLayout {
         : (d.heightForFooter ? d.heightForFooter(sectionIndex) : (d.footerHeight ?? 0));
 
       return {
+        flatIndexBase: sectionFlatBase + (hasHeader ? 1 : 0),
+        headerFlatIndex: hasHeader ? sectionFlatBase : -1,
+        footerFlatIndex: hasFooter ? sectionFlatBase + (hasHeader ? 1 : 0) + sec.itemCount : -1,
         itemCount: sec.itemCount,
         columns: effectiveColumns,
         columnSpacing: d.columnSpacing ?? 0,
