@@ -37,6 +37,7 @@ struct LayoutAttributes {
   std::string key;
   int         section       = 0;
   int         index         = -1;
+  int         flatIndex     = -1;  // Pre-computed flat index for processScroll (set by layout engine)
 
   // ── Geometry (layout-computed) ───────────────────────────────────────
   Rect        frame;                   // x, y, width, height
@@ -122,6 +123,26 @@ public:
 
   /** Returns attributes for all items whose frame intersects rect. */
   std::vector<LayoutAttributes> getAttributesInRect(const Rect& rect) const;
+
+  // ── Sorted-layout binary search (replaces spatial queries for list/grid) ──
+
+  /** Result of binary search on primary-axis positions. */
+  struct PrimaryRange {
+    int firstIdx = -1;   // flat index of first item in range
+    int lastIdx  = -1;   // flat index of last item in range
+    double firstPos  = 0; // primary-axis position of first item
+    double firstSize = 0; // primary-axis size of first item
+    double lastPos   = 0; // primary-axis position of last item
+    double lastSize  = 0; // primary-axis size of last item
+  };
+
+  /**
+   * Find the range of items whose primary-axis extent intersects [lo, hi].
+   * O(log n) binary search on the sorted position index. Zero struct copies.
+   * Single mutex acquisition. Returns flat indices + first/last frame data.
+   * Use for sorted layouts (list, grid) instead of getAttributesInRect.
+   */
+  PrimaryRange findRangeByPrimary(double lo, double hi, bool horizontal) const;
 
   // ── Aggregate queries ─────────────────────────────────────────────────────
 
@@ -237,6 +258,15 @@ private:
   // Insertion-ordered key list (used by getAll and getSectionOffsets)
   std::vector<std::string>                          _insertionOrder;
   std::unordered_map<std::string, LayoutAttributes> _map;
+
+  // Sorted position index for O(log n) binary search queries.
+  // Entries are {primaryPos, key} sorted by primaryPos ascending.
+  // Maintained incrementally in _setAttributesLocked. Cleared on clear().
+  // _sortedHorizontal tracks which axis was used to build the sort.
+  struct SortedEntry { double pos; double size; std::string key; };
+  mutable std::vector<SortedEntry>                  _sorted;
+  mutable bool                                      _sortedDirty = true;
+  mutable bool                                      _sortedHorizontal = false;
   uint64_t                                          _version = 0;
   mutable std::mutex                                _mutex;
   SpatialIndex                                      _index;   // M1.4

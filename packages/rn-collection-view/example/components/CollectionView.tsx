@@ -161,6 +161,7 @@ const nativeMod = NativeCollectionViewModule as unknown as {
       mountedWindowSize: number, itemCount: number,
       sectionInfoPacked: number[] | null,
       budgetCols?: number,
+      sorted?: boolean,
     ): {
       renderFirst: number; renderLast: number;
       visibleFirst: number; visibleLast: number;
@@ -889,9 +890,9 @@ export function Riff<T = unknown>({
   sectionInsetBottom = 0,
   sectionInsetLeft = 0,
   sectionInsetRight = 0,
-  renderMultiplier = 1.0,
-  mountedWindowSize = 5.0,
-  measureAhead = 2.0,
+  renderMultiplier = 0.5,
+  mountedWindowSize = 2.0,
+  measureAhead = 1.0,
   initialNumToRender = 10,
   onRenderCountChange,
   onBlankArea,
@@ -1359,6 +1360,7 @@ export function Riff<T = unknown>({
       itemCount,
       sectionInfoPacked,
       budgetCols,
+      !effectiveLayout.needsSpatialQuery, // sorted: binary search for list/grid
     );
     rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
 
@@ -1660,6 +1662,7 @@ export function Riff<T = unknown>({
         itemCount,
         sectionInfoPacked,                       // null for single-section
         budgetCols,
+        !effectiveLayout.needsSpatialQuery,      // sorted: binary search for list/grid
       );
 
       // Cache version — check after processScroll so we read the same version

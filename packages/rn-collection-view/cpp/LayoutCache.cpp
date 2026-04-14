@@ -63,6 +63,7 @@ void LayoutCache::_setAttributesLocked(const LayoutAttributes& attrs) {
     _index.insert(attrs.key, attrs.frame);
     _map[attrs.key] = attrs;
     ++_version;
+    _sortedDirty = true;
   } else {
     // Existing entry — only bump version if frame changed.
     // Non-frame fields (sizingState, alpha, zIndex) are still updated but don't
@@ -75,6 +76,7 @@ void LayoutCache::_setAttributesLocked(const LayoutAttributes& attrs) {
     if (frameChanged) {
       _index.update(attrs.key, it->second.frame, attrs.frame);
       ++_version;
+      _sortedDirty = true;
     }
     it->second = attrs;
   }
@@ -98,6 +100,7 @@ void LayoutCache::removeAttributes(const std::string& key) {
         std::remove(_insertionOrder.begin(), _insertionOrder.end(), key),
         _insertionOrder.end());
     ++_version;
+    _sortedDirty = true;
   }
 }
 
@@ -107,6 +110,8 @@ void LayoutCache::clear() {
   _map.clear();
   _insertionOrder.clear();
   _index.clear();
+  _sorted.clear();
+  _sortedDirty = true;
   ++_version;
 }
 
@@ -162,6 +167,101 @@ std::vector<LayoutAttributes> LayoutCache::getAttributesInRect(
       result.push_back(it->second);
     }
   }
+  return result;
+}
+
+// ─── Binary search for sorted layouts ────────────────────────────────────────
+
+LayoutCache::PrimaryRange LayoutCache::findRangeByPrimary(
+    double lo, double hi, bool horizontal) const {
+  std::lock_guard<std::mutex> lock(_mutex);
+
+  // Lazy-rebuild sorted index if dirty or axis changed.
+  if (_sortedDirty || _sortedHorizontal != horizontal) {
+    _sorted.clear();
+    _sorted.reserve(_insertionOrder.size());
+    for (const auto& key : _insertionOrder) {
+      auto it = _map.find(key);
+      if (it == _map.end()) continue;
+      const auto& a = it->second;
+      // Skip decorations — they don't have flat indices and shouldn't
+      // affect render/visible range computation.
+      if (a.isDecoration) continue;
+      double pos  = horizontal ? a.frame.x : a.frame.y;
+      double size = horizontal ? a.frame.width : a.frame.height;
+      SortedEntry entry;
+      entry.pos = pos;
+      entry.size = size;
+      entry.key = key;
+      _sorted.push_back(entry);
+    }
+    std::sort(_sorted.begin(), _sorted.end(),
+              [](const SortedEntry& a, const SortedEntry& b) { return a.pos < b.pos; });
+    _sortedDirty = false;
+    _sortedHorizontal = horizontal;
+  }
+
+  PrimaryRange result;
+  if (_sorted.empty()) return result;
+
+  // Binary search: first entry whose (pos + size) > lo  (i.e., extends past lo).
+  int firstMatch = -1;
+  {
+    int left = 0, right = static_cast<int>(_sorted.size()) - 1;
+    while (left <= right) {
+      int mid = left + (right - left) / 2;
+      if (_sorted[mid].pos + _sorted[mid].size > lo) {
+        firstMatch = mid;
+        right = mid - 1;
+      } else {
+        left = mid + 1;
+      }
+    }
+  }
+  if (firstMatch < 0) return result; // all items are before lo
+
+  // Binary search: last entry whose pos < hi  (i.e., starts before hi).
+  int lastMatch = -1;
+  {
+    int left = 0, right = static_cast<int>(_sorted.size()) - 1;
+    while (left <= right) {
+      int mid = left + (right - left) / 2;
+      if (_sorted[mid].pos < hi) {
+        lastMatch = mid;
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+  }
+  if (lastMatch < 0 || lastMatch < firstMatch) return result;
+
+  // Look up flat indices from the map for first and last items.
+  auto firstIt = _map.find(_sorted[firstMatch].key);
+  auto lastIt  = _map.find(_sorted[lastMatch].key);
+  if (firstIt == _map.end() || lastIt == _map.end()) return result;
+
+  // Find min/max flat index across the range (items may not be in flat-index order
+  // if supplementaries are interleaved, so scan the range).
+  int minFI = std::numeric_limits<int>::max();
+  int maxFI = std::numeric_limits<int>::min();
+  for (int i = firstMatch; i <= lastMatch; ++i) {
+    auto it = _map.find(_sorted[i].key);
+    if (it == _map.end()) continue;
+    int fi = it->second.flatIndex;
+    if (fi < 0) continue; // supplementary/decoration without flatIndex
+    if (fi < minFI) minFI = fi;
+    if (fi > maxFI) maxFI = fi;
+  }
+
+  if (minFI > maxFI) return result; // no valid flat indices found
+
+  result.firstIdx  = minFI;
+  result.lastIdx   = maxFI;
+  result.firstPos  = _sorted[firstMatch].pos;
+  result.firstSize = _sorted[firstMatch].size;
+  result.lastPos   = _sorted[lastMatch].pos;
+  result.lastSize  = _sorted[lastMatch].size;
   return result;
 }
 

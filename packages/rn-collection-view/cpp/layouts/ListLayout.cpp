@@ -105,6 +105,7 @@ void ListLayout::computeFixed(const ListLayoutParams& p) {
   for (int i = 0; i < p.itemCount; ++i) {
     _scratch.key            = itemKey(p, i, prefix);
     _scratch.index          = i;
+    _scratch.flatIndex      = p.flatIndexBase + i;
     _scratch.frame.y        = p.sectionInsetTop + i * stride;
     _cache->setAttributes(_scratch);
   }
@@ -129,6 +130,7 @@ void ListLayout::computeEstimated(const ListLayoutParams& p) {
     const double h          = p.itemHeights[i];
     _scratch.key            = itemKey(p, i, prefix);
     _scratch.index          = i;
+    _scratch.flatIndex      = p.flatIndexBase + i;
     _scratch.frame.y        = y;
     _scratch.frame.height   = h;
     _cache->setAttributes(_scratch);
@@ -520,6 +522,11 @@ ListLayoutParams ListLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.sectionBackgroundInsetLeft   = dbl(rt, obj, "sectionBackgroundInsetLeft");
   p.sectionBackgroundInsetRight  = dbl(rt, obj, "sectionBackgroundInsetRight");
 
+  // Flat index mapping for processScroll binary search
+  p.flatIndexBase   = i32(rt, obj, "flatIndexBase");
+  p.headerFlatIndex = i32(rt, obj, "headerFlatIndex");
+  p.footerFlatIndex = i32(rt, obj, "footerFlatIndex");
+
   // Optional per-item heights array (estimated mode)
   Value heights = obj.getProperty(rt, "itemHeights");
   if (heights.isObject()) {
@@ -638,17 +645,14 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     _scratch.key               = prefix + "header";
     _scratch.section           = sectionIndex;
     _scratch.index             = -1;
+    _scratch.flatIndex         = p.headerFlatIndex;
     _scratch.isSupplementary   = true;
     _scratch.supplementaryKind = "header";
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
     if (H) {
-      // Horizontal: header is a vertical strip at the left of the section.
-      // Height = full viewport height so it fills the list top-to-bottom.
-      // applyMeasurements may refine further, but viewport height is the correct target.
       _scratch.frame = { primary, 0, p.headerHeight, p.viewportHeight };
     } else {
-      // Vertical: header is a full-width horizontal strip at the top of the section
       _scratch.frame = { crossStart, primary, crossContent, p.headerHeight };
     }
     _cache->setAttributes(_scratch);
@@ -656,7 +660,7 @@ double ListLayout::computeSection(const ListLayoutParams& p,
                   _scratch.key.c_str(), _scratch.supplementaryKind.c_str(), _scratch.section,
                   _scratch.frame.x, _scratch.frame.y, _scratch.frame.width, _scratch.frame.height);
     primary += p.headerHeight;
-    bgStartPrimary = primary; // bg starts after header so rounded corners are exposed
+    bgStartPrimary = primary;
   }
 
   // Gap: primary inset start (between header edge and first item edge)
@@ -673,8 +677,9 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     // For vertical: width = crossContent (full container minus insets); height = itemHeight estimate.
     _scratch.sizingState = H ? SizingState::Placeholder : SizingState::Measured;
     for (int i = 0; i < p.itemCount; ++i) {
-      _scratch.key   = itemKey(p, i, prefix);
-      _scratch.index = i;
+      _scratch.key       = itemKey(p, i, prefix);
+      _scratch.index     = i;
+      _scratch.flatIndex = p.flatIndexBase + i;
       if (H) {
         _scratch.frame = { primary, crossStart, p.itemHeight, hEstH };
       } else {
@@ -704,8 +709,9 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     int count = std::min(p.itemCount, static_cast<int>(p.itemHeights.size()));
     for (int i = 0; i < count; ++i) {
       double sz = p.itemHeights[i];
-      _scratch.key   = itemKey(p, i, prefix);
-      _scratch.index = i;
+      _scratch.key       = itemKey(p, i, prefix);
+      _scratch.index     = i;
+      _scratch.flatIndex = p.flatIndexBase + i;
       if (H) {
         _scratch.frame = { primary, crossStart, sz, hEstH };
       } else {
@@ -774,6 +780,7 @@ double ListLayout::computeSection(const ListLayoutParams& p,
     _scratch.key               = prefix + "footer";
     _scratch.section           = sectionIndex;
     _scratch.index             = -1;
+    _scratch.flatIndex         = p.footerFlatIndex;
     _scratch.isSupplementary   = true;
     _scratch.supplementaryKind = "footer";
     _scratch.sizingState       = SizingState::Measured;
@@ -870,12 +877,12 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.key               = hdrKey;
     _scratch.section           = sectionIndex;
     _scratch.index             = -1;
+    _scratch.flatIndex         = p.headerFlatIndex;
     _scratch.isSupplementary   = true;
     _scratch.supplementaryKind = "header";
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
     if (H) {
-      // Preserve measured cross height if available; otherwise use viewportHeight.
       const double hH = (existingHdr && existingHdr->frame.height > 0) ? existingHdr->frame.height : p.viewportHeight;
       _scratch.frame = { primary, 0, p.headerHeight, hH };
     } else {
@@ -927,6 +934,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.sizingState = existing ? existing->sizingState : SizingState::Placeholder;
     _scratch.key         = key;
     _scratch.index       = i;
+    _scratch.flatIndex   = p.flatIndexBase + i;
     if (H) {
       _scratch.frame = { primary, crossStart, sz, crossSz };
     } else {
@@ -988,6 +996,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.key               = prefix + "footer";
     _scratch.section           = sectionIndex;
     _scratch.index             = -1;
+    _scratch.flatIndex         = p.footerFlatIndex;
     _scratch.isSupplementary   = true;
     _scratch.supplementaryKind = "footer";
     _scratch.sizingState       = SizingState::Measured;

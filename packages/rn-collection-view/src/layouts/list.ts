@@ -85,8 +85,15 @@ class ListLayout implements CollectionViewLayout {
     // Inform LayoutCache of scroll axis for MVC anchor computation.
     nativeMod.layoutCache.setHorizontal(H);
 
-    // Build section params for C++ layout engine
+    // Build section params for C++ layout engine.
+    // Compute flat-index base per section so C++ can set flatIndex on each LayoutAttributes.
+    let runningFlatBase = 0;
     const sectionParams = context.sections.map((sec, sIdx) => {
+      const sectionFlatBase = runningFlatBase;
+      const hasHeader = sec.supplementaryItems.some(s => s.kind === 'header');
+      const hasFooter = sec.supplementaryItems.some(s => s.kind === 'footer');
+      runningFlatBase += (hasHeader ? 1 : 0) + sec.itemCount + (hasFooter ? 1 : 0);
+
       // Determine item heights for this section.
       // Priority: measured (actual) → delegate heightForItem (estimate) → itemHeight → estimatedItemHeight.
       const w = context.containerWidth;
@@ -133,6 +140,9 @@ class ListLayout implements CollectionViewLayout {
       }
 
       const params: Record<string, unknown> = {
+        flatIndexBase: sectionFlatBase + (hasHeader ? 1 : 0),
+        headerFlatIndex: hasHeader ? sectionFlatBase : -1,
+        footerFlatIndex: hasFooter ? sectionFlatBase + (hasHeader ? 1 : 0) + sec.itemCount : -1,
         itemCount: sec.itemCount,
         itemHeight: (typeof d.itemHeight === 'function' ? d.itemHeight(context.containerWidth) : d.itemHeight) ?? d.estimatedItemHeight ?? 44,
         viewportWidth: context.containerWidth,

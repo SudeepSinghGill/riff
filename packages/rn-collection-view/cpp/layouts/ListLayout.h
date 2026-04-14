@@ -37,6 +37,13 @@ struct ListLayoutParams {
   // correct incremental invalidation when data reorders.
   std::vector<std::string> keys;
 
+  // --- Flat index mapping (for processScroll binary search) ---
+  // flatIndexBase: flat index of item 0 in this section.
+  // headerFlatIndex/footerFlatIndex: flat index of header/footer, or -1 if absent.
+  int flatIndexBase     = 0;
+  int headerFlatIndex   = -1;
+  int footerFlatIndex   = -1;
+
   // --- Estimated-height mode (M1.3) ---
   // When non-empty, itemHeights[i] is used per-item (overrides itemHeight).
   // sizingState is set to Placeholder for each item.
