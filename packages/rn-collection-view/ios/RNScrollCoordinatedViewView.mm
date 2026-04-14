@@ -20,7 +20,7 @@ namespace facebook::react {
 using namespace facebook::react;
 
 #ifndef RNCV_ENABLE_STICKY_TRACE
-#define RNCV_ENABLE_STICKY_TRACE 1
+#define RNCV_ENABLE_STICKY_TRACE 0
 #endif
 
 #if DEBUG && RNCV_ENABLE_STICKY_TRACE
