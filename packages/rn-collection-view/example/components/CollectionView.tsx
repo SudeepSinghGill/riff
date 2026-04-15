@@ -1996,7 +1996,9 @@ export function Riff<T = unknown>({
     // ShadowNode measures via Yoga — no RNMeasuredCell wrapping needed.
     const content = (
       <CellWrapper mode={mode}>
-        <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
+        <View style={{ flex: 1 }}>
+          <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
+        </View>
       </CellWrapper>
     );
 
