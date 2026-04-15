@@ -187,9 +187,15 @@ class ListLayout implements CollectionViewLayout {
     listDebugLog(`[RNCVX-LIST] Sending to C++ nativeMod.listLayout.computeSections:`, sectionParams.map(s => ({ headerHeight: s.headerHeight, footerHeight: s.footerHeight, itemCount: s.itemCount })));
 
     // Build a fingerprint of the data shape. Only clear + recompute when it changes.
-    // This preserves Yoga-measured heights across measurement-triggered re-renders.
-    // Include both dimensions in fingerprint: horizontal list invalidates on height change, vertical on width.
-    const fp = `${context.containerWidth}x${context.containerHeight}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight},${s.emitSeparators},${s.emitSectionBackground},${s.sectionBackgroundInsetTop},${s.sectionBackgroundInsetBottom},${s.sectionBackgroundInsetLeft},${s.sectionBackgroundInsetRight}`).join(';')}`;
+    // This preserves Yoga-measured heights/widths across measurement-triggered re-renders.
+    // Only include the PRIMARY-axis container dimension in the fingerprint:
+    //   Vertical: containerWidth (items need re-layout when width changes)
+    //   Horizontal: containerHeight is excluded — cross-axis height changes from
+    //   measurement are handled by applyMeasurements, not by clearing the cache.
+    //   Including containerHeight caused: measure → cross-axis grows → fingerprint
+    //   changes → clear → reset widths to estimates → re-measure → cascade → loop.
+    const fpDim = H ? `w${context.containerWidth}` : `${context.containerWidth}x${context.containerHeight}`;
+    const fp = `${fpDim}|${sectionParams.map(s => `${s.itemCount},${s.headerHeight},${s.footerHeight},${s.emitSeparators},${s.emitSectionBackground},${s.sectionBackgroundInsetTop},${s.sectionBackgroundInsetBottom},${s.sectionBackgroundInsetLeft},${s.sectionBackgroundInsetRight}`).join(';')}`;
     const fingerprintChanged = fp !== this._lastFingerprint;
     listMvcTrace(`prepare: fingerprintChanged=${fingerprintChanged} sections=${sectionParams.length} totalItems=${sectionParams.reduce((n, s) => n + (s.itemCount as number), 0)}`);
     if (fingerprintChanged) {
@@ -242,7 +248,11 @@ class ListLayout implements CollectionViewLayout {
   }
 
   shouldInvalidate(oldBounds: Rect, newBounds: Rect): boolean {
-    // Vertical list invalidates when width changes; horizontal when height changes.
+    // Vertical: invalidate when container width changes (items need new widths).
+    // Horizontal: invalidate when container height changes (cross-axis resize).
+    // Note: measurement-driven cross-axis changes are filtered by the fingerprint
+    // in prepare() — it excludes cross-axis dimension for horizontal layouts, so
+    // shouldInvalidate returning true won't cause a cache clear on measurement.
     return this.horizontal
       ? Math.abs(oldBounds.height - newBounds.height) > 0.5
       : Math.abs(oldBounds.width  - newBounds.width)  > 0.5;
