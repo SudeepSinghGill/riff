@@ -597,7 +597,15 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
               if (fi > rLast)  rLast  = fi;
             }
 
-            if (rFirst == std::numeric_limits<int>::max()) return makeEmpty();
+            if (rFirst == std::numeric_limits<int>::max()) {
+#if DEBUG
+              printf("[SPATIAL-DIAG] rFirst=MAX after loop — all flatIdx < 0? renderAttrs=%zu\n", renderAttrs.size());
+#endif
+              return makeEmpty();
+            }
+#if DEBUG
+            printf("[SPATIAL-DIAG] rFirst=%d rLast=%d\n", rFirst, rLast);
+#endif
 
             auto visAttrs = _layoutCache->getAttributesInRect(visibleRect);
             vFirst = std::numeric_limits<int>::max();
@@ -616,6 +624,13 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           rncv::Range visible = { vFirst, vLast };
           auto budgeted = rncv::WindowController::applyBudget(
             render, visible, mountedWindowSz, vpPrimary, stride, budgetCols);
+#if DEBUG
+          if (!sorted) {
+            printf("[SPATIAL-DIAG] budget: render=[%d,%d] visible=[%d,%d] budgeted=[%d,%d] mountedWS=%.1f vpH=%.1f stride=%.1f cols=%d itemCount=%d\n",
+              rFirst, rLast, vFirst, vLast, budgeted.first, budgeted.last,
+              mountedWindowSz, vpPrimary, stride, budgetCols, itemCount);
+          }
+#endif
 
           // Measure range (optional — only when measureAheadMult > 0 and stride known)
           int mFirst = budgeted.first, mLast = budgeted.last;
