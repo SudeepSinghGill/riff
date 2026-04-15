@@ -11,7 +11,7 @@
 // Cross-platform logging for ShadowNode (runs on background thread).
 // Active only in DEBUG builds; no-op in release.
 #ifndef RNCV_ENABLE_NATIVE_LOGS
-#define RNCV_ENABLE_NATIVE_LOGS 0
+#define RNCV_ENABLE_NATIVE_LOGS 1
 #endif
 
 // Set RNCV_ENABLE_MVC_TRACE=1 to enable verbose MVC lifecycle tracing.
