@@ -757,10 +757,9 @@ function CellWrapper({
   mode: 'visible' | 'hidden';
   children: React.ReactNode;
 }) {
-  // TEMP DIAG: Activity bypass test round 2
-  // if (Activity) {
-  //   return <Activity mode={mode}>{children}</Activity>;
-  // }
+  if (Activity) {
+    return <Activity mode={mode}>{children}</Activity>;
+  }
   return <>{children}</>;
 }
 
@@ -1364,11 +1363,6 @@ export function Riff<T = unknown>({
       !effectiveLayout.needsSpatialQuery, // sorted: binary search for list/grid
     );
     rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
-
-    // Temporary diagnostic: log initial range for masonry debugging
-    if (__DEV__) {
-      console.log(`[JS-INIT-RANGE] layoutType=${effectiveLayout.type} processScroll=[${layoutResult.renderFirst},${layoutResult.renderLast}] itemCount=${itemCount} dataLen=${data.length} isSectioned=${isSectioned}`);
-    }
 
     if (layoutResult.renderLast < layoutResult.renderFirst) {
       const empty = { first: 0, last: -1 };
@@ -2050,10 +2044,6 @@ export function Riff<T = unknown>({
         index={index}
         cacheKey={cacheKey}
         isMeasureOnly={measureOnly}
-        onLayout={effectiveLayout.type === 'masonry' && __DEV__ ? (e: any) => {
-          const { width, height } = e.nativeEvent.layout;
-          console.log(`[CELL-LAYOUT] key=${key} ck=${cacheKey} w=${width.toFixed(0)} h=${height.toFixed(0)} mo=${measureOnly}`);
-        } : undefined}
       >
         {content}
       </RNMeasuredCell>
@@ -2233,32 +2223,11 @@ export function Riff<T = unknown>({
       mountedStickySet,
     );
 
-    // Temporary diagnostic: log slot state for masonry debugging
-    if (__DEV__ && effectiveLayout.type === 'masonry') {
-      const nonPooled = [...activeSlots.values()].filter(s => !s.isPooled);
-      console.log(`[JS-SLOTS] type=${effectiveLayout.type} rr=[${smFirst},${smLast}] activeSlots=${activeSlots.size} nonPooled=${nonPooled.length} dataLen=${data.length}`);
-      if (nonPooled.length > 0) {
-        const first = nonPooled[0]!;
-        console.log(`[JS-SLOTS] first={slot=${first.slotKey} di=${first.dataIndex} dk=${first.dataKey} ck=${first.cacheKey} mo=${first.measureOnly}}`);
-      }
-    }
-
-    // TEMP DIAG: bypass SlotManager for masonry to test if recycling is the cause
+    // Build cells array from slots, using element cache for unchanged slots.
     const cells: React.ReactElement[] = [];
     let minIdx = data.length;
     let maxIdx = -1;
-    let _cacheHits = 0, _cacheMisses = 0;
-
-    if (effectiveLayout.type === 'masonry') {
-      // Old-style direct rendering (no SlotManager, no element cache)
-      for (let i = smFirst; i <= smLast && i < data.length; i++) {
-        if (mountedStickySet?.has(i)) continue;
-        if (i < minIdx) minIdx = i;
-        if (i > maxIdx) maxIdx = i;
-        cells.push(renderCell(data[i]!, i, false));
-        _cacheMisses++;
-      }
-    } else {
+    let _cacheHits = 0, _cacheMisses = 0; // Opt 7 hit counter
 
     for (const [slotKey, slot] of activeSlots) {
       // Guard non-pooled slots against OOB indices (data shrink).
@@ -2300,12 +2269,6 @@ export function Riff<T = unknown>({
       _cacheMisses++;
     }
 
-    } // end else (non-masonry)
-
-    // Temporary diagnostic: cell count for masonry debugging
-    if (__DEV__ && effectiveLayout.type === 'masonry') {
-      console.log(`[JS-CELLS] cells=${cells.length} hits=${_cacheHits} misses=${_cacheMisses}`);
-    }
 
     // Opt 7 diagnostic — enable RNCV_DEBUG_LOGS to see element cache effectiveness.
     if (__DEV__ && RNCV_DEBUG_LOGS) {

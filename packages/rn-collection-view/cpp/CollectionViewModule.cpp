@@ -508,11 +508,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             return Value(rt, r);
           };
 
-          if (vpPrimary <= 0.0 || itemCount == 0) {
-#if DEBUG
-            printf("[PS-DIAG] EMPTY: vpPrimary=%.1f itemCount=%d sorted=%d\n", vpPrimary, itemCount, sorted);
-#endif
-            return makeEmpty();
+          if (vpPrimary <= 0.0 || itemCount == 0) return makeEmpty();
           }
 
           // ── Opt 6: Stable-band early return ────────────────────────────
@@ -578,21 +574,6 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           } else {
             // ── Spatial-query path: for custom/non-sorted layouts ────────────
             auto renderAttrs = _layoutCache->getAttributesInRect(renderRect);
-#if DEBUG
-            // Temporary diagnostic: log spatial query results
-            if (renderAttrs.size() > 0) {
-              auto& first = renderAttrs[0];
-              printf("[SPATIAL-DIAG] renderAttrs=%zu first={key=%s flatIdx=%d section=%d idx=%d isSupp=%d isDeco=%d frame=(%.0f,%.0f,%.0f,%.0f)} rect=(%.0f,%.0f,%.0f,%.0f)\n",
-                renderAttrs.size(), first.key.c_str(), first.flatIndex, first.section, first.index,
-                first.isSupplementary, first.isDecoration,
-                first.frame.x, first.frame.y, first.frame.width, first.frame.height,
-                renderRect.x, renderRect.y, renderRect.width, renderRect.height);
-            } else {
-              printf("[SPATIAL-DIAG] renderAttrs=0 rect=(%.0f,%.0f,%.0f,%.0f) cacheVer=%d\n",
-                renderRect.x, renderRect.y, renderRect.width, renderRect.height,
-                static_cast<int>(_layoutCache->version()));
-            }
-#endif
             rFirst = std::numeric_limits<int>::max();
             rLast  = std::numeric_limits<int>::min();
             for (const auto& a : renderAttrs) {
@@ -602,15 +583,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
               if (fi > rLast)  rLast  = fi;
             }
 
-            if (rFirst == std::numeric_limits<int>::max()) {
-#if DEBUG
-              printf("[SPATIAL-DIAG] rFirst=MAX after loop — all flatIdx < 0? renderAttrs=%zu\n", renderAttrs.size());
-#endif
-              return makeEmpty();
-            }
-#if DEBUG
-            printf("[SPATIAL-DIAG] rFirst=%d rLast=%d\n", rFirst, rLast);
-#endif
+            if (rFirst == std::numeric_limits<int>::max()) return makeEmpty();
 
             auto visAttrs = _layoutCache->getAttributesInRect(visibleRect);
             vFirst = std::numeric_limits<int>::max();
@@ -629,13 +602,6 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           rncv::Range visible = { vFirst, vLast };
           auto budgeted = rncv::WindowController::applyBudget(
             render, visible, mountedWindowSz, vpPrimary, stride, budgetCols);
-#if DEBUG
-          if (!sorted) {
-            printf("[SPATIAL-DIAG] budget: render=[%d,%d] visible=[%d,%d] budgeted=[%d,%d] mountedWS=%.1f vpH=%.1f stride=%.1f cols=%d itemCount=%d\n",
-              rFirst, rLast, vFirst, vLast, budgeted.first, budgeted.last,
-              mountedWindowSz, vpPrimary, stride, budgetCols, itemCount);
-          }
-#endif
 
           // Measure range (optional — only when measureAheadMult > 0 and stride known)
           int mFirst = budgeted.first, mLast = budgeted.last;
@@ -683,12 +649,6 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           _lastScrollResult.bandLow  = scrollPrimary - vpPrimary * 0.25;
           _lastScrollResult.bandHigh = scrollPrimary + vpPrimary * 0.25;
 
-#if DEBUG
-          if (!sorted) {
-            printf("[PS-DIAG] RESULT: sorted=%d render=[%d,%d] visible=[%d,%d] measure=[%d,%d] ver=%.0f scrollY=%.0f\n",
-              sorted, budgeted.first, budgeted.last, vFirst, vLast, mFirst, mLast, ver, scrollPrimary);
-          }
-#endif
           Object result(rt);
           result.setProperty(rt, "renderFirst",  Value(budgeted.first));
           result.setProperty(rt, "renderLast",   Value(budgeted.last));
