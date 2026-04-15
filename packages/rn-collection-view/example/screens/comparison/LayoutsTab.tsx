@@ -1633,7 +1633,7 @@ const S = StyleSheet.create({
   gridCell: { height: 100, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 2 },
   gridCellText: { fontSize: 18, fontWeight: '700' },
 
-  masonryCell: { borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  masonryCell: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   masonryCellText: { fontSize: 18, fontWeight: '700', color: '#fff' },
   masonryCellSub: { fontSize: 10, color: 'rgba(255,255,255,0.6)', marginTop: 2 },
 
@@ -1882,7 +1882,7 @@ export function HorizontalListDemo() {
         </View>
       </ScrollView>
 
-      {/* Horizontal mode now auto-sizes cross-axis height internally. */}
+      {/* List background + content-determined height container */}
       <View style={HS.listBackground}>
         <CollectionView
           handle={cvRef}
@@ -1910,7 +1910,7 @@ const HS = StyleSheet.create({
   ctrlBar:            { backgroundColor: '#111', flexGrow: 0 },
   ctrlBarContent:     { flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 7, alignItems: 'center' },
 
-  listBackground:     { backgroundColor: '#0f1623', marginHorizontal: 0,
+  listBackground:     { height: 260, backgroundColor: '#0f1623', marginHorizontal: 0,
                         borderRadius: 0, overflow: 'hidden' },
 
   // Section header — full cross-axis height via flex:1, narrow 20px primary-axis strip
