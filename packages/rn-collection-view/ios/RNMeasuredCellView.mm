@@ -82,26 +82,7 @@ using namespace facebook::react;
   // and is the source of truth for POSITION.
   adjusted.frame.origin.x = self.frame.origin.x;
   adjusted.frame.origin.y = self.frame.origin.y;
-  // Also preserve the current native size if Yoga reports 0.
-  // When preserved, force children to re-layout with the correct parent bounds.
-  bool sizePreserved = false;
-  if (adjusted.frame.size.height <= 0 && self.frame.size.height > 0) {
-    adjusted.frame.size.height = self.frame.size.height;
-    sizePreserved = true;
-  }
-  if (adjusted.frame.size.width <= 0 && self.frame.size.width > 0) {
-    adjusted.frame.size.width = self.frame.size.width;
-    sizePreserved = true;
-  }
   [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldLayoutMetrics];
-  if (sizePreserved) {
-    // Children were laid out by Yoga with height=0 constraint. Now that we've
-    // preserved the cache-based size, force subviews to re-layout within
-    // the correct bounds.
-    for (UIView *child in self.subviews) {
-      child.frame = CGRectMake(0, 0, adjusted.frame.size.width, adjusted.frame.size.height);
-    }
-  }
 }
 
 // ── Layout ─────────────────────────────────────────────────────────────────────
