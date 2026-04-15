@@ -2241,11 +2241,22 @@ export function Riff<T = unknown>({
       }
     }
 
-    // Build cells array from slots, using element cache for unchanged slots.
+    // TEMP DIAG: bypass SlotManager for masonry to test if recycling is the cause
     const cells: React.ReactElement[] = [];
     let minIdx = data.length;
     let maxIdx = -1;
-    let _cacheHits = 0, _cacheMisses = 0; // Opt 7 hit counter
+    let _cacheHits = 0, _cacheMisses = 0;
+
+    if (effectiveLayout.type === 'masonry') {
+      // Old-style direct rendering (no SlotManager, no element cache)
+      for (let i = smFirst; i <= smLast && i < data.length; i++) {
+        if (mountedStickySet?.has(i)) continue;
+        if (i < minIdx) minIdx = i;
+        if (i > maxIdx) maxIdx = i;
+        cells.push(renderCell(data[i]!, i, false));
+        _cacheMisses++;
+      }
+    } else {
 
     for (const [slotKey, slot] of activeSlots) {
       // Guard non-pooled slots against OOB indices (data shrink).
@@ -2286,6 +2297,8 @@ export function Riff<T = unknown>({
       cells.push(el);
       _cacheMisses++;
     }
+
+    } // end else (non-masonry)
 
     // Temporary diagnostic: cell count for masonry debugging
     if (__DEV__ && effectiveLayout.type === 'masonry') {
