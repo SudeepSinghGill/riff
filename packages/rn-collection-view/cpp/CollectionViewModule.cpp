@@ -508,7 +508,12 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             return Value(rt, r);
           };
 
-          if (vpPrimary <= 0.0 || itemCount == 0) return makeEmpty();
+          if (vpPrimary <= 0.0 || itemCount == 0) {
+#if DEBUG
+            printf("[PS-DIAG] EMPTY: vpPrimary=%.1f itemCount=%d sorted=%d\n", vpPrimary, itemCount, sorted);
+#endif
+            return makeEmpty();
+          }
 
           // ── Opt 6: Stable-band early return ────────────────────────────
           // If cacheVersion is unchanged and scroll offset is within the band
@@ -678,6 +683,12 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           _lastScrollResult.bandLow  = scrollPrimary - vpPrimary * 0.25;
           _lastScrollResult.bandHigh = scrollPrimary + vpPrimary * 0.25;
 
+#if DEBUG
+          if (!sorted) {
+            printf("[PS-DIAG] RESULT: sorted=%d render=[%d,%d] visible=[%d,%d] measure=[%d,%d] ver=%.0f scrollY=%.0f\n",
+              sorted, budgeted.first, budgeted.last, vFirst, vLast, mFirst, mLast, ver, scrollPrimary);
+          }
+#endif
           Object result(rt);
           result.setProperty(rt, "renderFirst",  Value(budgeted.first));
           result.setProperty(rt, "renderLast",   Value(budgeted.last));

@@ -1364,6 +1364,11 @@ export function Riff<T = unknown>({
     );
     rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
 
+    // Temporary diagnostic: log initial range for masonry debugging
+    if (__DEV__) {
+      console.log(`[JS-INIT-RANGE] layoutType=${effectiveLayout.type} processScroll=[${layoutResult.renderFirst},${layoutResult.renderLast}] itemCount=${itemCount} dataLen=${data.length} isSectioned=${isSectioned}`);
+    }
+
     if (layoutResult.renderLast < layoutResult.renderFirst) {
       const empty = { first: 0, last: -1 };
       if (rangeChanged(prevRenderRef.current, empty)) {
@@ -2221,6 +2226,16 @@ export function Riff<T = unknown>({
       mountedStickySet,
     );
 
+    // Temporary diagnostic: log slot state for masonry debugging
+    if (__DEV__ && effectiveLayout.type === 'masonry') {
+      const nonPooled = [...activeSlots.values()].filter(s => !s.isPooled);
+      console.log(`[JS-SLOTS] type=${effectiveLayout.type} rr=[${smFirst},${smLast}] activeSlots=${activeSlots.size} nonPooled=${nonPooled.length} dataLen=${data.length}`);
+      if (nonPooled.length > 0) {
+        const first = nonPooled[0]!;
+        console.log(`[JS-SLOTS] first={slot=${first.slotKey} di=${first.dataIndex} dk=${first.dataKey} ck=${first.cacheKey} mo=${first.measureOnly}}`);
+      }
+    }
+
     // Build cells array from slots, using element cache for unchanged slots.
     const cells: React.ReactElement[] = [];
     let minIdx = data.length;
@@ -2265,6 +2280,11 @@ export function Riff<T = unknown>({
       });
       cells.push(el);
       _cacheMisses++;
+    }
+
+    // Temporary diagnostic: cell count for masonry debugging
+    if (__DEV__ && effectiveLayout.type === 'masonry') {
+      console.log(`[JS-CELLS] cells=${cells.length} hits=${_cacheHits} misses=${_cacheMisses}`);
     }
 
     // Opt 7 diagnostic — enable RNCV_DEBUG_LOGS to see element cache effectiveness.
