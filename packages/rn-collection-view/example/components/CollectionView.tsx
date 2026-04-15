@@ -425,12 +425,6 @@ export interface RiffProps<T = unknown> {
   prefetchAhead?: number;
 
   /**
-   * Debug only: skip the internal View wrapper around cell content.
-   * Used to test Fabric view flattening behavior in POC experiments.
-   * @internal
-   */
-
-  /**
    * Flat mode: indices of cells that pin to the top when scrolled past.
    * Only valid when `data` is provided (not `sections`).
    */
@@ -1994,11 +1988,11 @@ export function Riff<T = unknown>({
     ];
 
     // ShadowNode measures via Yoga — no RNMeasuredCell wrapping needed.
-    // The View wrapper prevents Fabric view flattening from collapsing content
-    // into RNMeasuredCellView, which causes Yoga to compute height=0 for children.
     const content = (
       <CellWrapper mode={mode}>
-        <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
+        <View>
+          <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
+        </View>
       </CellWrapper>
     );
 
@@ -2395,7 +2389,11 @@ export function Riff<T = unknown>({
     // Cells first, then decorations + stickies. All children are positioned
     // by the ShadowNode via LayoutCache (not by Yoga flex layout), so JSX order
     // doesn't affect visual rendering. But Yoga's flex column measures children
-    return <>{decorationElements}{stickyHeaderCells}{stickyFooterCells}{cells}</>;
+    // top-to-bottom: if decorations (which have large explicit heights) come first,
+    // they consume the container's height budget and cells get height=0 from Yoga.
+    // Putting cells first ensures Yoga measures their content before running out
+    // of space. The ShadowNode then overrides all positions from the cache.
+    return <>{cells}{decorationElements}{stickyHeaderCells}{stickyFooterCells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────
