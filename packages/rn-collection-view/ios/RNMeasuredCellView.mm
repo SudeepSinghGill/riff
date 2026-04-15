@@ -66,14 +66,23 @@ using namespace facebook::react;
            oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
 {
   auto adjusted = layoutMetrics;
+#if DEBUG
+  {
+    const auto p = std::static_pointer_cast<const RNMeasuredCellProps>(_props);
+    const char *ck = p ? p->cacheKey.c_str() : "?";
+    printf("[CELL-ULM] ck=%s tag=%ld yogaFrame=(%.0f,%.0f,%.0f,%.0f) selfFrame=(%.0f,%.0f,%.0f,%.0f)\n",
+      ck, (long)self.tag,
+      layoutMetrics.frame.origin.x, layoutMetrics.frame.origin.y,
+      layoutMetrics.frame.size.width, layoutMetrics.frame.size.height,
+      self.frame.origin.x, self.frame.origin.y,
+      self.frame.size.width, self.frame.size.height);
+  }
+#endif
   // Preserve the current native position — it was set by applyPositionsFromState
   // and is the source of truth for POSITION.
   adjusted.frame.origin.x = self.frame.origin.x;
   adjusted.frame.origin.y = self.frame.origin.y;
   // Also preserve the current native size if Yoga reports 0.
-  // Yoga may measure a cell as 0-height before content is committed.
-  // applyPositionsFromState sets the correct size from the LayoutCache.
-  // Letting Yoga overwrite with 0 makes children invisible.
   if (adjusted.frame.size.height <= 0 && self.frame.size.height > 0) {
     adjusted.frame.size.height = self.frame.size.height;
   }
@@ -90,6 +99,23 @@ using namespace facebook::react;
   [super layoutSubviews];
 
   CGSize size = self.bounds.size;
+
+#if DEBUG
+  {
+    const auto p = std::static_pointer_cast<const RNMeasuredCellProps>(_props);
+    const char *ck = p ? p->cacheKey.c_str() : "?";
+    NSInteger subCount = self.subviews.count;
+    NSString *firstChild = subCount > 0 ? NSStringFromClass([self.subviews[0] class]) : @"(none)";
+    CGRect firstFrame = subCount > 0 ? self.subviews[0].frame : CGRectZero;
+    printf("[CELL-NATIVE] ck=%s tag=%ld frame=(%.0f,%.0f,%.0f,%.0f) bounds=(%.0f,%.0f) subviews=%ld first=%s firstFrame=(%.0f,%.0f,%.0f,%.0f) clipsToBounds=%d\n",
+      ck, (long)self.tag,
+      self.frame.origin.x, self.frame.origin.y, self.frame.size.width, self.frame.size.height,
+      size.width, size.height,
+      (long)subCount, firstChild.UTF8String,
+      firstFrame.origin.x, firstFrame.origin.y, firstFrame.size.width, firstFrame.size.height,
+      self.clipsToBounds);
+  }
+#endif
 
   // Skip if size hasn't changed or is degenerate (view not yet laid out).
   if (CGSizeEqualToSize(size, _lastFiredSize)) return;
