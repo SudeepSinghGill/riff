@@ -2395,11 +2395,7 @@ export function Riff<T = unknown>({
     // Cells first, then decorations + stickies. All children are positioned
     // by the ShadowNode via LayoutCache (not by Yoga flex layout), so JSX order
     // doesn't affect visual rendering. But Yoga's flex column measures children
-    // top-to-bottom: if decorations (which have large explicit heights) come first,
-    // they consume the container's height budget and cells get height=0 from Yoga.
-    // Putting cells first ensures Yoga measures their content before running out
-    // of space. The ShadowNode then overrides all positions from the cache.
-    return <>{cells}{decorationElements}{stickyHeaderCells}{stickyFooterCells}</>;
+    return <>{decorationElements}{stickyHeaderCells}{stickyFooterCells}{cells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────
