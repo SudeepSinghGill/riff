@@ -536,6 +536,9 @@ export function ListDemo() {
 
   const keyExtractor = useCallback((item: ListItem) => item.id, []);
 
+  // POC 5: toggle between View (default) and Pressable as outermost cell element
+  const [listUsePressable, setListUsePressable] = useState(false);
+
   const RESIZE_SUBTITLE = 'Resized to tall.\nLine 2 — height change triggers layout invalidation.\nLine 3 — ShadowNode corrects downstream positions in same commit.\nLine 4 — no scroll jump.';
 
   const renderItem = useCallback(({ item, sectionIndex }: { item: ListItem; sectionIndex: number; itemIndex: number }) => {
@@ -547,13 +550,26 @@ export function ListDemo() {
     }
 
     const textColor = sectionIndex === 2 ? '#c4b5fd' : '#aaa';
-    return (
-      <View style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
+    const content = (
+      <>
         <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>Item {item.num}</Text>
         <Text style={{ color: textColor, fontSize: 13, marginTop: 4 }}>{subtitle}</Text>
+      </>
+    );
+
+    if (listUsePressable) {
+      return (
+        <Pressable style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
+          {content}
+        </Pressable>
+      );
+    }
+    return (
+      <View style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
+        {content}
       </View>
     );
-  }, [resizedIds]);
+  }, [resizedIds, listUsePressable]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -580,8 +596,9 @@ export function ListDemo() {
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
         <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
+        <CtrlBtn label={listUsePressable ? 'Cell:Pressable' : 'Cell:View'} onPress={() => setListUsePressable(v => !v)} active={listUsePressable} />
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
-          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}{listUsePressable ? ' (no wrap)' : ''}</Text>
         </View>
       </ScrollView>
 
@@ -589,6 +606,7 @@ export function ListDemo() {
         handle={cvRef}
         sections={sections}
         layout={listLayout}
+        __debugNoContentWrapper={listUsePressable}
         stickyMode="push"
         estimatedItemHeight={56}
         extraData={resizedIds}
@@ -873,16 +891,83 @@ export function MasonryDemo() {
     ),
   }), []);
 
+  // ── POC cell modes for Fabric flattening diagnosis ─────────────────────────
+  type CellMode = 'default' | 'pressable' | 'view' | 'flexShrink0' | 'collapsable' | 'natural' | 'redundant';
+  const CELL_MODES: CellMode[] = ['default', 'pressable', 'view', 'flexShrink0', 'collapsable', 'natural', 'redundant'];
+  const [cellMode, setCellMode] = useState<CellMode>('default');
+  const cycleCellMode = useCallback(() => {
+    setCellMode(prev => {
+      const idx = CELL_MODES.indexOf(prev);
+      return CELL_MODES[(idx + 1) % CELL_MODES.length]!;
+    });
+  }, []);
+
+  const LOREM = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.';
+
   const renderItem = useCallback(({ item }: { item: MasonryItem }) => {
     const isResized = resizedIds.has(item.id);
     const h = isResized ? Math.round(item.height * 1.5) : item.height;
-    return (
-      <Pressable style={[S.masonryCell, { backgroundColor: item.color, height: h }]} onPress={() => toggleResize(item.id)}>
-        <Text style={S.masonryCellText}>{item.num}</Text>
-        <Text style={S.masonryCellSub}>{h}px{isResized ? ' ↕' : ''}</Text>
-      </Pressable>
-    );
-  }, [resizedIds, toggleResize]);
+    const text1 = <Text style={S.masonryCellText}>{item.num}</Text>;
+    const text2 = <Text style={S.masonryCellSub}>{h}px {cellMode}{isResized ? ' ↕' : ''}</Text>;
+
+    switch (cellMode) {
+      case 'pressable':
+        // POC: Pressable as direct child (the broken case without internal wrapper)
+        return (
+          <Pressable style={[S.masonryCell, { backgroundColor: item.color, height: h }]} onPress={() => toggleResize(item.id)}>
+            {text1}{text2}
+          </Pressable>
+        );
+      case 'view':
+        // POC 8: Plain View instead of Pressable
+        return (
+          <View style={[S.masonryCell, { backgroundColor: item.color, height: h }]}>
+            {text1}{text2}
+          </View>
+        );
+      case 'flexShrink0':
+        // POC 4: Pressable with flexShrink: 0
+        return (
+          <Pressable style={[S.masonryCell, { backgroundColor: item.color, height: h, flexShrink: 0 }]} onPress={() => toggleResize(item.id)}>
+            {text1}{text2}
+          </Pressable>
+        );
+      case 'collapsable':
+        // POC 6: Pressable with collapsable={false}
+        return (
+          <Pressable collapsable={false} style={[S.masonryCell, { backgroundColor: item.color, height: h }]} onPress={() => toggleResize(item.id)}>
+            {text1}{text2}
+          </Pressable>
+        );
+      case 'natural':
+        // POC 1: Natural content height (no explicit height, text determines size)
+        return (
+          <View style={[S.masonryCell, { backgroundColor: item.color, padding: 12 }]}>
+            {text1}
+            <Text style={{ color: '#ccc', fontSize: 12, marginTop: 4 }}>{LOREM.slice(0, 20 + item.height)}</Text>
+          </View>
+        );
+      case 'redundant':
+        // POC 2: Consumer also wraps in View (test double-wrapping)
+        return (
+          <View>
+            <Pressable style={[S.masonryCell, { backgroundColor: item.color, height: h }]} onPress={() => toggleResize(item.id)}>
+              {text1}{text2}
+            </Pressable>
+          </View>
+        );
+      default:
+        // Default: Pressable (same as before, relies on internal View wrapper)
+        return (
+          <Pressable style={[S.masonryCell, { backgroundColor: item.color, height: h }]} onPress={() => toggleResize(item.id)}>
+            {text1}{text2}
+          </Pressable>
+        );
+    }
+  }, [resizedIds, toggleResize, cellMode]);
+
+  // Skip internal View wrapper for POCs that test without it
+  const noWrapper = cellMode !== 'default' && cellMode !== 'redundant' && cellMode !== 'natural';
 
   return (
     <View style={S.flex}>
@@ -897,8 +982,9 @@ export function MasonryDemo() {
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
         <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
+        <CtrlBtn label={`Cell:${cellMode}`} onPress={cycleCellMode} active={cellMode !== 'default'} />
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
-          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}{noWrapper ? ' (no wrap)' : ''}</Text>
         </View>
       </ScrollView>
 
@@ -909,6 +995,7 @@ export function MasonryDemo() {
         stickyMode="push"
         estimatedItemHeight={120}
         extraData={resizedIds}
+        __debugNoContentWrapper={noWrapper}
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
         onDecorationCountChange={setDecoCount}

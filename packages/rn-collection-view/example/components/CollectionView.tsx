@@ -425,6 +425,13 @@ export interface RiffProps<T = unknown> {
   prefetchAhead?: number;
 
   /**
+   * Debug only: skip the internal View wrapper around cell content.
+   * Used to test Fabric view flattening behavior in POC experiments.
+   * @internal
+   */
+  __debugNoContentWrapper?: boolean;
+
+  /**
    * Flat mode: indices of cells that pin to the top when scrolled past.
    * Only valid when `data` is provided (not `sections`).
    */
@@ -902,6 +909,7 @@ export function Riff<T = unknown>({
   onPrefetch,
   onEvict,
   prefetchAhead = 12,
+  __debugNoContentWrapper = false,
   stickyHeaderIndices: propStickyHeaderIndices,
   stickyFooterIndices: propStickyFooterIndices,
   stickyMode = 'push',
@@ -1988,11 +1996,12 @@ export function Riff<T = unknown>({
     ];
 
     // ShadowNode measures via Yoga — no RNMeasuredCell wrapping needed.
+    // The View wrapper prevents Fabric view flattening from collapsing content
+    // into RNMeasuredCellView, which causes Yoga to compute height=0 for children.
+    const innerContent = <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />;
     const content = (
       <CellWrapper mode={mode}>
-        <View>
-          <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
-        </View>
+        {__debugNoContentWrapper ? innerContent : <View>{innerContent}</View>}
       </CellWrapper>
     );
 
