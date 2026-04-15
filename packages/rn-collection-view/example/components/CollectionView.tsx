@@ -757,10 +757,12 @@ function CellWrapper({
   mode: 'visible' | 'hidden';
   children: React.ReactNode;
 }) {
-  if (Activity) {
-    return <Activity mode={mode}>{children}</Activity>;
-  }
+  // TEMP: bypass Activity to test if it's causing masonry content to not render
   return <>{children}</>;
+  // if (Activity) {
+  //   return <Activity mode={mode}>{children}</Activity>;
+  // }
+  // return <>{children}</>;
 }
 
 // ─── P5.2: Debug HUD ──────────────────────────────────────────────────────────
