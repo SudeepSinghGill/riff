@@ -165,6 +165,11 @@ private:
   bool _horizontal = false;      // set by computeSections(); drives contentDeterminedDimension() and applyMeasurements()
   double _viewportHeight = 0.0;  // stored from computeSections(); used in applyMeasurements Pass 3 for horizontal
 
+  // Per-section max cross-axis height ever measured (horizontal mode only).
+  // Only grows — never shrinks. Prevents oscillation when tall items scroll
+  // out of the render window and cache.getAll() no longer includes them.
+  std::unordered_map<int, double> _maxSectionCrossHeight;
+
   // Reusable attribute — mutated and copied into cache each iteration.
   // Avoids per-item allocation in the hot loop.
   LayoutAttributes _scratch;

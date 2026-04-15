@@ -785,7 +785,9 @@ bool GridLayout::applyMeasurements(
         }
       }
       if (globalMaxH > 0) {
-        _maxCrossAxisHeight = globalMaxH;
+        // Never shrink — cross-axis height is the max ever measured.
+        // Shrinking causes shouldInvalidate → prepare() → clear → oscillation.
+        _maxCrossAxisHeight = std::max(_maxCrossAxisHeight, globalMaxH);
       }
     }
 

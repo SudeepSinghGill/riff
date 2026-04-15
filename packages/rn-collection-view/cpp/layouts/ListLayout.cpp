@@ -274,6 +274,13 @@ bool ListLayout::applyMeasurements(
         auto& mx = sectionMaxH[attr.section];
         mx = std::max(mx, attr.frame.height);
       }
+      // Merge with persistent max — never shrink cross-axis height.
+      // Items that scrolled out of the cache may have been taller.
+      for (auto& pair : sectionMaxH) {
+        auto& persistent = _maxSectionCrossHeight[pair.first];
+        persistent = std::max(persistent, pair.second);
+        pair.second = persistent;
+      }
 
       // Update supplementaries and decorations.
       // We need section insets to compute header/footer height spans.
