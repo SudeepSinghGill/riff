@@ -429,14 +429,6 @@ export interface RiffProps<T = unknown> {
    * Used to test Fabric view flattening behavior in POC experiments.
    * @internal
    */
-  __debugNoContentWrapper?: boolean;
-
-  /**
-   * Debug only: render decorations before cells in JSX order.
-   * Tests whether Yoga's flex column height budget affects cell measurement.
-   * @internal
-   */
-  __debugDecorationsFirst?: boolean;
 
   /**
    * Flat mode: indices of cells that pin to the top when scrolled past.
@@ -916,8 +908,6 @@ export function Riff<T = unknown>({
   onPrefetch,
   onEvict,
   prefetchAhead = 12,
-  __debugNoContentWrapper = false,
-  __debugDecorationsFirst = false,
   stickyHeaderIndices: propStickyHeaderIndices,
   stickyFooterIndices: propStickyFooterIndices,
   stickyMode = 'push',
@@ -2006,12 +1996,9 @@ export function Riff<T = unknown>({
     // ShadowNode measures via Yoga — no RNMeasuredCell wrapping needed.
     // The View wrapper prevents Fabric view flattening from collapsing content
     // into RNMeasuredCellView, which causes Yoga to compute height=0 for children.
-    // POC: set to true to test without View wrapper
-    const _SKIP_VIEW_WRAPPER = true;
-    const innerContent = <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />;
     const content = (
       <CellWrapper mode={mode}>
-        {_SKIP_VIEW_WRAPPER ? innerContent : <View>{innerContent}</View>}
+        <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
       </CellWrapper>
     );
 
@@ -2412,9 +2399,7 @@ export function Riff<T = unknown>({
     // they consume the container's height budget and cells get height=0 from Yoga.
     // Putting cells first ensures Yoga measures their content before running out
     // of space. The ShadowNode then overrides all positions from the cache.
-    return __debugDecorationsFirst
-      ? <>{decorationElements}{stickyHeaderCells}{stickyFooterCells}{cells}</>
-      : <>{cells}{decorationElements}{stickyHeaderCells}{stickyFooterCells}</>;
+    return <>{cells}{decorationElements}{stickyHeaderCells}{stickyFooterCells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────

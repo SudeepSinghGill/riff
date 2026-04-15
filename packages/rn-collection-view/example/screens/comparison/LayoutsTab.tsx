@@ -536,9 +536,6 @@ export function ListDemo() {
 
   const keyExtractor = useCallback((item: ListItem) => item.id, []);
 
-  // POC 5: toggle between View (default) and Pressable as outermost cell element
-  const [listUsePressable, setListUsePressable] = useState(false);
-
   const RESIZE_SUBTITLE = 'Resized to tall.\nLine 2 — height change triggers layout invalidation.\nLine 3 — ShadowNode corrects downstream positions in same commit.\nLine 4 — no scroll jump.';
 
   const renderItem = useCallback(({ item, sectionIndex }: { item: ListItem; sectionIndex: number; itemIndex: number }) => {
@@ -550,26 +547,13 @@ export function ListDemo() {
     }
 
     const textColor = sectionIndex === 2 ? '#c4b5fd' : '#aaa';
-    const content = (
-      <>
-        <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>Item {item.num}</Text>
-        <Text style={{ color: textColor, fontSize: 13, marginTop: 4 }}>{subtitle}</Text>
-      </>
-    );
-
-    if (listUsePressable) {
-      return (
-        <Pressable style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
-          {content}
-        </Pressable>
-      );
-    }
     return (
       <View style={{ backgroundColor: 'rgba(10,10,28,0.50)', borderLeftWidth: 4, borderLeftColor: item.color, paddingHorizontal: 16, paddingVertical: 12 }}>
-        {content}
+        <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>Item {item.num}</Text>
+        <Text style={{ color: textColor, fontSize: 13, marginTop: 4 }}>{subtitle}</Text>
       </View>
     );
-  }, [resizedIds, listUsePressable]);
+  }, [resizedIds]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -596,9 +580,8 @@ export function ListDemo() {
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
         <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
-        <CtrlBtn label={listUsePressable ? 'Cell:Pressable' : 'Cell:View'} onPress={() => setListUsePressable(v => !v)} active={listUsePressable} />
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
-          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}{listUsePressable ? ' (no wrap)' : ''}</Text>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}</Text>
         </View>
       </ScrollView>
 
@@ -606,10 +589,9 @@ export function ListDemo() {
         handle={cvRef}
         sections={sections}
         layout={listLayout}
-        __debugNoContentWrapper={listUsePressable}
         stickyMode="push"
         estimatedItemHeight={56}
-        extraData={`${resizedIds.size}-${listUsePressable}`}
+        extraData={resizedIds}
         scrollViewProps={{ style: { backgroundColor: '#2a2a3e' }, indicatorStyle: 'white' }}
         keyExtractor={keyExtractor}
         renderItem={renderItem}
@@ -819,7 +801,6 @@ export function MasonryDemo() {
   const [ms0Items, setMs0Items] = useState<MasonryItem[]>(MS0_INIT);
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
-  const [decoFirst, setDecoFirst] = useState(true); // POC test 2: decorations first
   const [decoCount, setDecoCount] = useState(0);
   const [resizedIds, setResizedIds] = useState(() => new Set<string>());
   const insertCounter = useRef(MS0_INIT.length);
