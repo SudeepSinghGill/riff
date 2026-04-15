@@ -432,6 +432,13 @@ export interface RiffProps<T = unknown> {
   __debugNoContentWrapper?: boolean;
 
   /**
+   * Debug only: render decorations before cells in JSX order.
+   * Tests whether Yoga's flex column height budget affects cell measurement.
+   * @internal
+   */
+  __debugDecorationsFirst?: boolean;
+
+  /**
    * Flat mode: indices of cells that pin to the top when scrolled past.
    * Only valid when `data` is provided (not `sections`).
    */
@@ -910,6 +917,7 @@ export function Riff<T = unknown>({
   onEvict,
   prefetchAhead = 12,
   __debugNoContentWrapper = false,
+  __debugDecorationsFirst = false,
   stickyHeaderIndices: propStickyHeaderIndices,
   stickyFooterIndices: propStickyFooterIndices,
   stickyMode = 'push',
@@ -2402,7 +2410,9 @@ export function Riff<T = unknown>({
     // they consume the container's height budget and cells get height=0 from Yoga.
     // Putting cells first ensures Yoga measures their content before running out
     // of space. The ShadowNode then overrides all positions from the cache.
-    return <>{cells}{decorationElements}{stickyHeaderCells}{stickyFooterCells}</>;
+    return __debugDecorationsFirst
+      ? <>{decorationElements}{stickyHeaderCells}{stickyFooterCells}{cells}</>
+      : <>{cells}{decorationElements}{stickyHeaderCells}{stickyFooterCells}</>;
   })();
 
   // ── P5.1: HUD snapshot ───────────────────────────────────────────────────────

@@ -819,6 +819,7 @@ export function MasonryDemo() {
   const [ms0Items, setMs0Items] = useState<MasonryItem[]>(MS0_INIT);
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
+  const [decoFirst, setDecoFirst] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
   const [resizedIds, setResizedIds] = useState(() => new Set<string>());
   const insertCounter = useRef(MS0_INIT.length);
@@ -983,18 +984,21 @@ export function MasonryDemo() {
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
         <CtrlBtn label={sepEnabled ? 'Sep: ON' : 'Sep: OFF'} onPress={() => setSepEnabled(v => !v)} active={sepEnabled} />
         <CtrlBtn label={`Cell:${cellMode}`} onPress={cycleCellMode} active={cellMode !== 'default'} />
+        <CtrlBtn label={decoFirst ? 'Deco:1st' : 'Deco:last'} onPress={() => setDecoFirst(v => !v)} active={decoFirst} />
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
-          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}{noWrapper ? ' (no wrap)' : ''}</Text>
+          <Text style={{ color: '#888', fontSize: 10, fontWeight: '600' }}>Deco:{decoCount}{noWrapper ? ' (no wrap)' : ''}{decoFirst ? ' D1st' : ''}</Text>
         </View>
       </ScrollView>
 
       <CollectionView
+        key={`masonry-${cellMode}-${decoFirst}`}
         handle={cvRef}
         sections={sections}
         layout={masonryLayout}
         stickyMode="push"
         estimatedItemHeight={120}
-        extraData={`${resizedIds.size}-${cellMode}`}
+        extraData={`${resizedIds.size}-${cellMode}-${decoFirst}`}
+        __debugDecorationsFirst={decoFirst}
         __debugNoContentWrapper={noWrapper}
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
