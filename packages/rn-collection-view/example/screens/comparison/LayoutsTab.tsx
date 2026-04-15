@@ -911,6 +911,7 @@ export function MasonryDemo() {
         layout={masonryLayout}
         stickyMode="push"
         estimatedItemHeight={120}
+        measureAhead={2.0}
         extraData={resizedIds}
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
