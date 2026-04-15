@@ -757,12 +757,10 @@ function CellWrapper({
   mode: 'visible' | 'hidden';
   children: React.ReactNode;
 }) {
-  // TEMP: bypass Activity to test if it's causing masonry content to not render
+  if (Activity) {
+    return <Activity mode={mode}>{children}</Activity>;
+  }
   return <>{children}</>;
-  // if (Activity) {
-  //   return <Activity mode={mode}>{children}</Activity>;
-  // }
-  // return <>{children}</>;
 }
 
 // ─── P5.2: Debug HUD ──────────────────────────────────────────────────────────
@@ -2041,9 +2039,25 @@ export function Riff<T = unknown>({
       );
     }
 
+    // TEMP DIAG: test if masonry cells render with minimal content
+    if (effectiveLayout.type === 'masonry' && !measureOnly) {
+      return (
+        <RNMeasuredCell
+          key={key}
+          style={[{ width: cellWidth, height: 100 }]}
+          type="cell"
+          index={index}
+          cacheKey={cacheKey}
+          isMeasureOnly={false}
+        >
+          <View style={{ flex: 1, backgroundColor: 'red' }} />
+        </RNMeasuredCell>
+      );
+    }
+
     return (
-      <RNMeasuredCell 
-        key={key} 
+      <RNMeasuredCell
+        key={key}
         style={containerStyle}
         type="cell"
         index={index}
