@@ -146,6 +146,18 @@ class MasonryLayoutEngine implements CollectionViewLayout {
 
     this.lastSectionKeys = context.sections.map(s => s.itemKeys ?? []);
     nativeMod.masonryLayout.computeSections(sections);
+
+    // Temporary diagnostic: verify items exist in cache after compute
+    if (__DEV__) {
+      const cs = nativeMod.layoutCache.getTotalContentSize();
+      const testRect = { x: 0, y: 0, width: context.containerWidth, height: 2000 };
+      const found = nativeMod.layoutCache.getAttributesInRect(testRect);
+      console.log(`[MASONRY-DIAG] after computeSections: contentSize=${JSON.stringify(cs)} itemsInRect(0-2000)=${found.length} totalSections=${sections.length} totalItems=${sections.reduce((n: number, s: any) => n + s.itemCount, 0)}`);
+      if (found.length > 0) {
+        const first = found[0];
+        console.log(`[MASONRY-DIAG] first item: key=${first.key} frame=${JSON.stringify(first.frame)} flatIndex=${first.flatIndex} section=${first.section}`);
+      }
+    }
   }
 
   attributesForElements(inRect: Rect): LayoutAttributes[] {
