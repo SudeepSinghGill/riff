@@ -757,9 +757,10 @@ function CellWrapper({
   mode: 'visible' | 'hidden';
   children: React.ReactNode;
 }) {
-  if (Activity) {
-    return <Activity mode={mode}>{children}</Activity>;
-  }
+  // TEMP DIAG: Activity bypass test round 2
+  // if (Activity) {
+  //   return <Activity mode={mode}>{children}</Activity>;
+  // }
   return <>{children}</>;
 }
 
