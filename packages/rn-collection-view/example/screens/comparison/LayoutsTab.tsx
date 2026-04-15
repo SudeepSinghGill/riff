@@ -873,7 +873,10 @@ export function MasonryDemo() {
     ),
   }), []);
 
-  const renderItem = useCallback(({ item }: { item: MasonryItem }) => {
+  const renderItem = useCallback(({ item, sectionIndex, itemIndex }: { item: MasonryItem; sectionIndex?: number; itemIndex?: number }) => {
+    if (__DEV__) {
+      console.log(`[MASONRY-RENDER] id=${item?.id} s=${sectionIndex} i=${itemIndex} h=${item?.height} hasColor=${!!item?.color}`);
+    }
     const isResized = resizedIds.has(item.id);
     const h = isResized ? Math.round(item.height * 1.5) : item.height;
     return (
