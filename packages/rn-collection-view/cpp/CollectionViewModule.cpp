@@ -573,6 +573,21 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           } else {
             // ── Spatial-query path: for custom/non-sorted layouts ────────────
             auto renderAttrs = _layoutCache->getAttributesInRect(renderRect);
+#if DEBUG
+            // Temporary diagnostic: log spatial query results
+            if (renderAttrs.size() > 0) {
+              auto& first = renderAttrs[0];
+              printf("[SPATIAL-DIAG] renderAttrs=%zu first={key=%s flatIdx=%d section=%d idx=%d isSupp=%d isDeco=%d frame=(%.0f,%.0f,%.0f,%.0f)} rect=(%.0f,%.0f,%.0f,%.0f)\n",
+                renderAttrs.size(), first.key.c_str(), first.flatIndex, first.section, first.index,
+                first.isSupplementary, first.isDecoration,
+                first.frame.x, first.frame.y, first.frame.width, first.frame.height,
+                renderRect.x, renderRect.y, renderRect.width, renderRect.height);
+            } else {
+              printf("[SPATIAL-DIAG] renderAttrs=0 rect=(%.0f,%.0f,%.0f,%.0f) cacheVer=%d\n",
+                renderRect.x, renderRect.y, renderRect.width, renderRect.height,
+                static_cast<int>(_layoutCache->version()));
+            }
+#endif
             rFirst = std::numeric_limits<int>::max();
             rLast  = std::numeric_limits<int>::min();
             for (const auto& a : renderAttrs) {
