@@ -891,7 +891,7 @@ export function Riff<T = unknown>({
   sectionInsetLeft = 0,
   sectionInsetRight = 0,
   renderMultiplier = 0.5,
-  mountedWindowSize = 4.0,
+  mountedWindowSize = 2.0,
   measureAhead = 0,
   initialNumToRender = 10,
   onRenderCountChange,
@@ -1990,9 +1990,7 @@ export function Riff<T = unknown>({
     // ShadowNode measures via Yoga — no RNMeasuredCell wrapping needed.
     const content = (
       <CellWrapper mode={mode}>
-        <View>
-          <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
-        </View>
+        <MemoizedCellContent item={item} index={index} renderItem={stableRenderItem} extraData={extraData} />
       </CellWrapper>
     );
 
