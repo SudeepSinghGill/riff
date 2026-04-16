@@ -138,6 +138,9 @@ private:
     int32_t cacheVersion = -1;
     double bandLow = 0.0, bandHigh = 0.0;
     double blankBefore = 0.0, blankAfter = 0.0;
+    // Change C: frame data returned alongside indices to eliminate per-cell JSI.
+    std::vector<double> frames; // flat [x,y,w,h] per flat index in [measureFirst,measureLast]
+    int32_t framesFirst = 0;
   };
   LastScrollResult _lastScrollResult;
 

@@ -634,6 +634,12 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             blankAfter  = 0.0;
           }
 
+          // ── Change C: collect per-item frame data ────────────────────────
+          // Gathers x,y,w,h for every cache entry in [mFirst,mLast] in a single
+          // mutex acquisition. JS reads cellWidth/height from this array instead
+          // of making ~30 individual JSI calls per render (one per visible cell).
+          auto frames = _layoutCache->getFramesForFlatRange(mFirst, mLast);
+
           // ── Cache result for Opt 6 stable-band skip ─────────────────────
           _lastScrollResult.renderFirst  = budgeted.first;
           _lastScrollResult.renderLast   = budgeted.last;
@@ -644,9 +650,16 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           _lastScrollResult.cacheVersion = curVersion;
           _lastScrollResult.blankBefore  = blankBefore;
           _lastScrollResult.blankAfter   = blankAfter;
+          _lastScrollResult.frames       = frames;
+          _lastScrollResult.framesFirst  = mFirst;
           // Stable band: ±¼ viewport from current scroll position.
           _lastScrollResult.bandLow  = scrollPrimary - vpPrimary * 0.25;
           _lastScrollResult.bandHigh = scrollPrimary + vpPrimary * 0.25;
+
+          // Pack frame data into a flat JSI Array.
+          auto frameArr = Array(rt, frames.size());
+          for (size_t i = 0; i < frames.size(); ++i)
+            frameArr.setValueAtIndex(rt, i, Value(frames[i]));
 
           Object result(rt);
           result.setProperty(rt, "renderFirst",  Value(budgeted.first));
@@ -658,6 +671,8 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           result.setProperty(rt, "cacheVersion", Value(ver));
           result.setProperty(rt, "blankBefore",  Value(blankBefore));
           result.setProperty(rt, "blankAfter",   Value(blankAfter));
+          result.setProperty(rt, "frames",       Value(rt, std::move(frameArr)));
+          result.setProperty(rt, "framesFirst",  Value(mFirst));
           return Value(rt, result);
         }));
 

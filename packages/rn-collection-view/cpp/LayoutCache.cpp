@@ -265,6 +265,25 @@ LayoutCache::PrimaryRange LayoutCache::findRangeByPrimary(
   return result;
 }
 
+// ─── Frame bulk read (Change C — eliminate per-cell JSI in renderCell) ───────
+
+std::vector<double> LayoutCache::getFramesForFlatRange(int firstFlat, int lastFlat) const {
+  if (firstFlat > lastFlat) return {};
+  const int count = lastFlat - firstFlat + 1;
+  std::vector<double> result(static_cast<size_t>(count) * 4, 0.0);
+  std::lock_guard<std::mutex> lock(_mutex);
+  for (const auto& [key, attrs] : _map) {
+    int fi = attrs.flatIndex;
+    if (fi < firstFlat || fi > lastFlat) continue;
+    size_t off = static_cast<size_t>(fi - firstFlat) * 4;
+    result[off + 0] = attrs.frame.x;
+    result[off + 1] = attrs.frame.y;
+    result[off + 2] = attrs.frame.width;
+    result[off + 3] = attrs.frame.height;
+  }
+  return result;
+}
+
 // ─── Item heights (bulk read) ────────────────────────────────────────────────
 
 std::vector<double> LayoutCache::getItemHeights(int section, int count) const {

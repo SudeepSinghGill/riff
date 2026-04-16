@@ -168,6 +168,9 @@ const nativeMod = NativeCollectionViewModule as unknown as {
       measureFirst: number; measureLast: number;
       cacheVersion: number;
       blankBefore: number; blankAfter: number;
+      // Change C: flat [x,y,w,h] per flat-index entry in [framesFirst, framesFirst+N-1].
+      // Absent on Opt-6 band-skip early returns (frameDataRef stays valid in that case).
+      frames?: number[]; framesFirst?: number;
     };
   };
 };
@@ -1084,6 +1087,11 @@ export function Riff<T = unknown>({
   const lastBlankAreaRef = useRef({ offsetStart: 0, offsetEnd: 0 });
   // F1.3 — last prefetch range for diff-based onPrefetch/onEvict firing.
   const prevPrefetchRangeRef = useRef<Range | null>(null);
+  // F1.3 — pending setImmediate handle for coalesced prefetch/evict computation.
+  const pendingPrefetchRef = useRef<ReturnType<typeof setImmediate> | null>(null);
+  // Change C — frame data returned by processScroll to eliminate per-cell JSI.
+  // Flat [x, y, w, h] per entry for flat indices [framesFirst .. framesFirst + frames.length/4 - 1].
+  const frameDataRef = useRef<{ frames: number[]; first: number } | null>(null);
   // Snapshot function updated every render so the HUD always reads fresh values.
   const hudSnapshotRef = useRef<() => HUDSnapshot>(() => ({
     mountedCells: 0, coldMountCount: 0, scrollCorrectionCount: 0, offsetStart: 0, offsetEnd: 0,
@@ -1364,6 +1372,13 @@ export function Riff<T = unknown>({
     );
     rncvVerboseLog(`[RNCVX] scrollY=${scrollY} sectioned=${isSectioned} processScroll -> [${layoutResult.renderFirst}, ${layoutResult.renderLast}]`);
 
+    // Change C: store frame data returned by processScroll. On band-skip (stable-band
+    // Opt 6), processScroll does not include frames — frameDataRef stays valid since
+    // cacheVersion is unchanged meaning no layout mutations occurred.
+    if (layoutResult.frames) {
+      frameDataRef.current = { frames: layoutResult.frames, first: layoutResult.framesFirst! };
+    }
+
     if (layoutResult.renderLast < layoutResult.renderFirst) {
       const empty = { first: 0, last: -1 };
       if (rangeChanged(prevRenderRef.current, empty)) {
@@ -1403,6 +1418,16 @@ export function Riff<T = unknown>({
     layoutContentHeight,
     sectionInfoPacked,
   ]);
+
+  // F1.3 — cancel any pending prefetch/evict callback on unmount.
+  useEffect(() => {
+    return () => {
+      if (pendingPrefetchRef.current !== null) {
+        clearImmediate(pendingPrefetchRef.current);
+        pendingPrefetchRef.current = null;
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // P5.1 — start CADisplayLink when HUD is active, stop on unmount or HUD off.
   useEffect(() => {
@@ -1665,6 +1690,12 @@ export function Riff<T = unknown>({
         !effectiveLayout.needsSpatialQuery,      // sorted: binary search for list/grid
       );
 
+      // Change C: store frame data from processScroll. Not present on band-skip —
+      // frameDataRef stays valid (cacheVersion unchanged = positions unchanged).
+      if (scrollResult.frames) {
+        frameDataRef.current = { frames: scrollResult.frames, first: scrollResult.framesFirst! };
+      }
+
       // Cache version — check after processScroll so we read the same version
       // that was active during the spatial queries.
       const _lcvChanged = scrollResult.cacheVersion !== lastCacheVersionRef.current;
@@ -1733,6 +1764,9 @@ export function Riff<T = unknown>({
       }
 
       // F1.3 — Prefetch/evict callbacks.
+      // Range arithmetic is cheap (stays synchronous). The entering/leaving loops
+      // — which iterate up to prefetchAhead × viewport items calling keyExtractor —
+      // are deferred to setImmediate so they don't block the scroll handler.
       if ((onPrefetch || onEvict) && itemCount > 0 && prefetchAhead > 0) {
         const aheadItems = Math.ceil(prefetchAhead * vpH / stride);
         const newPR: Range = {
@@ -1741,27 +1775,41 @@ export function Riff<T = unknown>({
         };
         const prevPR = prevPrefetchRangeRef.current;
         if (prevPR === null || newPR.first !== prevPR.first || newPR.last !== prevPR.last) {
-          if (onPrefetch) {
-            const entering: string[] = [];
-            for (let i = newPR.first; i <= newPR.last; i++) {
-              if (prevPR === null || i < prevPR.first || i > prevPR.last) {
-                const d = data[i];
-                if (d !== undefined) entering.push(keyExtractor ? keyExtractor(d, i) : String(i));
-              }
-            }
-            if (entering.length > 0) onPrefetch(entering);
-          }
-          if (onEvict && prevPR !== null) {
-            const leaving: string[] = [];
-            for (let i = prevPR.first; i <= prevPR.last; i++) {
-              if (i < newPR.first || i > newPR.last) {
-                const d = data[i];
-                if (d !== undefined) leaving.push(keyExtractor ? keyExtractor(d, i) : String(i));
-              }
-            }
-            if (leaving.length > 0) onEvict(leaving);
-          }
+          // Update the ref eagerly so the next scroll event sees the new range
+          // even if the deferred callback hasn't executed yet.
           prevPrefetchRangeRef.current = newPR;
+
+          // Coalesce: cancel any pending callback before scheduling a new one.
+          if (pendingPrefetchRef.current !== null) {
+            clearImmediate(pendingPrefetchRef.current);
+          }
+
+          // Snapshot prev/new ranges; close over props by reference (same JS thread).
+          const snapshotPrev = prevPR;
+          const snapshotNew  = newPR;
+          pendingPrefetchRef.current = setImmediate(() => {
+            pendingPrefetchRef.current = null;
+            if (onPrefetch) {
+              const entering: string[] = [];
+              for (let i = snapshotNew.first; i <= snapshotNew.last; i++) {
+                if (snapshotPrev === null || i < snapshotPrev.first || i > snapshotPrev.last) {
+                  const d = data[i];
+                  if (d !== undefined) entering.push(keyExtractor ? keyExtractor(d, i) : String(i));
+                }
+              }
+              if (entering.length > 0) onPrefetch(entering);
+            }
+            if (onEvict && snapshotPrev !== null) {
+              const leaving: string[] = [];
+              for (let i = snapshotPrev.first; i <= snapshotPrev.last; i++) {
+                if (i < snapshotNew.first || i > snapshotNew.last) {
+                  const d = data[i];
+                  if (d !== undefined) leaving.push(keyExtractor ? keyExtractor(d, i) : String(i));
+                }
+              }
+              if (leaving.length > 0) onEvict(leaving);
+            }
+          });
         }
       }
 
@@ -1938,22 +1986,36 @@ export function Riff<T = unknown>({
     const mode: 'visible' | 'hidden' = measureOnly ? 'hidden' : 'visible';
 
     let cellWidth = itemWidth;
+    // attrHeight: cross-axis (height for V, width for H) — only used for H supplementaries.
+    let attrHeight = 0;
 
-    let attr = null;
-    if (isSectioned) {
-      if (fiDesc?._kind === 'header') {
-        attr = effectiveLayout.attributesForSupplementary('header', fiDesc.sectionIndex);
-      } else if (fiDesc?._kind === 'footer') {
-        attr = effectiveLayout.attributesForSupplementary('footer', fiDesc.sectionIndex);
-      } else {
-        attr = effectiveLayout.attributesForItem((fiDesc as any)?.itemIndex ?? index, fiDesc?.sectionIndex ?? 0);
-      }
+    // Change C: read width/height from the frame array returned by processScroll
+    // (single bulk JSI call) instead of making a per-cell JSI call here.
+    const fd = frameDataRef.current;
+    if (fd && index >= fd.first && index < fd.first + (fd.frames.length >> 2)) {
+      const off = (index - fd.first) * 4;
+      const w = fd.frames[off + 2];
+      if (w > 0) cellWidth = w;
+      attrHeight = fd.frames[off + 3];
     } else {
-      attr = effectiveLayout.attributesForItem(index, 0);
-    }
-
-    if (attr) {
-      cellWidth = attr.frame.width;
+      // Fallback to JSI for indices outside the frame data range (e.g. sticky cells
+      // that lie outside [measureFirst, measureLast]).
+      let attr = null;
+      if (isSectioned) {
+        if (fiDesc?._kind === 'header') {
+          attr = effectiveLayout.attributesForSupplementary('header', fiDesc.sectionIndex);
+        } else if (fiDesc?._kind === 'footer') {
+          attr = effectiveLayout.attributesForSupplementary('footer', fiDesc.sectionIndex);
+        } else {
+          attr = effectiveLayout.attributesForItem((fiDesc as any)?.itemIndex ?? index, fiDesc?.sectionIndex ?? 0);
+        }
+      } else {
+        attr = effectiveLayout.attributesForItem(index, 0);
+      }
+      if (attr) {
+        cellWidth = attr.frame.width;
+        attrHeight = attr.frame.height;
+      }
     }
     rncvLog('RNCV-JS-CELL', {
       op: 'layout-attr',
@@ -1962,9 +2024,7 @@ export function Riff<T = unknown>({
       kind: fiDesc?._kind,
       sectionIndex: fiDesc?.sectionIndex,
       cacheKey,
-      attrHit: !!attr,
-      attrY: attr?.frame?.y,
-      attrH: attr?.frame?.height,
+      attrHeight,
       cellWidth,
     });
 
@@ -1983,7 +2043,7 @@ export function Riff<T = unknown>({
     const containerStyle = [
       {
         ...(viewportWidth > 0 ? { width: cellWidth } : {}),
-        ...(isHorizSupplementary && attr && attr.frame.height > 0 ? { height: attr.frame.height } : {}),
+        ...(isHorizSupplementary && attrHeight > 0 ? { height: attrHeight } : {}),
       },
     ];
 
@@ -2096,12 +2156,14 @@ export function Riff<T = unknown>({
     const sk = fd ? fd.sectionIndex : 0;
     const ik = fd && fd._kind === 'item' ? fd.itemIndex : index;
     if (fd?._kind === 'header') {
-      const suppAttr = effectiveLayout.attributesForSupplementary('header', sk);
-      return suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-header`;
+      // Derive key without JSI: matches each layout engine's attributesForSupplementary format.
+      // list → "item-{s}-header", grid/masonry/flow → "{type}-{s}-header"
+      const prefix = effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type;
+      return `${prefix}-${sk}-header`;
     }
     if (fd?._kind === 'footer') {
-      const suppAttr = effectiveLayout.attributesForSupplementary('footer', sk);
-      return suppAttr ? suppAttr.key : `${effectiveLayout.type}-${sk}-footer`;
+      const prefix = effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type;
+      return `${prefix}-${sk}-footer`;
     }
     const sectionKeys = layoutContext?.sections[sk]?.itemKeys;
     const defaultKey = effectiveLayout.type === 'list'

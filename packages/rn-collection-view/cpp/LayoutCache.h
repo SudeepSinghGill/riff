@@ -149,6 +149,15 @@ public:
   Size getTotalContentSize() const;
 
   /**
+   * Returns frame data (x, y, width, height) for all cache entries whose
+   * flatIndex falls in [firstFlat, lastFlat]. Result is a flat vector of
+   * size (lastFlat - firstFlat + 1) * 4, zero-initialized. Entries with no
+   * matching cache entry keep their zero values.
+   * Single mutex acquisition. Use to eliminate per-cell JSI calls in renderCell.
+   */
+  std::vector<double> getFramesForFlatRange(int firstFlat, int lastFlat) const;
+
+  /**
    * Returns heights for items 0..count-1 in the given section.
    * Items without cache entries get height 0.
    * Single-call alternative to N getAttributes() calls.
