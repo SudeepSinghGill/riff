@@ -21,11 +21,11 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 1 | **Remaining perf fixes** | ⬜ | Change C (eliminate per-cell JSI in renderCell), Change F (defer prefetch/evict). See PERF-PLAN.md |
-| 2 | **Flow V fix** | ✅ In progress | flatIndex not set by FlowLayout C++ → binary search returns empty. Same fix as grid/masonry. |
+| 1 | **Remaining perf fixes** | ✅ Done | Change C: `processScroll` now returns flat frame array; `renderCell` reads width/height from it (eliminates ~30 JSI calls/render). `computeCacheKey` for headers/footers derived without JSI. Change F: entering/leaving loops deferred to `setImmediate` with coalescing (removes O(384) `keyExtractor` loop from `onScroll`). |
+| 2 | **Flow V fix** | ✅ Done | FlowLayout flatIndex wiring verified; binary search path works for Flow V. |
 | 3 | **H-list cross-axis height bounce** | ⬜ | Layout loop: measure → container resize → shouldInvalidate → re-layout → repeat. Affects List H, Grid H. Needs dedicated investigation. See `memory/project_hlist_bounce.md` |
 | 4 | **H-list S[0] header half height** | ⬜ | Same root cause as #3 — _maxCrossAxisHeight starts from estimate, grows as items measured |
-| 5 | **Perf findings writeup** | ⬜ | Document in COLLECTIONVIEW_INTERNALS.md. Session learnings, root causes, architectural decisions |
+| 5 | **Perf findings writeup** | ✅ Done | Added `Performance Investigation Results (2026-04-12 → 2026-04-16)` section in `docs/COLLECTIONVIEW_INTERNALS.md`. |
 | 6 | **Compositional layout** | ⬜ | UICollectionView CompositionalLayout-like API. Orthogonal scrolling sections. Custom layouts per section. Discuss API design (Compose LazyList-like?) |
 | 7 | **Diff engine + Snapshot API** | ⬜ | F1.1 (C++ diff engine), F1.2 (Snapshot API for batch mutations) |
 | 8 | **Cell animations** | ⬜ | F1.2b (enter/exit animations), F1.2c (UICollectionView-parity animations) |
