@@ -1,57 +1,11 @@
 #include "CollectionViewModule.h"
 
-#include <chrono>
-#include <cstdint>
-#include <fstream>
 #include <limits>
 #include <unordered_map>
 
 namespace facebook::react {
 
 using namespace facebook::jsi;
-
-namespace {
-// #region agent log
-constexpr const char* kDebugLogPath = "/Users/rajatgupta/Dev/rn-new-arch-pocs/collection-view/.cursor/debug-17d73b.log";
-
-static std::string escapeJson(const std::string& in) {
-  std::string out;
-  out.reserve(in.size() + 8);
-  for (char c : in) {
-    switch (c) {
-      case '\\': out += "\\\\"; break;
-      case '"': out += "\\\""; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default: out += c; break;
-    }
-  }
-  return out;
-}
-
-static int64_t nowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
-static void logDebug(const char* runId,
-                     const char* hypothesisId,
-                     const char* location,
-                     const std::string& message,
-                     const std::string& dataJson) {
-  std::ofstream out(kDebugLogPath, std::ios::app);
-  if (!out.is_open()) return;
-  out << "{\"sessionId\":\"17d73b\",\"runId\":\"" << runId
-      << "\",\"hypothesisId\":\"" << hypothesisId
-      << "\",\"location\":\"" << escapeJson(location)
-      << "\",\"message\":\"" << escapeJson(message)
-      << "\",\"data\":" << dataJson
-      << ",\"timestamp\":" << nowMs() << "}\n";
-}
-// #endregion
-} // namespace
 
 // ── Static LayoutCache registry ──────────────────────────────────────────────
 
@@ -177,15 +131,6 @@ CollectionViewModule::CollectionViewModule(
   registerLayoutEngine(_layoutCacheId, "grid", _gridLayout);
   registerLayoutEngine(_layoutCacheId, "masonry", _masonryLayout);
   registerLayoutEngine(_layoutCacheId, "flow", _flowLayout);
-  // #region agent log
-  logDebug(
-      "reload-crash-1",
-      "H2",
-      "CollectionViewModule.cpp:constructor",
-      "module constructed",
-      "{\"this\":\"" + std::to_string(reinterpret_cast<uintptr_t>(this)) +
-          "\",\"layoutCacheId\":" + std::to_string(_layoutCacheId) + "}");
-  // #endregion
 }
 
 std::string CollectionViewModule::ping() {
@@ -193,19 +138,6 @@ std::string CollectionViewModule::ping() {
 }
 
 void CollectionViewModule::invalidate() {
-  // #region agent log
-  logDebug(
-      "reload-crash-1",
-      "H1",
-      "CollectionViewModule.cpp:invalidate",
-      "invalidate invoked",
-      "{\"this\":\"" + std::to_string(reinterpret_cast<uintptr_t>(this)) +
-          "\",\"hasLayoutCacheJSI\":" + (_layoutCacheJSI.has_value() ? "true" : "false") +
-          ",\"hasListLayoutJSI\":" + (_listLayoutJSI.has_value() ? "true" : "false") +
-          ",\"hasMasonryJSI\":" + (_masonryLayoutJSI.has_value() ? "true" : "false") +
-          ",\"hasGridJSI\":" + (_gridLayoutJSI.has_value() ? "true" : "false") +
-          ",\"hasFlowJSI\":" + (_flowLayoutJSI.has_value() ? "true" : "false") + "}");
-  // #endregion
   _layoutCacheJSI.reset();
   _listLayoutJSI.reset();
   _windowControllerJSI.reset();
@@ -736,23 +668,6 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
 Value CollectionViewModule::get(Runtime& rt, const PropNameID& name) {
   auto prop = name.utf8(rt);
-  // #region agent log
-  if (prop == "layoutCache" || prop == "listLayout" || prop == "masonryLayout" ||
-      prop == "gridLayout" || prop == "flowLayout" || prop == "windowController" ||
-      prop == "memory") {
-    logDebug(
-        "reload-crash-1",
-        "H1",
-        "CollectionViewModule.cpp:get",
-        "module property requested",
-        "{\"this\":\"" + std::to_string(reinterpret_cast<uintptr_t>(this)) +
-            "\",\"rt\":\"" + std::to_string(reinterpret_cast<uintptr_t>(&rt)) +
-            "\",\"prop\":\"" + escapeJson(prop) + "\"" +
-            ",\"hasLayoutCacheJSI\":" + (_layoutCacheJSI.has_value() ? "true" : "false") +
-            ",\"hasListLayoutJSI\":" + (_listLayoutJSI.has_value() ? "true" : "false") +
-            ",\"hasMasonryJSI\":" + (_masonryLayoutJSI.has_value() ? "true" : "false") + "}");
-  }
-  // #endregion
 
   if (prop == "ping") {
     return Function::createFromHostFunction(rt,
@@ -1028,18 +943,6 @@ void CollectionViewModule::setMainThreadCPUCallback(std::function<double()> cb) 
 }
 
 void CollectionViewModule::triggerMemoryPressure(int level) {
-  // #region agent log
-  logDebug(
-      "reload-crash-1",
-      "H4",
-      "CollectionViewModule.cpp:triggerMemoryPressure",
-      "memory pressure callback dispatch",
-      "{\"this\":\"" + std::to_string(reinterpret_cast<uintptr_t>(this)) +
-          "\",\"level\":" + std::to_string(level) +
-          ",\"hasFn\":" + (_memoryPressureJsFn ? "true" : "false") +
-          ",\"hasRt\":" + (_memoryPressureRt ? "true" : "false") +
-          ",\"rt\":\"" + std::to_string(reinterpret_cast<uintptr_t>(_memoryPressureRt)) + "\"}");
-  // #endregion
   if (!_memoryPressureJsFn || !_memoryPressureRt) return;
   auto fn = _memoryPressureJsFn;
   auto rt = _memoryPressureRt;
@@ -1087,15 +990,6 @@ Value CollectionViewModule::getMemoryObject(Runtime& rt) {
             if (fnObj.isFunction(rtInner)) {
               _memoryPressureRt = &rtInner;
               _memoryPressureJsFn = std::make_shared<Function>(fnObj.getFunction(rtInner));
-              // #region agent log
-              logDebug(
-                  "reload-crash-1",
-                  "H4",
-                  "CollectionViewModule.cpp:memory.onPressure",
-                  "memory pressure callback registered",
-                  "{\"this\":\"" + std::to_string(reinterpret_cast<uintptr_t>(this)) +
-                      "\",\"rt\":\"" + std::to_string(reinterpret_cast<uintptr_t>(&rtInner)) + "\"}");
-              // #endregion
             }
           }
           return Value::undefined();
