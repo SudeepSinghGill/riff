@@ -1220,3 +1220,71 @@ Blank area computation happens inside C++ `processScroll` at zero marginal cost 
 ```typescript
 onBlankArea={__DEV__ ? myBlankAreaHandler : undefined}
 ```
+
+---
+
+## Performance Investigation Results (2026-04-12 → 2026-04-16)
+
+### Summary
+
+JS FPS on the Feed tab (vertical list, variable-height items, 1000 items) improved from single-digit/teens to **~60fps**, achieving parity with FlashList v2. The investigation spanned scroll hot path optimization, React render cost reduction, Fabric/Yoga measurement analysis, and window tuning.
+
+### Root Causes Found & Fixes Applied
+
+**1. Element cache invalidation cascade (CRITICAL)**
+`stickyConfigMap` was in `renderGen` deps. Every Yoga measurement bumped `layoutCacheVersion` → new `stickyConfigMap` Map reference → `renderGen++` → ALL element cache entries invalidated → O(window_size) re-render on every scroll frame with a measurement. Fix: remove `stickyConfigMap` from `renderGen` deps. Sticky cells are rendered outside the slot-based element cache loop.
+
+**2. PerfHUD causing parent re-renders**
+The Feed comparison tab used `useState` for velocity and contentHeight, passed as props to PerfHood. Every scroll event → `setVelocity()` → parent re-render → cascaded into both Riff and FlashList. Fix: moved to refs + getter callbacks. PerfHood reads metrics on its own 500ms timer.
+
+**3. PerfHUD internal rAF loop**
+`usePerformanceMetrics()` ran `requestAnimationFrame` on every JS frame plus `setInterval` every 500ms with `setState`. Was measuring performance while degrading it. Fix: added `disabled` parameter that skips all timers.
+
+**4. SlotManager.sync() O(window_size) on every render**
+No short-circuit when inputs unchanged. For 78 slots at 60fps = 4680 wasted iterations/sec. Fix: cache previous inputs, return same Map reference in O(1) when first/last/measureFirst/measureLast/dataLength match.
+
+**5. Decoration JSI queries on every render**
+`getAttributesInRect(decoRect)` called in the scrollContent IIFE on every render even when nothing changed. Fix: cache by layoutCacheVersion + scroll position.
+
+**6. useLayoutEffect unconditional setRenderRange**
+Called `setRenderRange(freshObject)` without range-changed guard → React always treated as state change → forced second re-render per lcv bump. Fix: added `rangeChanged` guard matching the onScroll handler.
+
+**7. setAttributes unconditional version bump**
+`_version++` on every `setAttributes()` even if frame unchanged. During applyMeasurements cascade, items that didn't move bumped version, defeating the stable-band skip. Fix: only bump on actual frame change.
+
+**8. measureAhead invisible cell creation cost (CRITICAL)**
+`measureAhead=2.0` mounted extra cells beyond the render window with `Activity=hidden`. Activity=hidden suppresses painting but NOT Fabric ShadowNode creation. Each invisible cell's `<Text>` elements triggered full `ParagraphShadowNode` prop parsing (~1ms per Text). This doubled per-frame Fabric cost. Fix: `measureAhead=0` as default. Cells get Yoga-measured when they enter the render range. With recycling (Opt 4), pre-measurement is unnecessary.
+
+**9. Window size too large + velocity-adaptive expansion**
+Defaults `mountedWindowSize=5.0`, `renderMultiplier=1.0` → up to 78-83 mounted cells. Velocity-adaptive leadBoost expanded the window up to 5× viewport ahead during fast scroll. Fix: `mountedWindowSize=2.0`, `renderMultiplier=0.5`, velocity cap `min(1.5, speed)`.
+
+**10. Codex debug logging in C++ hot path**
+External agent added file I/O logging (`std::ofstream`) in `CollectionViewModule::get()` — every JSI property access wrote to disk. This ran hundreds of times per second during scroll. Fix: removed all debug logging.
+
+### Architectural Decisions
+
+**Binary search for sorted layouts:** `processScroll` now accepts a `sorted` boolean. When true, uses `LayoutCache::findRangeByPrimary()` — O(log n) binary search on a lazy-sorted position index, single mutex acquisition, zero struct copies. Falls back to spatial queries (`getAttributesInRect`) when `sorted=false`. All built-in layouts (list, grid, masonry, flow) use binary search. Only custom layouts with `needsSpatialQuery=true` use spatial queries.
+
+**flatIndex on LayoutAttributes:** Each `LayoutAttributes` now carries a precomputed `flatIndex` set by the layout engine during `prepare()`. Eliminates the `toFlatIdx` lambda in `processScroll` that recomputed section offsets for every item on every scroll frame.
+
+**Window defaults with recycling:** With cell recycling (SlotManager, Opt 4), large buffers are counterproductive — each cell entering the window still costs renderCell + Fabric creation. Smaller windows (2× viewport) with fast recycling achieve better FPS than large windows (5×) without recycling.
+
+**Cells-first JSX order reverted:** Attempted rendering cells before decorations to prevent Yoga height starvation. This broke sticky header/footer initialization (RNScrollCoordinatedView needs to be in the Fabric tree before cells for KVO setup). Reverted to original order: `{decorationElements}{stickyHeaderCells}{stickyFooterCells}{cells}`.
+
+### Instruments Profiler Findings
+
+Time Profiler on Feed tab fast scroll showed:
+- `ParagraphShadowNode::cloneProps` (757ms / 2.5%) — Fabric text prop parsing for `<Text>` elements. Framework code, not ours.
+- `createNode` (1.75s / 5.8%) — creating new ShadowNodes when cells enter the window.
+- `Hermes interpretFunction` (4.52s self-time / 15.1%) — JS bytecode execution (React reconciliation, component function, hooks).
+- The dominant cost during scroll is React/Fabric framework overhead per cell, not our C++ code.
+
+### Known Issues
+
+**Horizontal list cross-axis height bounce:** Without a fixed container height, horizontal list oscillates between content-determined and full-screen height. `_maxSectionCrossHeight` (never-shrink) and fingerprint exclusion of `containerHeight` for horizontal don't fully resolve it. The layout loop is: measure cells → cross-axis height changes → container resizes → layoutContext changes → re-render → re-measure. Needs dedicated investigation.
+
+### Remaining Optimizations (Deferred)
+
+**Change C — Eliminate per-cell JSI in renderCell:** Each `renderCell` calls `effectiveLayout.attributesForItem()` — a JSI call that acquires mutex and copies a full LayoutAttributes struct. processScroll could return frame data for render-range items alongside the indices.
+
+**Change F — Defer prefetch/evict off scroll hot path:** When `onPrefetch`/`onEvict` callbacks are provided, the onScroll handler iterates through the entire prefetch range delta calling keyExtractor for each. Should be deferred to `setImmediate` or `requestIdleCallback`.
