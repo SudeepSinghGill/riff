@@ -41,6 +41,11 @@ struct FlowLayoutParams {
   double sectionBackgroundInsetLeft   = 0;
   double sectionBackgroundInsetRight  = 0;
 
+  // Flat index mapping (for processScroll binary search)
+  int flatIndexBase     = 0;
+  int headerFlatIndex   = -1;
+  int footerFlatIndex   = -1;
+
   // Horizontal mode (primary=X, cross=Y; items pack top→bottom, wrap to next column)
   bool horizontal = false;
 };

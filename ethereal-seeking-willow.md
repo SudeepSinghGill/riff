@@ -1,267 +1,55 @@
-# Working Plan — Riff List Demo + Phase 5
+# Riff — Working Plan & Roadmap
 
-## Status Summary
+## Current State (2026-04-16)
 
-| Phase | Status |
-|---|---|
-| L1 – Re-verify ShadowNode (insets, spacing, multi-section, sticky) | ✅ Done |
-| L2 – ListDemo: sticky identity, cell animation, insets+spacing, mutations | ✅ Done |
-| MVC – insert/delete scroll correction | ✅ Done |
-| MVC – size-change scroll correction | ✅ Done |
-| L5 – Mutation buttons + MVC toggle in ListDemo | ✅ Done (wired in LayoutsTab.tsx) |
-| L4 – ScrollToItem (vertical + horizontal) | ✅ Done (branch: `cur-scrollto`, merged; horizontal added in `cur-section-footer-test`) |
-| L3 – Proper Decoration Views | 🔄 In progress (branch: `cur-section-footer-test`, built, fixing 8 bugs) |
-| Horizontal list demo (sticky H/F, section bkg, scrollTo, insert/delete/resize, MVC) | ✅ Done (branch: `cur-section-footer-test`) |
-| L3.fix – Decoration bug fixes (stale frames, MVC anchor, fingerprint, demo UI) | ✅ Done (tag-based native positioning, visible separator color) |
-| L3.1 – Decoration contentInsets API (frame adjustment like NSCollectionLayoutDecorationItem) | ✅ Done (branch: `cur-decoration-content-insets`, merged to main) |
-| Horizontal grid layout (C++ H-branching + TS delegate + H-Grid demo tab) | ✅ Done (branch: `cur-horizontal-grid`, merged to main) |
-| H-grid adaptive cross-axis (always-adaptive, onContentSizeChange, full scroll events) | ✅ Done (branch: `cur-section-footer-test`) |
-| Masonry full feature parity (V+H, multi-section, decorations, MVC, ScrollTo) | ✅ Done (branch: `cur-masonry`, merged to main) |
-| Flow full feature parity (V+H, multi-section, decorations, MVC, ScrollTo) | ✅ Done (branch: `cur-flow`, merged to main) |
-| Flow V bin-packing bugs fixed (lineMaxPrimary, frame W/H swap) | ✅ Done (branch: `cur-flow-fix`, merged to main) |
-| FlowDemo redesigned: S0=fractional-width product cards, S1=tag cloud | ✅ Done |
-| RiffDemo: all 8 layout tabs wired (List/Grid/Masonry/Flow × V+H) | ✅ Done |
-| H-masonry: broken (all items same size) | ⬜ Future/research (see PLAN.md) |
-| H-flow demo | ⬜ Future scope (see PLAN.md) |
-| Flow/masonry separators | ⬜ Future scope (see PLAN.md) |
-| API audit across all 4 layouts + dead code cleanup | ✅ Done (branch: `cur-cleanup`, merged) |
-| 5j – Remove JS cell wrapper positioning | ✅ Done (branch: `cur-cleanup`, merged) |
-| Masonry windowing bug (Phase A stride + rectsIntersect boundary) | ✅ Done (branch: `cur-masonry-window-fix`, merged) |
-| RiffDemo: animated resize toggle + responsive column breakpoints | ✅ Done (branch: `cur-riff-resize`, merged) |
-| RiffDemo: circular and carousel tabs wired | ✅ Done (branch: `cur-riff-resize`, merged) |
-| FlashList comparison: Feed tab (150 hetero items) + Search tab (1500 items) | ✅ Done (branch: `cur-flashlist-comparison`, merged) |
-| 5g – Extend ShadowNode to grid/masonry/flow | ✅ Done (ShadowNode is layout-agnostic across all 4 types) |
-| Grid rowAlignment – 'top'\|'center'\|'bottom' for uneven heightForItem rows | ⬜ Future (see PLAN.md F-Grid.1) |
-| Flow justification (leading/center/trailing/spaceBetween/spaceEvenly) | ⬜ Future (see PLAN.md F-Flow.1) |
-| Flow item weight/stretching | ⬜ Future (see PLAN.md F-Flow.2) |
+**Branch:** `cur-cell-pooling` — all perf + layout work lives here.
+
+**JS FPS:** ~60fps on Feed tab (parity with FlashList). Achieved by:
+- measureAhead=0 (eliminates invisible cell Fabric creation cost)
+- Binary search for sorted layouts (replaces spatial queries)
+- SlotManager short-circuit, decoration cache, element cache cascade fix
+- Reduced window defaults (renderMultiplier=0.5, mountedWindowSize=2.0)
+- Velocity leadBoost cap (1.5x instead of 4.0x)
+- PerfHUD disabled during comparison, Feed demo uses refs not setState
+
+**Layouts working:** List V, Grid V, Grid H, Masonry V, Flow V (after flatIndex fix), Radial, Circular
+**Layouts with known issues:** List H (cross-axis height bounce), Grid H (same), Masonry H (items same size — pre-existing), Flow H (untested)
 
 ---
 
-## Execution Order
-
-```
-L4 (scrollTo) ✅ → L3 (decoration views) → 5g (other layouts) → 5j (remove JS wrapper)
-```
-
----
-
-## L4 — ScrollToItem (DONE)
-
-**Branch:** `cur-scrollto` (merged to main)
-
-**What was built:**
-- 3-layer architecture: JS imperative API → C++ JSI `scrollTo` binding → native `_scrollToX:y:animated:`
-- Scroll handler registry in `CollectionViewModule.cpp` — static map keyed by `layoutCacheId`, decouples JSI from native view
-- Native `RNCollectionViewContainerView` registers/unregisters handler in `updateProps:`/`prepareForRecycle`
-- JS `scrollToItem(key, options)` reads frame from LayoutCache using stable keys, computes target offset for `top|center|bottom|nearest` positions, clamps to `[0, contentHeight - viewportHeight]`
-
-**Key decisions:**
-- **Stable keys end-to-end:** `scrollToItem` accepts `"sectionKey:itemId"` (e.g. `"cell-animation:s1-17"`) — same key format the C++ ListLayout stores in the cache when `keyExtractor` is provided via `layoutContext.sections[s].itemKeys`. No key translation needed.
-- **contentHeightRef pattern:** `useImperativeHandle` deps don't include `contentHeight` (would recreate handle every layout pass). Instead, `contentHeightRef` mirrors the state — same pattern as existing `viewportHeightRef`.
-- **No settling loop:** LayoutCache has positions for all items (estimates for unseen). Same as UICollectionView with `estimatedItemSize`. Settling can be added later.
-
-**Bugs fixed during implementation:**
-1. `prepareForRecycle` didn't reset `_layoutCacheId` → recycled views skipped scroll handler re-registration
-2. `contentHeight` stale in `useImperativeHandle` closure → all scrolls clamped to y=0
-
----
-
-## L3 — Proper Decoration Views
-
-**Branch:** `cur-decorative-views` (committed, needs build + test in Xcode)
-
-Replaces the JS-workaround `renderSectionBackground` (not windowed, manually positioned) with proper layout-driven decoration views.
-
-**Design:**
-- Layout engine emits decoration `LayoutAttributes` — no data, just frame + kind + sectionIndex
-- Same position pipeline as cells (`applyPositionsFromState`, `applyMeasurements()` cascade)
-- Windowed like cells (render range)
-- Z-ordered: `zIndex: -1` for backgrounds, `zIndex: 0` for separators
-
-**Consumer API:**
-```typescript
-// Separators: simple props (built-in renderer)
-separatorEnabled={true}
-separatorColor="#ccc"
-separatorInsetLeading={16}
-separatorInsetTrailing={0}
-
-// Section backgrounds + custom kinds: provide renderer
-decorationRenderers={{
-  sectionBackground: (sectionIndex, frame) => <View style={...} />,
-}}
-```
-
-**Implementation steps:**
-- L3.1: `LayoutAttributes`: add `isDecoration: bool`, `decorationKind: string`
-- L3.2: `ListLayout::computeSection()`: emit `sectionBackground` (full section rect) and `separator` (between items) entries when opted-in
-- L3.3: `CollectionView.tsx`: read decorations from LayoutCache, render before cells, consumer API
-- L3.4: Deprecate `renderSectionBackground` (map to `decorationRenderers.sectionBackground` internally)
-
-**Tricky parts:**
-- Z-ordering: backgrounds behind cells — ensure insertion order or native `zPosition`
-- Windowing: section backgrounds span full section height — partially visible when start is off-screen
-- Lifecycle: decorations created/destroyed by layout engine output, not data changes
-
-**Files:**
-| File | Change |
-|---|---|
-| `cpp/LayoutCache.h` | `isDecoration`, `decorationKind` on `LayoutAttributes` |
-| `cpp/LayoutCache.cpp` | JSI serialization for new fields |
-| `cpp/layouts/ListLayout.h/.cpp` | Emit decoration attrs in `computeSection()` |
-| `cpp/CollectionViewContainerShadowNode.cpp` | Handle decoration children in position pipeline |
-| `example/components/CollectionView.tsx` | Render decorations, consumer API, deprecate old prop |
-
----
-
-## L3.1 — Decoration contentInsets API (after L3.fix)
-
-Mirrors `NSCollectionLayoutDecorationItem.contentInsets`. Lets consumers shift the C++-emitted decoration frame, enabling:
-- "Jacket" backgrounds that start above section content (negative top)
-- Partial-height decorations (positive bottom inset = ends before section end)
-- Horizontal overflow beyond section insets (negative left/right)
-- "Bookshelf" UI: shelf decorations with negative top inset overlap the section above
-
-Consumer API:
-```typescript
-decorationRenderers: {
-  sectionBackground: {
-    render: (si, frame) => <JacketBg />,
-    contentInsets: { top: -60, bottom: 0, left: -16, right: -16 },
-  }
-}
-```
-C++ applies insets when emitting the decoration frame so windowing and ShadowNode positioning are correct at source.
-
----
-
-## 5g — Extend ShadowNode to All Layout Types
-
-After L3. One layout type at a time:
-
-1. **Horizontal list** — same as vertical list but flip axis
-2. **Grid (vertical + horizontal)** — reads `frame.x` (column), `frame.width` from cache
-3. **Flow (vertical + horizontal)** — two-pass: Yoga measures widths → cache → FlowLayout recomputes
-4. **Masonry** — items not Y-sorted by index; use `getAttributesInRect()` for range queries
-
-Non-frame attributes (`zIndex`, `alpha`, `transform3D`, `isHidden`) applied from LayoutCache by native view.
-
----
-
-## 5j — Remove JS Cell Wrapper Positioning
-
-After 5g. Remove `position: 'absolute'`, `left`, `top`, `width`, `height` from cell wrapper style. Cell wrapper becomes `{ flex: 1 }`. Remove `computedPositions` useMemo and `itemPositionsRef` from `CollectionView.tsx`.
-
----
-
-## FlashList Differentiators
-
-| Capability | Riff | FlashList |
-|---|---|---|
-| Sticky footer | ✅ | ❌ |
-| Sticky push (UIKit-correct) | ✅ | ❌ basic only |
-| View identity preservation (timer proof) | ✅ | ❌ recycles = re-creates |
-| Cell animation state in window | ✅ Activity=hidden | ❌ lost on recycle |
-| Dynamic height, zero layout shift | ✅ ShadowNode same commit | ❌ JS correction loop |
-| Insert/delete with scroll stability | ✅ MVC prop | ❌ no per-mutation control |
-| Size-change with scroll stability | ✅ snapshotAnchorIfNeeded | ❌ |
-| Horizontal list (sticky H/F, section bkg, scrollTo, mutations, MVC) | ✅ | ❌ no sticky footer, no horiz sticky |
-| Decoration views (arbitrary kinds) | planned L3 | ❌ |
-| Separators (layout-driven) | planned L3 | basic, not layout-driven |
-| scrollToItem by stable key (vertical + horizontal) | ✅ L4 | index only |
-| Custom layouts (carousel, radial) | ✅ | ❌ list only |
-| C++ window controller on UI thread | ✅ | ❌ JS |
-| Memory pressure adaptation | ✅ | ❌ |
-
----
-
----
-
-## ALWAYS READ: Layout-type-agnostic rendering checklist
-
-See **`docs/COLLECTIONVIEW_INTERNALS.md` → "Layout-Type-Agnostic Rendering Checklist"** before implementing or debugging any layout type. This section has the full list of sites in CollectionView.tsx that must stay generic, the grep commands to audit them, and the key format contract for each engine.
-
-Short version: C++ engines always compute correct positions. Rendering bugs are always in CollectionView.tsx wiring. Grep for `'item-`, `listDelegate`, `type === 'list'`, `getAttributes(` after any layout work.
-
----
-
-## Resolved: Audit CollectionView.tsx for layout-type-agnostic key lookups
-
-**Status:** Partially fixed in `cur-section-footer-test` (session 2026-04-03).
-
-**What was broken:** `CollectionView.tsx` hardcoded the `item-` key prefix (ListLayout's default) in several places:
-- `renderCell` cacheKey derivation for headers/footers → `item-${sk}-header/footer`
-- `renderCell` attr lookup → `nativeMod.layoutCache.getAttributes('item-${sectionIndex}-header/footer')`
-- `stickyConfigMap` building → same hardcoded lookup
-- Boundary Y/X lookups for push-mode headers/footers → same
-
-These all silently returned null for non-list layouts (grid, masonry, flow), causing all grid headers/footers to render at y=0 and sticky behavior to break.
-
-**Fix applied:** All 5 lookup sites now call `effectiveLayout.attributesForSupplementary('header'/'footer', sectionIndex)` — the layout engine returns the correct key regardless of layout type.
-
-**Remaining audit:**
-- Search for any other `nativeMod.layoutCache.getAttributes('item-` calls in CollectionView.tsx that aren't routed through the layout engine's API
-- Once masonry and flow are implemented, run their demos with multi-section to verify no new hardcoding was introduced
-- Consider adding a lint rule or comment warning: "never hardcode layout-specific key prefixes; use `effectiveLayout.attributesFor*`"
-
----
-
-## Key Architectural Findings: H-Grid Adaptive Cross-Axis (2026-04-05)
-
-### H-grid is always adaptive — no flag needed
-
-All H-grids always measure item cross-axis (height) via Yoga and self-determine container height. The "adaptive cross-axis" mode is not a flag; it is the only mode. Rationale: any user-provided dimension is always a best-effort estimate; Yoga is the authority. No `adaptiveCrossAxis` prop exists.
-
-### `shouldInvalidate` must return `false` for H-grid
-
-H-grid cross-axis height is OUTPUT (self-determined from item content), not input. If `shouldInvalidate` returns `true` on viewport height change, it triggers: `containerH` change → ScrollView height change → `shouldInvalidate(height changed)` → `prepare()` resets `_maxCrossAxisHeight` → content height changes → `containerH` changes → loop. Fix: H-grid `shouldInvalidate` always returns `false`.
-
-### `_maxCrossAxisHeight` must be preserved across `computeSections` calls
-
-On insert/delete, `computeSections()` clears the cache. Previously this reset `_maxCrossAxisHeight` to the estimate, causing a content-size bounce. Fix: preserve if `> 0`; only initialize from estimate on the very first call. Yoga re-measures and `applyMeasurements` corrects it afterward.
-
-### `applyMeasurements` H-grid: measure-then-reflow, not linear cascade
-
-The old linear `aggregateShift` cascade gave items in the same column-group different X values (each row's delta polluted the next row's start). Fix: 3-phase approach — (1) write measured dimensions into cache, (2) compute global max cross-axis height, (3) full reflow via `computeSectionFromCache` which correctly groups items by column-group. The column-group X alignment logic was already correct in `computeSectionFromCache`.
-
-### `onContentSizeChange` is not a native Fabric event
-
-`topContentSizeChange` is not registered in Fabric's event registry (in standard RN it was always synthesized JS-side). Attempting to declare it in the codegen spec causes a runtime crash (`Unsupported top level event type "topContentSizeChange" dispatched`). Fix: do not add it to the spec. Instead, native fires `onScroll` from `updateState:` when `_scrollView.contentSize` changes; `CollectionView.tsx` detects size changes in the `onScroll` handler using `prevContentSizeRef` and calls `scrollViewProps.onContentSizeChange(w, h)` when the size differs by > 0.5pt.
-
-### Scroll event completeness
-
-Added `onScrollBeginDrag`, `onScrollEndDrag`, `onMomentumScrollBegin`, `onMomentumScrollEnd` as proper `DirectEventHandler` events in both the codegen spec and native `UIScrollViewDelegate` implementation. These are registered Fabric events (matching RN's standard naming). No throttling needed for discrete gesture-phase events. `onScroll` continues to use `scrollEventThrottle` (Fabric coalesces all `DirectEventHandler` events automatically).
-
-### MVC limitation for multi-column H-grids
-
-MVC anchor tracks primary-axis (X) correction only. Inserting at index 0 in a 2-row H-grid pushes an item from row 0 to row 1 (cross-axis shift), which MVC cannot compensate. Same limitation exists in UICollectionView. Use `scrollTo` after insert instead.
-
----
-
-## Key Architectural Finding: Two-Layer Identity (2026-04-05)
-
-**Root cause of decoration position corruption (confirmed):** Fabric's reconciler uses a "last index" optimization that leaves native subview ordering inconsistent with ShadowNode child ordering when new children are inserted before existing non-moved children. Index-based `positions[i] → subviews[i]` mapping was broken for decorations because SpatialIndex returns them in spatial order, which can interleave new seps before existing bg views.
-
-**Fix:** Universal tag-based lookup in `applyPositionsFromState`. The ShadowNode now records `childTags_[i] = children[i]->getTag()` alongside `correctedPositions_`, stores both in state, and the native view builds a `tag → UIView*` map to apply each position by identity rather than index. Covers ALL child types (items, decorations, supplementaries) — protects against any future layout that produces similar insert-before-non-moved patterns.
-
-**Key principle:** Two orthogonal identity layers:
-- **cacheKey** (stable string) — "What position should this element have?" — domain: C++ engine → cache → ShadowNode Phase 1
-- **Fabric tag** (int32) — "Which native view receives this position?" — domain: ShadowNode → state → native
-
-Full documentation in `docs/COLLECTIONVIEW_INTERNALS.md` → "Two-Layer Identity" section.
+## Roadmap (in order)
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | **Remaining perf fixes** | ⬜ | Change C (eliminate per-cell JSI in renderCell), Change F (defer prefetch/evict). See PERF-PLAN.md |
+| 2 | **Flow V fix** | ✅ In progress | flatIndex not set by FlowLayout C++ → binary search returns empty. Same fix as grid/masonry. |
+| 3 | **H-list cross-axis height bounce** | ⬜ | Layout loop: measure → container resize → shouldInvalidate → re-layout → repeat. Affects List H, Grid H. Needs dedicated investigation. See `memory/project_hlist_bounce.md` |
+| 4 | **H-list S[0] header half height** | ⬜ | Same root cause as #3 — _maxCrossAxisHeight starts from estimate, grows as items measured |
+| 5 | **Perf findings writeup** | ⬜ | Document in COLLECTIONVIEW_INTERNALS.md. Session learnings, root causes, architectural decisions |
+| 6 | **Compositional layout** | ⬜ | UICollectionView CompositionalLayout-like API. Orthogonal scrolling sections. Custom layouts per section. Discuss API design (Compose LazyList-like?) |
+| 7 | **Diff engine + Snapshot API** | ⬜ | F1.1 (C++ diff engine), F1.2 (Snapshot API for batch mutations) |
+| 8 | **Cell animations** | ⬜ | F1.2b (enter/exit animations), F1.2c (UICollectionView-parity animations) |
+| 9 | **H-masonry fix** | ⬜ | All items render same size in H mode. Pre-existing, needs investigation |
+| 10 | **Flow justification** | ⬜ | F-Flow.1: leading/center/trailing/spaceBetween/spaceEvenly |
+| 11 | **Flow item weight/stretching** | ⬜ | F-Flow.2 |
+| 12 | **Grid rowAlignment** | ⬜ | F-Grid.1: top/center/bottom for uneven heightForItem rows |
+| 13 | **State persistence & restoration** | ⬜ | F4 |
+| 14 | **P6.2 — Device measurement session** | ⬜ | Release build, real device, FlashList comparison benchmarks |
 
 ---
 
 ## Key Files
 
 | File | Purpose |
-|---|---|
-| `example/screens/comparison/LayoutsTab.tsx` | ListDemo (L2 demo lives here) |
-| `example/components/CollectionView.tsx` | Main component |
-| `cpp/layouts/ListLayout.h/.cpp` | C++ list layout |
-| `cpp/LayoutCache.h/.cpp` | Cache + LayoutAttributes |
-| `cpp/CollectionViewContainerShadowNode.cpp` | ShadowNode positioning |
-| `cpp/CollectionViewModule.h/.cpp` | TurboModule + JSI bindings |
-| `cpp/LayoutCacheRegistry.h` | Thin header for LayoutCache + scroll handler lookup |
-| `ios/RNCollectionViewContainerView.mm` | Native scroll container |
-| `ios/RNScrollCoordinatedViewView.mm` | Sticky view KVO |
+|------|---------|
+| `example/components/CollectionView.tsx` | Main component (~2500 lines) |
+| `example/components/SlotManager.ts` | Cell recycling (Opt 4) |
+| `cpp/LayoutCache.h/.cpp` | C++ position cache + binary search |
+| `cpp/CollectionViewModule.cpp` | TurboModule + processScroll JSI |
+| `cpp/CollectionViewContainerShadowNode.cpp` | Fabric ShadowNode |
+| `ios/RNCollectionViewContainerView.mm` | Native UIScrollView wrapper |
+| `ios/RNMeasuredCellView.mm` | Cell native view (updateLayoutMetrics override) |
+| `src/layouts/*.ts` | Layout engines (list, grid, masonry, flow) |
+| `cpp/layouts/*.cpp` | C++ layout engines |
+| `PERF-PLAN.md` | Full optimization plan + analysis |
+| `docs/COLLECTIONVIEW_INTERNALS.md` | Architecture reference |

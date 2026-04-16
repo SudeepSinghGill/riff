@@ -58,6 +58,7 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
     LayoutAttributes hdr;
     hdr.key            = sPrefix + "header";
     hdr.index          = 0;
+    hdr.flatIndex      = p.headerFlatIndex;
     hdr.isSupplementary = true;
     hdr.supplementaryKind = "header";
     hdr.section        = sectionIndex;
@@ -163,9 +164,10 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
     const std::string key = (i < (int)p.keys.size()) ? p.keys[i]
                           : (p.keyPrefix.empty() ? sPrefix + std::to_string(i) : p.keyPrefix + std::to_string(i));
     LayoutAttributes attrs;
-    attrs.key     = key;
-    attrs.index   = i;
-    attrs.section = sectionIndex;
+    attrs.key       = key;
+    attrs.index     = i;
+    attrs.flatIndex = p.flatIndexBase + i;
+    attrs.section   = sectionIndex;
     if (H) {
       attrs.frame = { frames[i].primary, frames[i].cross, frames[i].primarySize, frames[i].crossSize };
     } else {
@@ -217,6 +219,7 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
     LayoutAttributes ftr;
     ftr.key            = sPrefix + "footer";
     ftr.index          = 0;
+    ftr.flatIndex      = p.footerFlatIndex;
     ftr.isSupplementary = true;
     ftr.supplementaryKind = "footer";
     ftr.section        = sectionIndex;
@@ -558,6 +561,11 @@ FlowLayoutParams FlowLayout::paramsFromJSI(Runtime& rt, const Object& obj) {
   p.sectionBackgroundInsetRight  = fdbl(rt, obj, "sectionBackgroundInsetRight",  0.0);
 
   p.horizontal = fbln(rt, obj, "horizontal", false);
+
+  // Flat index mapping for processScroll binary search
+  p.flatIndexBase   = fi32(rt, obj, "flatIndexBase", 0);
+  p.headerFlatIndex = fi32(rt, obj, "headerFlatIndex", -1);
+  p.footerFlatIndex = fi32(rt, obj, "footerFlatIndex", -1);
 
   // itemWidths: number[]
   auto wv = obj.getProperty(rt, "itemWidths");

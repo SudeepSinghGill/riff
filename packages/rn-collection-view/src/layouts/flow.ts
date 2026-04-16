@@ -74,7 +74,12 @@ class FlowLayoutEngine implements CollectionViewLayout {
     // Inform LayoutCache of scroll axis for MVC anchor computation.
     nativeMod.layoutCache.setHorizontal(H);
 
+    let runningFlatBase = 0;
     const sections = context.sections.map((sec, sectionIndex) => {
+      const hasHeader = sec.supplementaryItems.some(s => s.kind === 'header');
+      const hasFooter = sec.supplementaryItems.some(s => s.kind === 'footer');
+      const sectionFlatBase = runningFlatBase;
+      runningFlatBase += (hasHeader ? 1 : 0) + sec.itemCount + (hasFooter ? 1 : 0);
       // Build per-item widths and heights.
       // Both dimensions are provided: W from sizeForItem (estimated), H from sizeForItem or Yoga.
       const itemWidths: number[]  = new Array(sec.itemCount);
@@ -102,6 +107,9 @@ class FlowLayoutEngine implements CollectionViewLayout {
         : (d.heightForFooter ? d.heightForFooter(sectionIndex) : (d.footerHeight ?? 0));
 
       return {
+        flatIndexBase: sectionFlatBase + (hasHeader ? 1 : 0),
+        headerFlatIndex: hasHeader ? sectionFlatBase : -1,
+        footerFlatIndex: hasFooter ? sectionFlatBase + (hasHeader ? 1 : 0) + sec.itemCount : -1,
         itemCount: sec.itemCount,
         itemSpacing: d.itemSpacing ?? 0,
         lineSpacing: d.lineSpacing ?? 0,
