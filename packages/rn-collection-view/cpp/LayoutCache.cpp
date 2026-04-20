@@ -122,10 +122,12 @@ void LayoutCache::stashHeights() {
   // with clear() and computeSections(). Never accessed from native threads.
   std::lock_guard<std::mutex> lock(_mutex);
   _heightStash.clear();
+  _measuredSizeStash.clear();
   for (const auto& kv : _map) {
     if (kv.second.sizingState == SizingState::Measured) {
       const double sz = _horizontal ? kv.second.frame.width : kv.second.frame.height;
       _heightStash[kv.first] = sz;
+      _measuredSizeStash[kv.first] = { kv.second.frame.width, kv.second.frame.height };
     }
   }
   RNCV_MVC_TRACE("stashHeights: %zu entries stashed (of %zu total)",
@@ -137,8 +139,27 @@ double LayoutCache::getStashedHeight(const std::string& key) const {
   return it != _heightStash.end() ? it->second : -1.0;
 }
 
+void LayoutCache::stashMeasuredSizes() {
+  // No mutex needed: stash is only accessed from the JS thread, sequentially
+  // with clear() and computeSections(). Never accessed from native threads.
+  std::lock_guard<std::mutex> lock(_mutex);
+  _measuredSizeStash.clear();
+  for (const auto& kv : _map) {
+    if (kv.second.sizingState == SizingState::Measured) {
+      _measuredSizeStash[kv.first] = { kv.second.frame.width, kv.second.frame.height };
+    }
+  }
+}
+
+std::optional<Size> LayoutCache::getStashedMeasuredSize(const std::string& key) const {
+  auto it = _measuredSizeStash.find(key);
+  if (it == _measuredSizeStash.end()) return std::nullopt;
+  return it->second;
+}
+
 void LayoutCache::clearStash() {
   _heightStash.clear();
+  _measuredSizeStash.clear();
 }
 
 // ─── Bulk access ─────────────────────────────────────────────────────────────
@@ -833,6 +854,16 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
       PropNameID::forAscii(rt, "stashHeights"), 0,
       [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
         stashHeights();
+        return Value::undefined();
+      }));
+
+  // stashMeasuredSizes() → undefined
+  // Call BEFORE clear() to preserve Yoga-measured width+height across cache clears.
+  target.setProperty(rt, "stashMeasuredSizes",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "stashMeasuredSizes"), 0,
+      [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
+        stashMeasuredSizes();
         return Value::undefined();
       }));
 

@@ -113,6 +113,10 @@ public:
   void stashHeights();
   /** Return stashed height for key, or -1 if not found. */
   double getStashedHeight(const std::string& key) const;
+  /** Save measured width+height for every Measured entry. O(cache_size). */
+  void stashMeasuredSizes();
+  /** Return stashed measured size for key, or nullopt if not found. */
+  std::optional<Size> getStashedMeasuredSize(const std::string& key) const;
   /** Release stash memory after computeSections() is done. */
   void clearStash();
 
@@ -289,6 +293,7 @@ private:
   // Height stash — survives fingerprint-triggered clear (not guarded by _mutex;
   // only accessed from the JS thread synchronously around stash/clear/compute).
   std::unordered_map<std::string, double> _heightStash;
+  std::unordered_map<std::string, Size>   _measuredSizeStash;
 
   // MVC anchor snapshot state (guarded by _mutex)
   std::string _anchorKey;

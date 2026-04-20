@@ -19,12 +19,19 @@
 
 namespace rncv {
 
+enum class MeasurementAxis {
+  Unknown,
+  Width,
+  Height,
+};
+
 /// A single Yoga measurement that differs from the cache.
 struct MeasurementDelta {
   std::string key;        // cache key of the measured item
   int         index;      // data index
   double      oldValue;   // value in cache before Yoga
   double      newValue;   // Yoga-measured value
+  MeasurementAxis axis = MeasurementAxis::Unknown;
 };
 
 /// Which dimensions are determined by cell content (Yoga measures these).

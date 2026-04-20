@@ -277,13 +277,18 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
     const auto& childMetrics = children[i]->getLayoutMetrics();
     const auto yogaHeight = childMetrics.frame.size.height;
     const auto yogaWidth = childMetrics.frame.size.width;
-
     // Check height delta (for Height and Both).
     if (contentDim == rncv::ContentDimension::Height ||
-        contentDim == rncv::ContentDimension::Both) {
+         contentDim == rncv::ContentDimension::Both) {
       Float cachedHeight = correctedPositions_[i * 4 + 3];
       if (yogaHeight > 0 && std::abs(yogaHeight - cachedHeight) > 0.5f) {
-        deltas.push_back({key, dataIndex, cachedHeight, yogaHeight});
+        deltas.push_back({
+            key,
+            dataIndex,
+            cachedHeight,
+            yogaHeight,
+            rncv::MeasurementAxis::Height,
+        });
         // Update our local positions immediately with Yoga measurement.
         correctedPositions_[i * 4 + 3] = yogaHeight;
       }
@@ -291,10 +296,16 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
 
     // Check width delta (for Width — horizontal list — and Both — flow layout).
     if (contentDim == rncv::ContentDimension::Width ||
-        contentDim == rncv::ContentDimension::Both) {
+         contentDim == rncv::ContentDimension::Both) {
       Float cachedWidth = correctedPositions_[i * 4 + 2];
       if (yogaWidth > 0 && std::abs(yogaWidth - cachedWidth) > 0.5f) {
-        deltas.push_back({key, dataIndex, cachedWidth, yogaWidth});
+        deltas.push_back({
+            key,
+            dataIndex,
+            cachedWidth,
+            yogaWidth,
+            rncv::MeasurementAxis::Width,
+        });
         correctedPositions_[i * 4 + 2] = yogaWidth;
       }
     }

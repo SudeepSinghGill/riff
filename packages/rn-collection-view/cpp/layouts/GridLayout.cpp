@@ -7,6 +7,7 @@ namespace rncv {
 
 using namespace facebook::jsi;
 
+
 GridLayout::GridLayout(std::shared_ptr<LayoutCache> cache)
     : _cache(std::move(cache)) {}
 
@@ -418,18 +419,25 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
   //    natural cross heights; items may be shorter than maxCrossH).
   std::vector<double> primarySizes(p.itemCount);
   std::vector<double> crossSizes(p.itemCount); // H only: Yoga-measured natural heights
+  std::vector<bool> usedStashedMeasuredSize(p.itemCount, false);
   for (int i = 0; i < p.itemCount; ++i) {
     const std::string key = (i < static_cast<int>(p.keys.size()))
         ? p.keys[i]
         : prefix + std::to_string(i);
     auto existing = _cache->getAttributes(key);
+    auto stashed = _cache->getStashedMeasuredSize(key);
     if (H) {
       primarySizes[i] = (existing && existing->frame.width > 0)
           ? existing->frame.width
+          : (stashed && stashed->width > 0)
+              ? stashed->width
           : (estimatedPrimary > 0 ? estimatedPrimary : 200.0);
       crossSizes[i] = (existing && existing->frame.height > 0 && existing->sizingState == SizingState::Measured)
           ? existing->frame.height
+          : (stashed && stashed->height > 0)
+              ? stashed->height
           : itemCrossSize;
+      usedStashedMeasuredSize[i] = !existing && stashed.has_value();
     } else {
       primarySizes[i] = (existing && existing->frame.height > 0)
           ? existing->frame.height
@@ -575,7 +583,9 @@ double GridLayout::computeSectionFromCache(const GridLayoutParams& p,
     attrs.zIndex      = 0;
     attrs.alpha       = 1.0;
     attrs.frame       = { frames[i].x, frames[i].y, frames[i].width, frames[i].height };
-    attrs.sizingState = existing ? existing->sizingState : SizingState::Placeholder;
+    attrs.sizingState = existing
+        ? existing->sizingState
+        : (H && usedStashedMeasuredSize[i] ? SizingState::Measured : SizingState::Placeholder);
     _cache->setAttributes(attrs);
   }
 
@@ -658,9 +668,27 @@ void GridLayout::computeSections(const std::vector<GridLayoutParams>& sections) 
   _columns        = sections[0].columns > 0 ? sections[0].columns : 2;
   if (_horizontal) {
     const double est = sections[0].estimatedCrossAxisHeight > 0 ? sections[0].estimatedCrossAxisHeight : 100.0;
-    // Preserve measured value across calls — only initialise from estimate on first use.
-    // If already measured, applyMeasurements will correct it; resetting here would oscillate.
-    if (_maxCrossAxisHeight <= 0) {
+    double stashedMaxCrossH = 0.0;
+    int stashedMeasuredCount = 0;
+    for (int s = 0; s < static_cast<int>(sections.size()); ++s) {
+      const auto& sec = sections[s];
+      const std::string prefix = sec.keyPrefix.empty()
+          ? "grid-" + std::to_string(s) + "-"
+          : sec.keyPrefix;
+      for (int i = 0; i < sec.itemCount; ++i) {
+        const std::string key = (i < static_cast<int>(sec.keys.size()))
+            ? sec.keys[i]
+            : prefix + std::to_string(i);
+        auto stashed = _cache->getStashedMeasuredSize(key);
+        if (stashed && stashed->height > 0) {
+          stashedMaxCrossH = std::max(stashedMaxCrossH, stashed->height);
+          stashedMeasuredCount++;
+        }
+      }
+    }
+    if (stashedMaxCrossH > 0) {
+      _maxCrossAxisHeight = stashedMaxCrossH;
+    } else if (_maxCrossAxisHeight <= 0) {
       _maxCrossAxisHeight = est;
     }
   }
@@ -668,7 +696,9 @@ void GridLayout::computeSections(const std::vector<GridLayoutParams>& sections) 
 
   double primary = 0.0;
   for (int s = 0; s < static_cast<int>(sections.size()); ++s) {
-    primary = computeSection(sections[s], s, primary);
+    primary = _horizontal
+        ? computeSectionFromCache(sections[s], s, primary)
+        : computeSection(sections[s], s, primary);
   }
 }
 
@@ -729,7 +759,8 @@ bool GridLayout::applyMeasurements(
   //
   // Correct approach — measure then reflow:
   //   Phase 1: Write Yoga-measured widths and heights into the cache.
-  //            Classify each delta by matching oldValue against frame.width vs frame.height.
+  //            For H-grid, trust the explicit measurement axis from ShadowNode.
+  //            Fallback matching remains only as a defensive path for older callers.
   //   Phase 2: Update _maxCrossAxisHeight from all items (always — both width and height
   //            deltas may arrive together).
   //   Phase 3: Full reflow via computeSectionFromCache for every section.
@@ -748,7 +779,17 @@ bool GridLayout::applyMeasurements(
       const bool matchesW = std::abs(existing->frame.width  - d.oldValue) < 1.0;
       bool changed = false;
 
-      if (matchesH && !matchesW) {
+      if (d.axis == MeasurementAxis::Height) {
+        if (std::abs(d.newValue - updated.frame.height) > 0.01) {
+          updated.frame.height = d.newValue;
+          changed = true;
+        }
+      } else if (d.axis == MeasurementAxis::Width) {
+        if (std::abs(d.newValue - updated.frame.width) > 0.01) {
+          updated.frame.width = d.newValue;
+          changed = true;
+        }
+      } else if (matchesH && !matchesW) {
         if (std::abs(d.newValue - updated.frame.height) > 0.01) {
           updated.frame.height = d.newValue;
           changed = true;
@@ -758,14 +799,8 @@ bool GridLayout::applyMeasurements(
           updated.frame.width = d.newValue;
           changed = true;
         }
-      } else if (matchesH && matchesW) {
-        if (std::abs(d.newValue - updated.frame.width) > 0.01 ||
-            std::abs(d.newValue - updated.frame.height) > 0.01) {
-          updated.frame.width  = d.newValue;
-          updated.frame.height = d.newValue;
-          changed = true;
-        }
       }
+
 
       if (changed) {
         if (updated.sizingState != SizingState::Measured) {
@@ -785,9 +820,10 @@ bool GridLayout::applyMeasurements(
         }
       }
       if (globalMaxH > 0) {
-        // Never shrink — cross-axis height is the max ever measured.
-        // Shrinking causes shouldInvalidate → prepare() → clear → oscillation.
-        _maxCrossAxisHeight = std::max(_maxCrossAxisHeight, globalMaxH);
+        // Recompute from current measured items so horizontal grid can shrink after
+        // delete/resize-down. Masonry uses the same "measured max then full reflow"
+        // model without needing a sticky historical max.
+        _maxCrossAxisHeight = globalMaxH;
       }
     }
 

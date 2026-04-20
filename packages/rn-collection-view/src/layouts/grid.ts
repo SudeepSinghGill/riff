@@ -42,6 +42,8 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     getAttributes(key: string): LayoutAttributes | null;
     getTotalContentSize(): Size;
     setHorizontal(horizontal: boolean): void;
+    stashMeasuredSizes(): void;
+    clearStash(): void;
     clear(): void;
   };
   gridLayout: {
@@ -147,7 +149,9 @@ class GridLayoutEngine implements CollectionViewLayout {
     });
 
     this.lastSectionKeys = context.sections.map(s => s.itemKeys ?? []);
+    if (H) nativeMod.layoutCache.stashMeasuredSizes();
     nativeMod.gridLayout.computeSections(sections);
+    if (H) nativeMod.layoutCache.clearStash();
   }
 
   attributesForElements(inRect: Rect): LayoutAttributes[] {

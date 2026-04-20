@@ -1094,7 +1094,13 @@ export function Riff<T = unknown>({
   // gen: the renderGen at which this data was written. renderCell skips the cache when
   // gen !== current renderGen — prevents stale frame data (footer/header at wrong flat
   // indices) from being read during the first render after an insert/delete mutation.
-  const frameDataRef = useRef<{ frames: number[]; first: number; gen: number } | null>(null);
+  // cacheVersion: native LayoutCache version at the time these frames were generated.
+  // renderCell rejects the entry when this differs from lastCacheVersionRef.current —
+  // data-shape mutations (insert/delete) do not bump renderGen, but they DO bump the
+  // native cache version via prepare(); without this guard, a stale frame array indexed
+  // by NEW flat indices feeds an item the OLD width of a footer/header (and vice versa),
+  // poisoning the cache via Yoga deltas.
+  const frameDataRef = useRef<{ frames: number[]; first: number; gen: number; cacheVersion: number } | null>(null);
   // Snapshot function updated every render so the HUD always reads fresh values.
   const hudSnapshotRef = useRef<() => HUDSnapshot>(() => ({
     mountedCells: 0, coldMountCount: 0, scrollCorrectionCount: 0, offsetStart: 0, offsetEnd: 0,
@@ -1379,7 +1385,7 @@ export function Riff<T = unknown>({
     // Opt 6), processScroll does not include frames — frameDataRef stays valid since
     // cacheVersion is unchanged meaning no layout mutations occurred.
     if (layoutResult.frames) {
-      frameDataRef.current = { frames: layoutResult.frames, first: layoutResult.framesFirst!, gen: renderGenRef.current };
+      frameDataRef.current = { frames: layoutResult.frames, first: layoutResult.framesFirst!, gen: renderGenRef.current, cacheVersion: layoutResult.cacheVersion };
     }
 
     if (layoutResult.renderLast < layoutResult.renderFirst) {
@@ -1696,7 +1702,7 @@ export function Riff<T = unknown>({
       // Change C: store frame data from processScroll. Not present on band-skip —
       // frameDataRef stays valid (cacheVersion unchanged = positions unchanged).
       if (scrollResult.frames) {
-        frameDataRef.current = { frames: scrollResult.frames, first: scrollResult.framesFirst!, gen: renderGenRef.current };
+        frameDataRef.current = { frames: scrollResult.frames, first: scrollResult.framesFirst!, gen: renderGenRef.current, cacheVersion: scrollResult.cacheVersion };
       }
 
       // Cache version — check after processScroll so we read the same version
@@ -1994,10 +2000,25 @@ export function Riff<T = unknown>({
 
     // Change C: read width/height from the frame array returned by processScroll
     // (single bulk JSI call) instead of making a per-cell JSI call here.
-    // Guard: only use frame data when gen matches current renderGen — prevents stale
-    // footer/boundary frames from bleeding into cells after an insert/delete.
+    // Guards:
+    //  - gen === renderGen        — invalidates cache on extraData/layout/vpWidth changes.
+    //  - cacheVersion match       — invalidates cache on data-shape mutations
+    //                                (insert/delete/resize). prepare() runs synchronously
+    //                                in a useMemo above, so lastCacheVersionRef.current
+    //                                already reflects the post-mutation version when
+    //                                renderCell executes. Without this check, the OLD
+    //                                frame array would be re-indexed by NEW flat indices,
+    //                                handing items header/footer widths and vice versa.
     const fd = frameDataRef.current;
-    if (fd && fd.gen === renderGen && index >= fd.first && index < fd.first + (fd.frames.length >> 2)) {
+    let frameSource: 'fd' | 'jsi' = 'jsi';
+    if (
+      fd &&
+      fd.gen === renderGen &&
+      fd.cacheVersion === lastCacheVersionRef.current &&
+      index >= fd.first &&
+      index < fd.first + (fd.frames.length >> 2)
+    ) {
+      frameSource = 'fd';
       const off = (index - fd.first) * 4;
       const w = fd.frames[off + 2];
       if (w > 0) cellWidth = w;
@@ -2332,7 +2353,8 @@ export function Riff<T = unknown>({
       const el = renderCell(slot.item as T, slot.dataIndex, slot.measureOnly, slotKey);
       elementCacheRef.current.set(slotKey, {
         gen: renderGen, dataKey: slot.dataKey, cacheKey: slot.cacheKey,
-        measureOnly: slot.measureOnly, item: slot.item, element: el,
+        measureOnly: slot.measureOnly,
+        item: slot.item, element: el,
       });
       cells.push(el);
       _cacheMisses++;
