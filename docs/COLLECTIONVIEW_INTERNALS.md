@@ -1283,8 +1283,12 @@ Time Profiler on Feed tab fast scroll showed:
 
 **Horizontal list cross-axis height bounce:** Without a fixed container height, horizontal list oscillates between content-determined and full-screen height. `_maxSectionCrossHeight` (never-shrink) and fingerprint exclusion of `containerHeight` for horizontal don't fully resolve it. The layout loop is: measure cells → cross-axis height changes → container resizes → layoutContext changes → re-render → re-measure. Needs dedicated investigation.
 
-### Remaining Optimizations (Deferred)
+### Change C — Eliminate per-cell JSI in renderCell (DONE, 2026-04-16)
 
-**Change C — Eliminate per-cell JSI in renderCell:** Each `renderCell` calls `effectiveLayout.attributesForItem()` — a JSI call that acquires mutex and copies a full LayoutAttributes struct. processScroll could return frame data for render-range items alongside the indices.
+`processScroll` now returns a flat `number[]` of `[x, y, w, h]` per item alongside the indices. `renderCell` reads `cellWidth` and `attrHeight` from this array (`frameDataRef`) with plain JS array indexing — zero JSI. Falls back to JSI for indices outside the range (sticky cells) or when frame data is stale (see below).
 
-**Change F — Defer prefetch/evict off scroll hot path:** When `onPrefetch`/`onEvict` callbacks are provided, the onScroll handler iterates through the entire prefetch range delta calling keyExtractor for each. Should be deferred to `setImmediate` or `requestIdleCallback`.
+**`frameDataRef.gen` guard (insert/delete bug fix, 2026-04-16):** `frameDataRef` carries a `gen` field equal to the `renderGen` when the data was written. `renderCell` skips the frame data cache if `fd.gen !== renderGen`. Without this, stale frame data (e.g. footer at flat index 19 from before an insert) bleeds into items that shift into those flat indices after the insert, giving them full-section width instead of column width. The JSI fallback reads from the freshly-recomputed LayoutCache and is always correct.
+
+### Change F — Defer prefetch/evict off scroll hot path (DONE, 2026-04-16)
+
+Prefetch/evict loops now run in a `setImmediate` with coalescing (`pendingPrefetchRef`). The synchronous scroll handler only updates `prevPrefetchRangeRef` eagerly; the actual keyExtractor iteration is deferred off the hot path.

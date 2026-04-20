@@ -2,7 +2,7 @@
 
 ## Current State (2026-04-16)
 
-**Branch:** `cur-cell-pooling` — all perf + layout work lives here.
+**Branch:** `main` — perf + layout work merged back.
 
 **JS FPS:** ~60fps on Feed tab (parity with FlashList). Achieved by:
 - measureAhead=0 (eliminates invisible cell Fabric creation cost)
@@ -23,6 +23,7 @@
 |---|------|--------|-------|
 | 1 | **Remaining perf fixes** | ✅ Done | Change C: `processScroll` now returns flat frame array; `renderCell` reads width/height from it (eliminates ~30 JSI calls/render). `computeCacheKey` for headers/footers derived without JSI. Change F: entering/leaving loops deferred to `setImmediate` with coalescing (removes O(384) `keyExtractor` loop from `onScroll`). |
 | 2 | **Flow V fix** | ✅ Done | FlowLayout flatIndex wiring verified; binary search path works for Flow V. |
+| 2b | **Grid V insert bugs** | ✅ Done | Bug 1: stale `frameDataRef` had footer at wrong flat index after insert → column items got full-section width. Fix: `frameDataRef` now carries `gen`; `renderCell` skips frame data when `gen !== renderGen`. Bug 2: decoration cache hit on insert render (lcv async) → stale section background height. Fix: invalidate `lastDecoCacheRef.lcv = -1` on `renderGen` bump. JS-only, no C++ changes. |
 | 3 | **H-list cross-axis height bounce** | ⬜ | Layout loop: measure → container resize → shouldInvalidate → re-layout → repeat. Affects List H, Grid H. Needs dedicated investigation. See `memory/project_hlist_bounce.md` |
 | 4 | **H-list S[0] header half height** | ⬜ | Same root cause as #3 — _maxCrossAxisHeight starts from estimate, grows as items measured |
 | 5 | **Perf findings writeup** | ✅ Done | Added `Performance Investigation Results (2026-04-12 → 2026-04-16)` section in `docs/COLLECTIONVIEW_INTERNALS.md`. |
