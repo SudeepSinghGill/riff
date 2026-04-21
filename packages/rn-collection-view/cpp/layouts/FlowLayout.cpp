@@ -111,7 +111,8 @@ double FlowLayout::computeSection(const FlowLayoutParams& p, int sectionIndex, d
 
     // Does this item fit in the current row/column?
     const bool notFirst = (crossCursor > crossStart + 0.01);
-    const double needed = notFirst ? crossCursor + itemGap + clampedCross : clampedCross;
+    const double usedCross = crossCursor - crossStart;
+    const double needed = notFirst ? usedCross + itemGap + clampedCross : clampedCross;
 
     if (needed > availCross + 0.01 && notFirst) {
       // Emit between-line separator (between previous line and this one).
@@ -316,7 +317,8 @@ double FlowLayout::computeSectionFromCache(const FlowLayoutParams& p, int sectio
     const double clampedCross = std::min(itemCrossSize, availCross);
 
     const bool notFirst = (crossCursor > crossStart + 0.01);
-    const double needed = notFirst ? crossCursor + itemGap + clampedCross : clampedCross;
+    const double usedCross = crossCursor - crossStart;
+    const double needed = notFirst ? usedCross + itemGap + clampedCross : clampedCross;
 
     if (needed > availCross + 0.01 && notFirst) {
       finalizeAndAdvance(lineStart, i);
@@ -504,11 +506,16 @@ bool FlowLayout::applyMeasurements(
     auto attrs = cache.getAttributes(d.key);
     if (!attrs) continue;
     auto updated = *attrs;
-    // Classify which dimension this delta is for:
-    // Match against current frame — oldValue should be close to the estimated dimension.
+    // Classify which dimension this delta is for.
+    // Prefer explicit axis emitted by ShadowNode. Keep oldValue matching only as
+    // fallback for unknown-axis callers.
     const bool matchesWidth  = std::abs(updated.frame.width  - d.oldValue) < 0.5;
     const bool matchesHeight = std::abs(updated.frame.height - d.oldValue) < 0.5;
-    if (matchesWidth && !matchesHeight) {
+    if (d.axis == MeasurementAxis::Width) {
+      updated.frame.width  = d.newValue;
+    } else if (d.axis == MeasurementAxis::Height) {
+      updated.frame.height = d.newValue;
+    } else if (matchesWidth && !matchesHeight) {
       updated.frame.width  = d.newValue;
     } else if (matchesHeight && !matchesWidth) {
       updated.frame.height = d.newValue;

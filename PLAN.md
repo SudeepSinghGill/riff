@@ -885,6 +885,9 @@ End-to-end tests using Detox (or XCUI). Verify that the JS→JSI→C++→native 
 
 ## Phase R1 — Research
 
+### R00 - first-class breakpoint APIs/callback hooks
+User should be able to define rules for resizing, reflowing based on media dimensions.
+
 ### R0 — Memory Optimization (Future Research)
 
 Additional memory optimizations beyond P4.1. None are needed for the POC but documented here for production hardening.

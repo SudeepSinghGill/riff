@@ -38,6 +38,8 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     setHorizontal(horizontal: boolean): void;
     /** Save primary-axis size for every Measured entry. Call before clear(). */
     stashHeights(): void;
+    /** Save measured width+height for every Measured entry. Call before clear(). */
+    stashMeasuredSizes(): void;
     /** Release stash memory. Call after computeSections(). */
     clearStash(): void;
   };
@@ -199,11 +201,12 @@ class ListLayout implements CollectionViewLayout {
     const fingerprintChanged = fp !== this._lastFingerprint;
     listMvcTrace(`prepare: fingerprintChanged=${fingerprintChanged} sections=${sectionParams.length} totalItems=${sectionParams.reduce((n, s) => n + (s.itemCount as number), 0)}`);
     if (fingerprintChanged) {
-      // Stash measured heights before clearing so they survive the orphan cleanup.
-      // computeSectionFromCache falls through to the stash when the main cache
-      // has no entry (i.e. after an insert/delete that changed itemCount).
-      listMvcTrace(`prepare: stashHeights + clear (fingerprint changed)`);
-      nativeMod.layoutCache.stashHeights();
+      // Stash measured sizes before clearing so they survive orphan cleanup.
+      // Horizontal lists need both width (primary) and height (cross axis).
+      // Vertical lists only need primary-axis height.
+      listMvcTrace(`prepare: ${H ? 'stashMeasuredSizes' : 'stashHeights'} + clear (fingerprint changed)`);
+      if (H) nativeMod.layoutCache.stashMeasuredSizes();
+      else nativeMod.layoutCache.stashHeights();
       nativeMod.layoutCache.clear();
       this._lastFingerprint = fp;
     }

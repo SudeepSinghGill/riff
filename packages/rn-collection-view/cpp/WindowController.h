@@ -166,6 +166,10 @@ public:
     if (mountedWindowSize > 1e9) return render;
 
     int budget = static_cast<int>(std::ceil((mountedWindowSize * vpHeight * cols) / stride));
+    // Never trim below the currently visible span; otherwise dense wrapped layouts
+    // (e.g. Flow with many items per row) can clip cells that are already on-screen.
+    const int visibleSize = std::max(0, visible.last - visible.first + 1);
+    if (visibleSize > budget) budget = visibleSize;
     int size   = render.last - render.first + 1;
     if (size <= budget) return render;
 

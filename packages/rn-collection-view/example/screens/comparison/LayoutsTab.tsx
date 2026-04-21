@@ -1093,11 +1093,30 @@ const HMS = StyleSheet.create({
 // Width helper: computes fractional card widths from containerWidth.
 // Subtracts 0.1px epsilon to absorb IEEE-754 rounding so 3 thirds never
 // exceed availCross + 0.01 (the C++ bin-packing tolerance).
-function flowCardWidth(kind: FlowCard['kind'], containerWidth: number): number {
+function flowCardWidth(kind: FlowCard['kind'], containerWidth: number, shrunk: boolean): number {
   const avail = containerWidth - 16; // section insetLeft(8) + insetRight(8)
+  const half = (avail - 8) / 2 - 0.1;   // (avail - 1×gap) / 2
+  const third = (avail - 16) / 3 - 0.1; // (avail - 2×gap) / 3
+
+  // Resize behavior:
+  // - banner(full) -> full (always span row)
+  // - half -> half (unchanged)
+  // - third -> half
+  // (quarter is not present in this demo dataset yet)
+  if (shrunk) {
+    if (kind === 'banner') return avail - 0.1;
+    if (kind === 'half') return half;
+    return half;
+  }
+
   if (kind === 'banner') return avail - 0.1;
-  if (kind === 'half')   return (avail - 8) / 2 - 0.1;   // (avail - 1×gap) / 2
-  /* third */            return (avail - 16) / 3 - 0.1;  // (avail - 2×gap) / 3
+  if (kind === 'half') return half;
+  return third;
+}
+
+function flowCardHeight(kind: FlowCard['kind'], tall: boolean): number {
+  const base = kind === 'banner' ? 68 : kind === 'half' ? 110 : 80;
+  return tall ? Math.round(base * 1.6) : base;
 }
 
 export function FlowDemo() {
@@ -1106,6 +1125,7 @@ export function FlowDemo() {
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
   const [resizedIds, setResizedIds] = useState(() => new Set<string>());
+  const [tallIds, setTallIds] = useState(() => new Set<string>());
   const insertCounter = useRef(FC_S0_INIT.length);
 
   // Refs so sizeForItem never captures stale closures.
@@ -1113,6 +1133,11 @@ export function FlowDemo() {
   s0CardsRef.current = s0Cards;
   const resizedIdsRef = useRef(resizedIds);
   resizedIdsRef.current = resizedIds;
+  const tallIdsRef = useRef(tallIds);
+  tallIdsRef.current = tallIds;
+  // Track the largest observed container width; when current width drops below
+  // this baseline, treat it as a viewport-shrink resize mode.
+  const flowBaseWidthRef = useRef(0);
 
   const flowLayout = useMemo(() => flow({
     itemSpacing: 8,
@@ -1124,13 +1149,15 @@ export function FlowDemo() {
       const cards = s === 0 ? s0CardsRef.current : FC_S1_INIT;
       const card = cards[i];
       if (!card) return { width: 80, height: 80 };
-      const expanded = resizedIdsRef.current.has(card.id);
-      const w = flowCardWidth(card.kind, containerWidth);
-      if (card.kind === 'banner') return { width: w, height: expanded ? 140 : 68 };
-      if (card.kind === 'half')   return { width: w, height: expanded ? 190 : 110 };
-      /* third */                 return { width: w, height: expanded ? 130 : 80 };
+      if (containerWidth > flowBaseWidthRef.current) flowBaseWidthRef.current = containerWidth;
+      const viewportShrunk =
+        flowBaseWidthRef.current > 0 && containerWidth < flowBaseWidthRef.current - 1;
+      const shrunk = viewportShrunk || resizedIdsRef.current.has(card.id);
+      const w = flowCardWidth(card.kind, containerWidth, shrunk);
+      const h = flowCardHeight(card.kind, tallIdsRef.current.has(card.id));
+      return { width: w, height: h };
     },
-  }), [resizedIds, s0Cards]);
+  }), [resizedIds, tallIds, s0Cards]);
 
   const keyExtractor = useCallback((item: FlowCard) => item.id, []);
 
@@ -1152,6 +1179,14 @@ export function FlowDemo() {
 
   const toggleResize = useCallback((id: string) => {
     setResizedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleTall = useCallback((id: string) => {
+    setTallIds(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -1180,15 +1215,14 @@ export function FlowDemo() {
   }), []);
 
   const renderItem = useCallback(({ item }: { item: FlowCard }) => {
-    const isExpanded = resizedIds.has(item.id);
+    const isShrunk = resizedIds.has(item.id);
+    const isTall = tallIds.has(item.id);
     const isBanner = item.kind === 'banner';
-    const isHalf   = item.kind === 'half';
+    const isHalf = item.kind === 'half';
     // Explicit height must match sizeForItem — this is what Yoga measures to size
     // the cell wrapper. The cell wrapper has no explicit height; it relies on the
     // content height (same pattern as MasonryDemo's explicit `height: h`).
-    const h = isBanner ? (isExpanded ? 140 : 68)
-            : isHalf   ? (isExpanded ? 190 : 110)
-            :             (isExpanded ? 130 : 80);
+    const h = flowCardHeight(item.kind, isTall);
     return (
       <Pressable
         style={{ height: h, backgroundColor: item.color, borderRadius: isBanner ? 8 : 12 }}
@@ -1201,7 +1235,8 @@ export function FlowDemo() {
             <View style={{ flex: 1, marginLeft: 12 }}>
               <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }} numberOfLines={1}>{item.label}</Text>
               <Text style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11, marginTop: 2 }}>
-                {isExpanded ? 'Tap to collapse ↑' : 'Tap to expand ↓'}
+                {isShrunk ? 'Tap to restore width' : 'Tap to shrink width'}
+                {isTall ? ' · tall' : ''}
               </Text>
             </View>
             <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 20, marginLeft: 8 }}>›</Text>
@@ -1218,7 +1253,9 @@ export function FlowDemo() {
         )}
       </Pressable>
     );
-  }, [resizedIds, toggleResize]);
+  }, [resizedIds, tallIds, toggleResize]);
+
+  const flowExtraData = useMemo(() => ({ resizedIds, tallIds }), [resizedIds, tallIds]);
 
   return (
     <View style={S.flex}>
@@ -1229,7 +1266,8 @@ export function FlowDemo() {
         <View style={S.ctrlDivider} />
         <CtrlBtn label="+1" onPress={handleInsert} />
         <CtrlBtn label="−1" onPress={handleDelete} />
-        <CtrlBtn label="↕ S0[0]" onPress={() => { const id = s0Cards[0]?.id; if (id) toggleResize(id); }} />
+        <CtrlBtn label="↔ S0[0]" onPress={() => { const id = s0Cards[0]?.id; if (id) toggleResize(id); }} />
+        <CtrlBtn label="↕ S0[0]" onPress={() => { const id = s0Cards[0]?.id; if (id) toggleTall(id); }} />
         <View style={S.ctrlDivider} />
         <CtrlBtn label={mvcEnabled ? 'MVC: ON' : 'MVC: OFF'} onPress={() => setMvcEnabled(v => !v)} active={mvcEnabled} />
         <View style={{ paddingHorizontal: 6, justifyContent: 'center' }}>
@@ -1243,7 +1281,7 @@ export function FlowDemo() {
         layout={flowLayout}
         stickyMode="push"
         estimatedItemHeight={100}
-        extraData={resizedIds}
+        extraData={flowExtraData}
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
         onDecorationCountChange={setDecoCount}

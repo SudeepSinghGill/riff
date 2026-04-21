@@ -157,10 +157,8 @@ bool ListLayout::applyMeasurements(
     // separators) to match.
 
     // Build lookup maps for both delta types.
-    // The ShadowNode sends one delta per changed dimension for each key:
-    //   height delta: d.oldValue ≈ cached frame.height
-    //   width delta:  d.oldValue ≈ cached frame.width
-    // We use oldValue to identify which dimension each delta applies to.
+    // Prefer explicit axis emitted by ShadowNode. Keep oldValue matching only as
+    // a defensive fallback for unknown-axis callers.
     std::unordered_map<std::string, double> newWidths;   // primary axis deltas
     std::unordered_map<std::string, double> newCrossH;   // cross axis deltas
     for (const auto& d : deltas) {
@@ -168,16 +166,14 @@ bool ListLayout::applyMeasurements(
       if (!existing) continue;
       const bool matchesHeight = std::abs(existing->frame.height - d.oldValue) < 1.0;
       const bool matchesWidth  = std::abs(existing->frame.width  - d.oldValue) < 1.0;
-      if (matchesHeight && !matchesWidth) {
+      if (d.axis == MeasurementAxis::Height) {
+        newCrossH[d.key] = d.newValue;
+      } else if (d.axis == MeasurementAxis::Width) {
+        newWidths[d.key] = d.newValue;
+      } else if (matchesHeight && !matchesWidth) {
         newCrossH[d.key] = d.newValue;
       } else if (matchesWidth && !matchesHeight) {
         newWidths[d.key] = d.newValue;
-      } else if (matchesHeight && matchesWidth) {
-        // Both axes have the same cached value — use newValue to guess dimension.
-        // Primary axis (width) changes affect scroll extent; cross (height) affects list height.
-        // Conservative: emit to both maps.
-        newWidths[d.key] = d.newValue;
-        newCrossH[d.key] = d.newValue;
       }
       // If neither matches, delta may be stale — skip.
     }
@@ -274,12 +270,11 @@ bool ListLayout::applyMeasurements(
         auto& mx = sectionMaxH[attr.section];
         mx = std::max(mx, attr.frame.height);
       }
-      // Merge with persistent max — never shrink cross-axis height.
-      // Items that scrolled out of the cache may have been taller.
+      // Recompute from current measured items. This allows cross-axis shrink when
+      // large cells are resized down or deleted.
+      _maxSectionCrossHeight.clear();
       for (auto& pair : sectionMaxH) {
-        auto& persistent = _maxSectionCrossHeight[pair.first];
-        persistent = std::max(persistent, pair.second);
-        pair.second = persistent;
+        _maxSectionCrossHeight[pair.first] = pair.second;
       }
 
       // Update supplementaries and decorations.
@@ -853,6 +848,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
 
   double primary = startPrimary;
   double bgStartPrimary = startPrimary;
+  double sectionMaxCross = 0.0;
 
   LayoutAttributes sep;
   if (p.emitSeparators) {
@@ -890,8 +886,13 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
     if (H) {
-      const double hH = (existingHdr && existingHdr->frame.height > 0) ? existingHdr->frame.height : p.viewportHeight;
+      // Horizontal list supplementaries span full viewport height.
+      // Do not persist stale cached estimated heights here.
+      const double hH = p.viewportHeight > 0
+          ? p.viewportHeight
+          : ((existingHdr && existingHdr->frame.height > 0) ? existingHdr->frame.height : hHdrH);
       _scratch.frame = { primary, 0, p.headerHeight, hH };
+      if (hH > sectionMaxCross) sectionMaxCross = hH;
     } else {
       _scratch.frame = { crossStart, primary, crossContent, p.headerHeight };
     }
@@ -910,6 +911,7 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
   for (int i = 0; i < p.itemCount; ++i) {
     const std::string key = itemKey(p, i, prefix);
     auto existing = _cache->getAttributes(key);
+    auto stashedSize = _cache->getStashedMeasuredSize(key);
     // Primary-axis size: cached → stashed → JS per-item heights → scalar estimate.
     double sz;
     const char* heightSource = "unknown";
@@ -917,16 +919,21 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
       sz = H ? existing->frame.width : existing->frame.height;
       heightSource = "cache";
     } else {
-      const double stashed = _cache->getStashedHeight(key);
-      if (stashed > 0.0) {
-        sz = stashed;
-        heightSource = "stash";
-      } else if (!p.itemHeights.empty() && i < static_cast<int>(p.itemHeights.size())) {
-        sz = p.itemHeights[i];
-        heightSource = "itemHeights";
+      if (H && stashedSize && stashedSize->width > 0.0) {
+        sz = stashedSize->width;
+        heightSource = "stash-size";
       } else {
-        sz = p.itemHeight;
-        heightSource = "scalar";
+        const double stashed = _cache->getStashedHeight(key);
+        if (stashed > 0.0) {
+          sz = stashed;
+          heightSource = "stash";
+        } else if (!p.itemHeights.empty() && i < static_cast<int>(p.itemHeights.size())) {
+          sz = p.itemHeights[i];
+          heightSource = "itemHeights";
+        } else {
+          sz = p.itemHeight;
+          heightSource = "scalar";
+        }
       }
     }
     // Trace first 5 items per section (enough to catch estimate vs measured discrepancy).
@@ -934,11 +941,21 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
       RNCV_LIST_TRACE("computeSectionFromCache s[%d][%d] key=%s source=%s sz=%.1f",
                       sectionIndex, i, key.c_str(), heightSource, sz);
     }
-    // Cross-axis size: preserve cached height for horizontal, use crossContent for vertical.
+    // Cross-axis size: preserve cached height for horizontal, then stashed measured
+    // size when cache was cleared, else estimate. Vertical uses crossContent.
     const double crossSz = H
-        ? (existing && existing->frame.height > 0 ? existing->frame.height : hEstH)
+        ? (existing && existing->frame.height > 0
+            ? existing->frame.height
+            : (stashedSize && stashedSize->height > 0
+                ? stashedSize->height
+                : hEstH))
         : crossContent;
-    _scratch.sizingState = existing ? existing->sizingState : SizingState::Placeholder;
+    if (H && crossSz > sectionMaxCross) sectionMaxCross = crossSz;
+    _scratch.sizingState = existing
+        ? existing->sizingState
+        : (H && stashedSize && stashedSize->width > 0 && stashedSize->height > 0
+            ? SizingState::Measured
+            : SizingState::Placeholder);
     _scratch.key         = key;
     _scratch.index       = i;
     _scratch.flatIndex   = p.flatIndexBase + i;
@@ -964,6 +981,18 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
 
   primary += primaryInsetEnd;
 
+  if (H) {
+    // Preserve best-known section cross extent across cache recomputes.
+    auto prev = _maxSectionCrossHeight.find(sectionIndex);
+    if (prev != _maxSectionCrossHeight.end() && prev->second > sectionMaxCross) {
+      sectionMaxCross = prev->second;
+    }
+    if (sectionMaxCross <= 0.0) {
+      sectionMaxCross = hEstH;
+    }
+    _maxSectionCrossHeight[sectionIndex] = sectionMaxCross;
+  }
+
   // ── Section background ─────────────────────────────────────────────────
   // Content insets applied in absolute visual coords — same as computeSection.
   if (p.emitSectionBackground) {
@@ -972,9 +1001,8 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     bg.section        = sectionIndex;
     bg.index          = -1;
     if (H) {
-      // Use cached height if available (preserves measured values); else estimate.
-      auto existingBg = _cache->getAttributes(bg.key);
-      const double bgH = (existingBg && existingBg->frame.height > 0) ? existingBg->frame.height : hEstH;
+      // Horizontal: derive from best-known section cross extent, not stale cache.
+      const double bgH = sectionMaxCross > 0 ? sectionMaxCross : hEstH;
       bg.frame = {
         bgStartPrimary + p.sectionBackgroundInsetLeft,
         crossStart     + p.sectionBackgroundInsetTop,
@@ -1009,7 +1037,9 @@ double ListLayout::computeSectionFromCache(const ListLayoutParams& p,
     _scratch.sizingState       = SizingState::Measured;
     _scratch.isDirty           = false;
     if (H) {
-      _scratch.frame = { primary, 0, p.footerHeight, p.viewportHeight };
+      const double fH = p.viewportHeight > 0 ? p.viewportHeight : sectionMaxCross;
+      _scratch.frame = { primary, 0, p.footerHeight, fH };
+      if (fH > sectionMaxCross) sectionMaxCross = fH;
     } else {
       _scratch.frame = { crossStart, primary, crossContent, p.footerHeight };
     }

@@ -551,7 +551,11 @@ function applyBudget(
   stride:           number,
 ): Range {
   if (mountedWindowSize === Infinity || stride <= 0 || vpHeight <= 0) return render;
-  const budget = Math.ceil((mountedWindowSize * vpHeight) / stride);
+  let budget = Math.ceil((mountedWindowSize * vpHeight) / stride);
+  // Never trim below what's already visible. Dense wrapped layouts can have a
+  // visible span larger than stride-derived budget.
+  const visibleSize = Math.max(0, visible.last - visible.first + 1);
+  if (visibleSize > budget) budget = visibleSize;
   const size   = render.last - render.first + 1;
   if (size <= budget) return render;
 
@@ -1395,7 +1399,12 @@ export function Riff<T = unknown>({
         setRenderRange(empty);
       }
     } else {
-      const budgeted = { first: layoutResult.renderFirst, last: layoutResult.renderLast };
+      // Keep windowing robust: always include visible span and pad by one cell
+      // on both sides to avoid transient holes during fast/programmatic scroll.
+      const budgeted = {
+        first: Math.max(0, Math.min(layoutResult.renderFirst, layoutResult.visibleFirst) - 1),
+        last: Math.min(itemCount - 1, Math.max(layoutResult.renderLast, layoutResult.visibleLast) + 1),
+      };
       if (rangeChanged(prevRenderRef.current, budgeted)) {
         prevRenderRef.current = budgeted;
         setRenderRange(budgeted);
@@ -1713,7 +1722,12 @@ export function Riff<T = unknown>({
         setLayoutCacheVersion(v => v + 1);
       }
 
-      const budgetedR = { first: scrollResult.renderFirst, last: scrollResult.renderLast };
+      // Keep windowing robust: always include visible span and pad by one cell
+      // on both sides to avoid transient holes during fast/programmatic scroll.
+      const budgetedR = {
+        first: Math.max(0, Math.min(scrollResult.renderFirst, scrollResult.visibleFirst) - 1),
+        last: Math.min(itemCount - 1, Math.max(scrollResult.renderLast, scrollResult.visibleLast) + 1),
+      };
       const _rrChanged = rangeChanged(prevRenderRef.current, budgetedR);
       if (_rrChanged) {
         prevRenderRef.current = budgetedR;
@@ -2230,7 +2244,9 @@ export function Riff<T = unknown>({
         const fi = stickyHeaderFlatIndices[i]!;
         const sd = isSectioned ? flattenResult?.flatData[fi] : null;
         const attr = (isSectioned && sd?._kind === 'header')
-          ? nativeMod.layoutCache.getAttributes(`item-${sd.sectionIndex}-header`)
+          ? nativeMod.layoutCache.getAttributes(
+              `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sd.sectionIndex}-header`,
+            )
           : effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
         const pos = attr
           ? (isHoriz ? attr.frame.x : attr.frame.y)
@@ -2256,7 +2272,9 @@ export function Riff<T = unknown>({
         const fi = stickyFooterFlatIndices[i]!;
         const sd = isSectioned ? flattenResult?.flatData[fi] : null;
         const attr = (isSectioned && sd?._kind === 'footer')
-          ? nativeMod.layoutCache.getAttributes(`item-${sd.sectionIndex}-footer`)
+          ? nativeMod.layoutCache.getAttributes(
+              `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sd.sectionIndex}-footer`,
+            )
           : effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
         const pos = attr
           ? (isHoriz ? attr.frame.x : attr.frame.y)
