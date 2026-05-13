@@ -7,6 +7,7 @@
 #include <optional>
 #include <atomic>
 #include <functional>
+#include <unordered_map>
 
 #include "LayoutCache.h"
 #include "LayoutEngine.h"
@@ -129,6 +130,17 @@ private:
   // Scroll position — written from UI thread (M2.2b) or JS thread (M2.2).
   std::atomic<double> _scrollY{0.0};
   std::atomic<double> _scrollX{0.0};
+
+  // H-3: Per-section H velocity tracking for velocity-adaptive windowing.
+  // Each processHScroll call updates this state using std::chrono wall-clock
+  // timestamps, computing px/ms velocity from consecutive (scrollX, time) pairs.
+  // Mirrors the per-module velocity tracking that LayoutCache does for V scroll.
+  struct HScrollState {
+    double lastScrollX     = 0.0;
+    double lastTimestampMs = -1.0;  // -1 = uninitialized (first call)
+    double velocity        = 0.0;   // px/ms, signed (+ve = scrolling right)
+  };
+  std::unordered_map<int, HScrollState> _hScrollStates;
 
   // processScroll early-return state (Opt 6 — stable-band skip).
   // When cacheVersion hasn't changed and scroll offset is within the band,

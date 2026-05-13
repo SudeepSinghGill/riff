@@ -11,6 +11,31 @@
 - Recently completed: P6.2 device measurement on iPhone 15 Pro. Riff dominates Search Results (Avg FPS +16%, Min FPS +75%, Memory 4.3x better, Active Mounts 6x fewer). Wins on Min FPS / p5 FPS / Active Mounts on Homepage and Storefront. Storefront memory is the one inversion (Flash 30% better) — investigate later.
 - Sequencing direction from user: **perf → functionality → documentation**. Single feature branch for the whole arc. Bench manually via PerfHood "bench" button (slow/fast/fling auto-scroll, JSON share-sheet export).
 
+### Stage 1 progress
+
+- **H-1**: ✅ done. Per-cell H JSI removed; section-local Y staleness latent bug also fixed. Smoke passed on Storefront/Homepage/SearchResults. An intermittent "H scroll gesture missing after boundary" issue was investigated extensively (`RNCV-H-GEST` + `RNCV-H-DIAG` debug logging); root cause looked like simulator throttling rather than H-1 implementation. Logs left in place but **switched off** (`RNCV_HGEST_LOGS=0`, `RNCV_HGEST_DIAG=false`) for future debugging. **Bonus on-device finding**: the intermittent H gesture issue is GONE on device after H-2 — confirms it was simulator-only.
+- **H-2**: ✅ done and verified on device (2026-05-13). Initial smoke build had blank H sections from a regression — main container ShadowNode + iOS view didn't recognize the new `RNCollectionSubContainer` wrapper class, so the wrapper was placed at (0, 0, vpW, ~80px) and inner cells placed at V-absolute Y instead of section-local Y. Three-line fix (RTTI branch in `CollectionViewContainerShadowNode`, class check in `RNCollectionViewContainerView::applyPositionsFromState:`, V→section-local Y shift in `CollectionSubContainerShadowNode::correctChildPositionsIfNeeded`). H sections now render cleanly on device. Ready for **Bench 1** (post-H-2 baseline).
+- **H-3**: ✨ next up — directly addresses the user-observed "H windowing too tight, no velocity-aware expansion." Today `processHScroll` uses `pad = renderMult * vpWidth` (fixed). H-3 adds H-axis velocity tracking + lead-boost so H windows expand toward the direction of fling, mirroring V's `WindowController::computeRange` formula (`leadBoost = min(1.5, speed) * renderMult`).
+- **H-3.5**: ✨ paired with H-3 — decouple V/H windowing multipliers and add per-section overrides. Today every windowing knob (`renderMultiplier`, `mountedWindowSize`, `measureAhead`) is a single top-level CollectionView prop applied uniformly to both V and H paths, with no per-section escape hatch. Storefront sets `renderMultiplier={0.25}` for V efficiency and that collapses H windows too, which is part of why H feels tight on that screen. H-3.5 adds `hRenderMultiplier?` (top-level) and `renderMultiplier?` / `mountedWindowSize?` / `measureAhead?` on `SectionConfig`, with documented precedence.
+- **H-4 / H-5**: pending after H-3 + Bench 1.
+
+### Bench 1 results — 2026-05-13, on device, post-H-2 (Storefront)
+
+Two runs, averaged. Riff renderMultiplier on Storefront is `0.25` (set by screen author for V efficiency, inherited by H — this matters for H-3 + H-3.5).
+
+| Scenario | Avg FPS Riff/Flash | Min FPS Riff/Flash | p5 FPS Riff/Flash | Active Mounts Riff/Flash |
+|---|---|---|---|---|
+| Slow ↓ 20 | **59 / 54.5** | **44 / 40.5** | **51.5 / 45.5** | **11 / 30.5** |
+| Slow ↑ 20 | **59 / 55**   | **45.5 / 42.5** | **48 / 42.5** | **11 / 28.5** |
+| Fast ↓ 100 | 55.5 / 55.5  | **49.5 / 46**   | **49.5 / 46**  | **11.5 / 37** |
+| Fast ↑ 100 | **57.5 / 55.5** | **51.5 / 49** | **51.5 / 49**  | **10 / 22** |
+| Fling ↓ | **57 / 56** | **48.5 / 43.5** | **48.5 / 43.5** | **11 / 37** |
+| Fling ↑ | 58 / **59** | 49 / **53** | 49 / **53** | **8 / 17** |
+
+**Wins:** 5/6 scenarios on min FPS, 5/6 on p5 FPS, 6/6 on active-mount count (2–4× fewer live cells), 4/6 on avg FPS.
+
+**Investigate:** Fling ↑ — Riff 49 min vs Flash 53 min, 58 avg vs 59 avg. Hypothesis: every cell mount/unmount in the main container triggers a Yoga relayout of its siblings, which side-effect-runs `CollectionSubContainerShadowNode::layout()` for each H sibling — even when the H section's own children didn't change. Fast/Fling have constant cell churn → constant sub-container relayout cost. Same story explains Fast scroll CPU (Riff 40–43% vs Flash 29–32%). Fix: **fold a sub-container layout short-circuit into H-4's stable-band skip** — bail out of `correctChildPositionsIfNeeded()` when child set + cache version + props are all unchanged. This is the H-symmetric of the "Opt E ShadowNode short-circuit" already in the research backlog for the main container.
+
 ---
 
 ## Doc-nugget vault
@@ -63,39 +88,130 @@ Build: no new files → no `pod install`. Clean Xcode build, Metro reset.
 
 **Exit criteria**: Storefront/Homepage/SearchResults visual smoke passes. H-fling on Homepage feels at least as smooth as before. No JS or Xcode errors.
 
-### Tier H-2 — Native frame application via custom orthogonal ShadowNode
+### Tier H-2 — Generic sub-container framework with native frame/transform application
 
-**Effort**: 1.5 days. **Risk**: Medium (touches shared infrastructure).
+**Effort**: 2 days actual (extended scope). **Risk**: Medium (new shared infrastructure used by H sections + custom layouts).
 
-**Problem**: H cells use CSS `position: absolute; left; top` set in JSX. Yoga lays them out, React diffs styles per render, slower than V cells which go through `applyPositionsFromState:`.
+**Problem**: Two problems unified by one solution:
+1. H cells use CSS `position: absolute; left; top` set in JSX. Yoga lays them out, React diffs styles per render, slower than V cells which go through `applyPositionsFromState:`.
+2. Custom layouts (radial, 3D carousel, spiral, etc.) currently bolt onto a `ScrollView` and animate item styles in JS — there is no first-class framework for "section that owns its own layout + applies frames + transforms natively".
 
-**Solution**: Make `RNOrthogonalSectionView`'s contentView a custom ShadowNode that mirrors `CollectionViewContainerShadowNode` — reads its section's slice of LayoutCache, writes positions to children via Yoga `setPosition`, packs `positions[] + tags[]` into its own state, native applies frames by tag map. Drop CSS-absolute styles from JS render.
+**Solution — `RNCollectionSubContainer` generic Fabric component**:
+
+A reusable Fabric component that:
+- Holds a section's children inside its own container (optionally wrapped in a `UIScrollView` per `scrollDirection` prop: `vertical | horizontal | none`).
+- Has a custom ShadowNode (`CollectionSubContainerShadowNode`) that reads its section's slice of `LayoutCache`, runs the same Yoga measurement → `applyMeasurements` cascade as the main container for content-determined axes, then packs each child's full `ChildVisualState` (`x, y, w, h, opacity, zIndex, transform[16]`) plus its Fabric `tag` into `CollectionSubContainerState`.
+- iOS view (`RNCollectionSubContainerView`) reads state on every state update and `layoutSubviews`, builds a `tag → UIView` map, and applies frames + `CATransform3D` + `alpha` + `zPosition` natively with no per-frame JS work.
+
+H sections are now thin wrappers around this component. Custom layouts (radial, carousel3D, spiral, hex) get the same native frame/transform fast path "for free" — they just implement the `CollectionViewLayout` protocol and call `setAttributesBatch(...)` from `prepare()` and (optionally) `processScroll()`.
+
+**Per scroll tick cost for a custom layout**: 1 JSI batch call (`setAttributesBatch`) + 1 native re-apply pass. No per-cell JSI, no React re-render of cells, no Yoga reflow.
+
+**Built (16 sub-tasks)**:
+| Layer | Item | Files |
+|---|---|---|
+| F1 | Fabric spec for `RNCollectionSubContainer` + example wrapper | `src/specs/RNCollectionSubContainerNativeComponent.ts`, `example/components/RNCollectionSubContainerNativeComponent.ts`, `package.json` codegen registration |
+| F2 | C++ ShadowNode + State (with `ChildVisualState`) + ComponentDescriptor | `cpp/CollectionSubContainerShadowNode.{h,cpp}`, `cpp/CollectionSubContainerState.h`, `cpp/CollectionSubContainerComponentDescriptor.h` |
+| F3 | iOS native view: dynamic ScrollView wrapping, tag→view map, native frame + transform + opacity + zIndex application, `onSubScroll` event throttling | `ios/RNCollectionSubContainerView.{h,mm}` |
+| F4 | TS `LayoutAttributes` extended with `transform`, `opacity`, `anchorPoint` (C++ already had `transform3D` + `alpha` + `zIndex`) | `src/types/layout.ts` |
+| F5 | Optional `processScroll(offset, ctx)` added to both `LayoutEngine` (C++) and `CollectionViewLayout` (TS) protocols | `cpp/LayoutEngine.h`, `src/types/protocol.ts` |
+| F6 | `setAttributesBatch(updates[])` JSI HostFunction on layoutCache | `cpp/LayoutCache.{h,cpp}` |
+| F7 | JS `<CollectionSubContainer>` wrapper that calls `prepare()`, forwards scroll to `processScroll()`, mounts cells | `example/components/CollectionSubContainer.tsx` |
+| F8/F9 | H sections in `CollectionView.tsx` migrated to `RNCollectionSubContainer`; absolute positioning styles dropped from H-cell `containerStyle`; `frameYIsLocal`/`sectionOriginY` math removed | `example/components/CollectionView.tsx` |
+| L1 | `radial(opts)` TS layout — items on a circle, vertical scroll drives rotation, scale + opacity + zIndex per item | `src/layouts/radial.ts` |
+| L2 | `carousel3D(opts)` TS layout — horizontal cover-flow with `rotateY` + perspective | `src/layouts/carousel3D.ts` |
+| L3 | `spiral(opts)` TS layout — Archimedean spiral, vertical scroll unwinds it | `src/layouts/spiral.ts` |
+| L4 | `hex(opts)` TS layout — static honeycomb tiling (`scrollDirection="none"`); C++ port noted as future demo of native custom layout | `src/layouts/hex.ts` |
+| D1 | `RiffDemo` — 4 new tabs: `Radial (H-2)`, `Carousel (H-2)`, `Spiral (H-2)`, `Hex (H-2)` | `example/screens/RiffDemo.tsx` |
+
+Build: new `.cpp` + `.mm` files → `pod install`, clean Xcode build (`Cmd+Shift+K`), Metro on port 8082 with `--reset-cache`.
+
+**Exit criteria**:
+- Storefront / Homepage / SearchResults: H sections render and scroll correctly through the new `RNCollectionSubContainer` path (no visual regression vs H-1).
+- RiffDemo: all 4 H-2 tabs render — radial rotates with vertical scroll, carousel3D cards flip with horizontal scroll, spiral unwinds with vertical scroll, hex shows a static honeycomb.
+- No V-scroll regression on any screen.
+- **Bench checkpoint after this tier.**
+
+**Doc-nuggets unlocked by H-2** (added to vault below):
+16. **`ChildVisualState` is the universal visual contract**: every sub-container child gets the same 6-field bundle (`x,y,w,h`) + (`opacity`, `zIndex`, `transform[16]`). Custom layouts in TS or C++ produce this bundle; the iOS view applies it. → `lld/HSections.md`, `Contributing-Layouts.md`.
+17. **Sub-container vs main container symmetry**: both run the same Yoga-measurement → `applyMeasurements` cascade for content-determined axes. The main container is just a fancy sub-container that owns the outer ScrollView. → `lld/ShadowNode.md`.
+18. **Custom layouts in TS are first-class**: as long as the layout writes attributes via `setAttributesBatch` and (optionally) implements `processScroll`, it gets the native fast path with zero per-cell JSI cost. C++ layouts get the same path through `LayoutEngine::processScroll`. → `Contributing-Layouts.md`.
+19. **`scrollDirection="none"` for static layouts** (e.g. hex): the iOS view skips the ScrollView wrapper entirely — children mount straight into the contentView. → `lld/HSections.md`.
+22. **Wrapper-class registration is a contract** (regression learned 2026-05-13): introducing a new wrapper component for H sections requires THREE coordinated registrations — (a) the main container's ShadowNode RTTI dispatch, so the wrapper gets cache key `"h-section-wrapper-{sIdx}"`; (b) the main container's iOS `applyPositionsFromState:` so the wrapper is marked `shadowNodePositioned=YES` and a later Yoga reflow doesn't reset its origin; (c) Y coordinate-space conversion inside the sub-container's ShadowNode so cell positions stored in V-absolute by `CompositionalLayout::finalizeHSection` are placed correctly inside the section-local contentView. Missing any of the three → blank H sections. → `lld/HSections.md`, `lld/ShadowNode.md`.
+
+### Tier H-3 — H scroll velocity-adaptive windowing
+
+**Effort**: 0.5 day. **Risk**: Low.
+
+**Problem (confirmed on device, 2026-05-13)**: H windowing is "too tight." When you fling an H section quickly, items appear blank for a frame or two at the leading edge before they paint, because `processHScroll` uses `pad = renderMult * vpWidth` — a fixed multiplier with **no velocity boost**. Compare to V scroll which uses `leadBoost = min(1.5, speed) * renderMult` so the leading window expands up to ~2.5× during fast flings. The H path has been carrying a `// Tier H-3 will wire H velocity into LayoutCache.` TODO since H-1.
+
+**Solution**:
+1. Per-section H velocity tracking in C++. `RNCollectionSubContainerView::scrollViewDidScroll:` (and the legacy `RNOrthogonalSectionView`'s equivalent) call `cache->setHSectionScrollOffset(sectionIndex, x, timestampSeconds)`.
+2. `LayoutCache` keeps a small ring buffer per H section: last N (offset, ts) samples → instantaneous H velocity in viewport-widths-per-second.
+3. `processHScroll` reads that velocity and applies the same lead-boost formula as `WindowController::computeRange`: `leadBoost = min(1.5, speed) * renderMult; leadMult = renderMult + leadBoost; trailMult = max(minTrail, renderMult - leadBoost * 0.5);` — so a fast right-fling expands the right-side window without bloating the left side.
+4. Asymmetric query rect: `queryRect = { scrollX - trailMult*vpW, sectionY, vpW + (leadMult+trailMult)*vpW, sectionH }` (oriented per scroll direction).
 
 **Touched files**:
 | File | Change |
 |---|---|
-| `packages/rn-collection-view/cpp/RNOrthogonalContentShadowNode.{h,cpp}` (new) | Custom ShadowNode mirroring container pattern |
-| `packages/rn-collection-view/cpp/CollectionViewModule.cpp` | Register new ShadowNode |
-| `packages/rn-collection-view/cpp/LayoutCache.{h,cpp}` | Add `getAttributesForSection(sectionIndex)` if missing |
-| `packages/rn-collection-view/ios/RNOrthogonalSectionView.{h,mm}` | `updateState:` + `applyPositionsFromState:` for grandchildren |
-| Spec + wrapper for orthogonal section | If signature changes |
-| `packages/rn-collection-view/example/components/CollectionView.tsx` | Drop CSS-absolute styles for H cells |
+| `cpp/LayoutCache.{h,cpp}` | `setHSectionScrollOffset(sectionIndex, x, ts)` + per-section velocity getter |
+| `cpp/CollectionViewModule.cpp` | `processHScroll` uses velocity for asymmetric `pad` |
+| `ios/RNCollectionSubContainerView.mm` | Call `setHSectionScrollOffset` from `scrollViewDidScroll:` |
+| `ios/RNOrthogonalSectionView.mm` | Same call (legacy path stays in sync) |
 
-Build: new `.cpp` files → `pod install`, then clean Xcode build, Metro reset.
+**Exit criteria**: a fast H fling on Storefront's Trending Now (grid-H) and Homepage's Featured (list-H) shows zero blank lead at the appearing edge. No visible lag. `bench(fling)` H trace shows no JSI re-window storms.
 
-**Exit criteria**: Same functional smoke as H-1. No V-scroll regression. **Bench checkpoint after this tier.**
+### Tier H-3.5 — Decoupled V/H windowing + per-section windowing overrides
 
-### Tier H-3 — H scroll velocity into C++
+**Effort**: 0.5 day. **Risk**: Low (purely additive props, no native protocol change).
 
-**Effort**: 0.5 day. **Risk**: Low.
+**Problem (confirmed by Bench 1, 2026-05-13)**: All windowing knobs are top-level only and are shared across V and H paths.
 
-**Solution**: `RNOrthogonalSectionView::scrollViewDidScroll:` calls `cache->setHSectionScrollOffset(sectionIndex, x, ts)`. C++ derives velocity per H section. `processHScroll` applies the same velocity-adaptive lead boost as `processScroll`.
+```967:969:packages/rn-collection-view/example/components/CollectionView.tsx
+  renderMultiplier = 0.5,
+  mountedWindowSize = 2.0,
+  measureAhead = 0,
+```
 
-### Tier H-4 — H stable-band skip
+`SectionConfig` has no windowing fields. Storefront's `renderMultiplier={0.25}` (tuned for V efficiency on a long flow + masonry main column) collapses H windows on every horizontal section to `pad = 0.25 * vpWidth` — a quarter viewport of lead. Combined with H-3's lack of velocity boost, that's why H feels tight on Storefront in particular.
 
-**Effort**: 0.25 day. **Risk**: Low. **Depends on H-3.**
+**Solution**:
+1. **Decouple V/H multipliers**: add top-level `hRenderMultiplier?: number` (defaults to `renderMultiplier`). The H path (`handleHScroll` → `processHScroll`) reads this; the V path keeps reading `renderMultiplier`.
+2. **Per-section overrides**: add optional `renderMultiplier?`, `mountedWindowSize?`, `measureAhead?` on `SectionConfig`. Build a `sectionWindowingOverrides: Map<sectionIndex, {renderMultiplier?, mountedWindowSize?, measureAhead?}>` once at prepare time.
+3. **Precedence chain (documented)**:
+   - For H sections: `section.renderMultiplier` ?? `hRenderMultiplier` ?? `renderMultiplier` ?? `0.5`.
+   - For V sections: `section.renderMultiplier` ?? `renderMultiplier` ?? `0.5`.
+   - Same chain for `mountedWindowSize` and `measureAhead` (no H-specific top-level for those — they're cross-axis budgets).
+4. **Wiring**: `handleHScroll` looks up `sectionWindowingOverrides.get(sectionIndex)?.renderMultiplier` and passes that to `processHScroll`. The V render loop applies per-section override when iterating that section's flat-index range.
 
-**Solution**: Track per-section last result + last cacheVersion + last offset in C++. If unchanged-and-stable, early-return without spatial query. Mirrors Opt 6 for H. Saves the per-tick cost when V scroll triggers spurious orthogonal `scrollViewDidScroll` before directional lock kicks in.
+**Touched files**:
+| File | Change |
+|---|---|
+| `packages/rn-collection-view/src/types/protocol.ts` | Add `hRenderMultiplier?` to top-level config; add `renderMultiplier?` / `mountedWindowSize?` / `measureAhead?` to `SectionConfig` |
+| `packages/rn-collection-view/example/components/CollectionView.tsx` | Build `sectionWindowingOverrides` map; route per-section values into V loop and `handleHScroll` |
+| `packages/rn-collection-view/example/screens/StorefrontDemo.tsx` | Demo: keep `renderMultiplier={0.25}` for V efficiency, set `hRenderMultiplier={1.0}` so H sections breathe |
+| `packages/rn-collection-view/example/screens/HomepageDemo.tsx` | Same demonstration if helpful |
+
+**Exit criteria**:
+- Storefront H sections show no leading-edge blank during fast horizontal flings even when V `renderMultiplier=0.25`.
+- Per-section override demonstrably tightens or loosens just that section's window without affecting siblings (visible via PerfHood's per-section render-range readout).
+- All existing CollectionView tests still pass with no breaking change to the top-level prop signature.
+
+**Doc-nuggets unlocked by H-3.5** (added to vault below):
+23. **V and H are different axes with different cost profiles** — V windowing computation runs constantly during V scroll; H windowing runs only when an H section is on screen and scrolling horizontally. Sharing a single `renderMultiplier` couples two unrelated tuning decisions. Decoupling lets V be tight (memory-efficient) while H is wide (no leading blank). → `lld/HSections.md`, `lld/ScrollPath.md`.
+24. **Per-section windowing overrides are an escape hatch, not a default** — most apps will use top-level defaults; the override exists for the few sections that have wildly different cost profiles (large hero with images, dense H carousel of small chips, off-screen-by-default sections that don't need pre-warming). → `lld/Compositional.md`.
+
+### Tier H-4 — H stable-band skip + sub-container layout short-circuit
+
+**Effort**: 0.5 day. **Risk**: Low. **Depends on H-3.**
+
+**Two coordinated short-circuits, same theme — skip work when nothing changed:**
+
+1. **C++ `processHScroll` stable-band skip** (the original H-4 plan). Track per-section last (rangeStart, rangeEnd, cacheVersion, offset) in `LayoutCache`. If unchanged-and-stable on this call, early-return without re-running the spatial query. Mirrors Opt 6 for V. Saves the per-tick cost when V scroll triggers spurious orthogonal `scrollViewDidScroll` before iOS directional-lock kicks in.
+
+2. **`CollectionSubContainerShadowNode::layout()` short-circuit** (added 2026-05-13 from Bench 1 finding). Yoga lays out the sub-container as a side effect of every main-container relayout, even when the sub-container's own children + cache haven't changed. On fast V scrolls / flings the main container relayouts constantly (cells mount/unmount) → sub-container `correctChildPositionsIfNeeded()` runs constantly. Hypothesis explains both Bench 1 findings: Fling ↑ Riff 49 vs Flash 53 min FPS, and Fast scroll Riff 40-43% vs Flash 29-32% CPU. Fix: cache the last-applied (childTags-hash, cacheVersion, sectionScrollOffset) in `CollectionSubContainerShadowNode`. If all three match the previous layout call AND no `MeasurementDelta` would fire, skip the entire correctChildPositionsIfNeeded path and reuse the previous state.
+
+**Bench checkpoint:** re-run Bench 1 (slow + fast + fling on Storefront) and verify Fling ↑ min FPS recovers to ≥ Flash's 53 and Fast ↑/↓ CPU drops back into the 25-30% band.
 
 ### Tier H-5 — Move H windowing off React state
 
@@ -113,11 +229,11 @@ UIKit-style `orthogonalScrollingBehavior` modes (paging, groupPaging, groupPagin
 
 ---
 
-## Stage 2 — CompositionalLab (full manual scope)
+## Stage 2 — CompositionalLab (full manual scope) + F3.6 interludes
 
-**Effort**: ~1.5 days.
+**Effort**: ~1.5 days lab + ~1.5 days F3.6 = ~3 days.
 
-**Goal**: Functional spec / stress-test page exercising all leaf types × all mutation classes × MVC × sticky combinations. Replaces the simple `compose` tab in `RiffDemo`.
+**Goal**: (a) Functional spec / stress-test page exercising all leaf types × all mutation classes × MVC × sticky combinations. (b) Land F3.6 — `compositional` with intermixed special sections — so the dominant real-world feed pattern is a first-class API instead of a "fragment your data into many tiny sections" workaround.
 
 ### Files
 
@@ -180,6 +296,45 @@ Two key validators:
 
 ---
 
+## Stage 2.5 — F3.6 Compositional with intermixed special sections
+
+**Effort**: ~1.5 days. **Risk**: Low (no native protocol changes; pure JS splitter on top of existing compositional engine).
+
+**Why this slots between the lab and docs**: the lab proves the existing compositional API at full mutation stress; F3.6 is the API rework that exposes the dominant real-world feed pattern (one primary feed + a few inline interludes) as a first-class shape. The lab also gives F3.6 a ready-made test bed.
+
+**Real-world motivation**: today, an app like Instagram-feed or news-feed has to fragment a stream of 200 posts into 200 single-post sections so it can interleave a story carousel after post 5, a banner after post 14, and an ad grid after post 21. That's 200 + 3 sections, each carrying section-level bookkeeping, sticky configs, and `getItemType` dispatch. The new shape lets them keep the feed as one stream and declare "interludes" by data-key anchor.
+
+**Build order**:
+1. **Splitter in `compositional.ts`** — given `{ primary, interludes[] }`, materialize the equivalent `sections[]` array the C++ engine consumes today. Resolve `afterKey` anchors against `primary.data` on every prepare so insert/delete in the primary stream carries interludes correctly.
+2. **`atKey: 'top' | 'bottom'`** — convenience anchors for header/footer-like positions. Compose-resolves to `afterIndex: -1` and `afterIndex: primary.data.length - 1`.
+3. **Type discrimination** — interlude items get a synthesized `_interludeKey` so the recycling pool can keep them separate from primary items without consumer effort.
+4. **Snapshot extensions** — `snap.appendInterludes(...)`, `snap.removeInterludes(keys)`, `snap.moveInterlude(key, { after: anchorKey })`. Same identity-based model as items.
+5. **Demo** — extend `CompositionalLab` with an `Interludes` toolbar group: insert H carousel after the currently-stickied section header, insert hero, insert grid, remove by key, swap two interludes' anchors. Verify cold mounts stay 0 and MVC delta < 1px.
+
+**Touched files**:
+| File | Change |
+|---|---|
+| `packages/rn-collection-view/src/layouts/compositional.ts` | New `{ primary, interludes }` opt-in shape; splitter; anchor resolution |
+| `packages/rn-collection-view/src/types/protocol.ts` | New `InterludeDescriptor` type; `CompositionalConfig` discriminated union (`{sections}` ∣ `{primary, interludes}`) |
+| `packages/rn-collection-view/example/components/CollectionSnapshot.ts` | `appendInterludes` / `removeInterludes` / `moveInterlude` |
+| `packages/rn-collection-view/example/screens/CompositionalLab.tsx` | Interludes toolbar group + demo data |
+| `PLAN.md` | Already has F3.6 spec (added in this session) — mark ✅ on completion |
+| `docs/lld/Compositional.md` | Section on the splitter + anchor stability rules (lands in Stage 3) |
+
+**Exit criteria**:
+- Feed of 200 posts (primary list) + 4 interludes renders correctly, each at the right anchor.
+- Inserting / deleting primary items shifts `afterKey` interludes correctly; `afterIndex` interludes stay put.
+- Sticky on an interlude header sticks at the right Y.
+- An H-carousel interlude scrolls horizontally and its scroll position survives parent V-scroll out + back in (uses the H-2 sub-container).
+- Per-cell renderItem for primary items never re-runs when an interlude inserts/removes (element cache stays valid).
+- Cold mount counter returns to 0 within 1s after any interlude mutation.
+
+**Doc-nuggets unlocked by F3.6** (added to vault below):
+20. **Compositional splitter is a JS-side rewrite** — the C++ engine still consumes a flat `sections[]` array; the new shape is sugar that builds that array from a `{primary, interludes}` description. Keeps the native side untouched while exposing the dominant real-world feed pattern as a first-class API. → `lld/Compositional.md`.
+21. **Anchor-by-key vs anchor-by-index** — `afterKey` interludes are mutation-resilient (resolve against `primary.data` on every prepare); `afterIndex` interludes are positionally fixed. Different use cases, different correctness profiles. → `lld/Compositional.md`, `GLOSSARY.md`.
+
+---
+
 ## Stage 3 — Documentation (humans-first)
 
 **Effort**: ~3 days, splittable.
@@ -226,11 +381,13 @@ docs/CONTEXT-PACK.md           — derived
 
 I (Cursor) stop and hand back to user at:
 
-1. **After H-1** — functional smoke check
-2. **After H-2** — functional smoke check + **Bench 1**
-3. **After H-5** — functional smoke check + **Bench 2** (final H bench)
-4. **After CompositionalLab** — walkthrough together
-5. **After each docs phase**
+1. **After H-1** — functional smoke check ✅
+2. **After H-2** — functional smoke check ✅ (device, 2026-05-13) → **Bench 1** pending
+3. **After H-3** — quick smoke check (H fling on Storefront/Homepage)
+4. **After H-5** — functional smoke check + **Bench 2** (final H bench)
+5. **After CompositionalLab** — walkthrough together
+6. **After F3.6** — interludes demo walkthrough together
+7. **After each docs phase**
 
 ---
 
@@ -273,5 +430,6 @@ Compare each bench against the P6.2 baseline numbers below.
 | Stage 1 — H-1 → H-5 | ~3.75d |
 | Stage 1 benches × 2 | ~1h |
 | Stage 2 — CompositionalLab | ~1.5d |
+| Stage 2.5 — F3.6 interludes | ~1.5d |
 | Stage 3 — Documentation | ~3d |
-| **Total** | **~8.25d** |
+| **Total** | **~9.75d** |

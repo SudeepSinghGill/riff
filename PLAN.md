@@ -634,38 +634,146 @@ Variable-width item packing with dynamic line wrapping (UICollectionViewFlowLayo
 
 ---
 
-### F3.3 — CompositionalLayout
+### F3.3 — CompositionalLayout ✅ DONE
 
 Sections with independent layout objects.
 
-**Deliverable:** `src/layouts/CompositionalLayout.ts`
-```typescript
-new CompositionalLayout({
-  sections: (sectionIndex, environment) => SectionLayoutDescriptor
-})
-```
+**Delivered:** `src/layouts/compositional.ts` + `cpp/layouts/CompositionalLayout.{h,cpp}`
+- TypeScript public API + C++ engine
+- Two-level supplementary system: Level 1 = compositional headers/footers/backgrounds in V-coordinates; Level 2 = leaf-engine items in the leaf's coordinate space
+- Section spacing, per-section insets, sticky headers/footers (push + overlay)
+- Leaf engines: list, grid, masonry, flow (V) + list, grid (H)
 
-**Acceptance:**
-- 3 sections: list + grid + masonry — correct frames, sections stacked
+**Acceptance met:** 7-section CompositionalDemo works (list + grid + flow-H + list + flow-V + masonry); CompositionalLab plan in cursor-plan.md will exercise the full mutation matrix.
 
 **Deps:** F3.1, F3.2
 
 ---
 
-### F3.4 — Orthogonal scrolling sections
+### F3.4 — Orthogonal scrolling sections ✅ DONE (superseded by H-2 sub-container framework)
 
 Horizontal sections within vertical list.
 
-**Deliverable:**
-- `OrthogonalSection.tsx`: horizontal CollectionView with own window controller
-- Parent treats it as single item of fixed/selfSized height
-- Saves/restores own scroll position
+**Delivered (originally):** `RNOrthogonalSectionView` + JS `OrthogonalSection` wrapper. Each H section is a UIScrollView placed at the section's V position; cells positioned absolutely along the H axis.
 
-**Acceptance:**
-- App Store–style layout works
-- Orthogonal section outside parent render window: all cells unmounted
+**Superseded by H-2 (2026-05-13):** `RNCollectionSubContainer` — generic Fabric component + custom ShadowNode + State carrying per-child `ChildVisualState` (frame + transform + opacity + zIndex + Fabric tag). The H section is now a thin wrapper around the sub-container. Cells get NO absolute styles in JS — frames and transforms are applied natively by `RNCollectionSubContainerView::_applyChildVisualStates` via a tag → UIView map, with one JSI batch (`setAttributesBatch`) per scroll tick. Saves/restores own scroll position via the embedded UIScrollView's content offset.
+
+The legacy `RNOrthogonalSectionView` source remains in the tree as fallback/reference but is no longer wired in the JS H render path.
+
+**Side effect:** the same sub-container framework powers four custom layouts shipped in RiffDemo H-2 tabs: radial, carousel3D (cover-flow), spiral, hex (static honeycomb). See cursor-plan.md "Tier H-2" for the full architecture.
+
+**Acceptance met:** App Store–style layout works (Storefront/Homepage); orthogonal section outside parent render window has all cells unmounted; H scroll position survives section unmount/remount within render window.
 
 **Deps:** F3.3, M3.3
+
+---
+
+### F3.6 — Compositional as flow-with-interludes _(planned)_
+
+**Goal:** Let `compositional` host a primary "feed" layout (list / grid / flow / masonry) that owns a flat data stream, with **special sections inserted at specific anchor points** within that stream. Today the user has to bucket their entire feed into many tiny single-purpose sections. This proposal keeps the feed as one stream and treats specials as inline interludes.
+
+**Why this matters:** the dominant real-world feed pattern is "100 posts with 3 hero blocks, 2 H-carousels, and 1 grid embedded among them," not "5 sections of homogeneous content." The current API forces people to fragment their data and pay per-section bookkeeping; the new API mirrors the consumer's mental model.
+
+**Proposed shape:**
+
+```typescript
+compositional({
+  primary: {
+    layout: list({ /* or grid / flow / masonry */ }),
+    data: posts,                       // a single flat array
+    keyExtractor: p => p.id,
+    renderItem: ({ item }) => <Post {...item} />,
+  },
+  interludes: [
+    {
+      anchor: { afterKey: 'post-7' },  // or { afterIndex: 7 } or { atKey: 'top' }
+      layout: list({ horizontal: true }),
+      data: stories,
+      keyExtractor: s => s.id,
+      renderItem: ({ item }) => <Story {...item} />,
+      sticky: { header: true },
+    },
+    {
+      anchor: { afterIndex: 14 },
+      layout: hero(),                  // single-cell layout
+      data: [bannerCampaign],
+      renderItem: ({ item }) => <Banner {...item} />,
+    },
+    {
+      anchor: { afterKey: 'post-21' },
+      layout: grid({ columns: 2 }),
+      data: ads,
+      renderItem: ({ item }) => <Ad {...item} />,
+    },
+  ],
+});
+```
+
+**Anchor semantics:**
+- `{ afterKey }` — sticky to a primary item's identity; survives inserts/deletes that shift indices.
+- `{ afterIndex }` — fixed flat index in the primary stream (use sparingly, for header/footer-like positions).
+- `{ atKey: 'top' | 'bottom' }` — pinned to the start/end of the feed; same role as `ListHeaderComponent` / `ListFooterComponent` but with full layout-engine power.
+- Multiple interludes at the same anchor are stacked in declaration order.
+
+**Behavior:**
+- Primary is flowed as a single section internally; the engine splits it at interlude anchors and injects each interlude as a sub-section between halves.
+- Each interlude is governed by its own layout engine (can be H, grid, custom — same options as today's per-section layout). This lets the H-2 sub-container framework absorb interludes for free: an H carousel interlude is exactly an H sub-container at the right Y.
+- MVC, sticky, decorations, prefetch, and the snapshot mutation API all work transparently — the splitter is a layer above leaf engines.
+- Primary item recycling pool is unaffected by interludes (interludes use their own pool slot per their leaf type, same `getItemType` model as today).
+
+**Implementation sketch:**
+1. **Splitter step in `compositional.ts`** — given the primary stream + ordered interludes, build the equivalent "section list" (`P[0..7], I0, P[8..14], I1, P[15..21], I2, P[22..]`) at JS prepare time. Internally we still produce the section array the C++ engine consumes, so the C++ side needs no protocol change for the static case.
+2. **Anchor stability across mutations** — when a primary `keyExtractor` is provided, splits resolve by key on every prepare; inserts/deletes that move `post-7` carry the interlude with it. `afterIndex` resolves once at mount and stays put.
+3. **Snapshot API extension** — `snap.appendInterludes(...)`, `snap.removeInterludes(keys)`, `snap.moveInterlude(key, { after: anchorKey })` — same identity-based model as items.
+4. **Compatibility** — the existing `sections: [...]` API stays. The new shape is opt-in. If both are provided, sections mode wins (no implicit merge).
+
+**Acceptance:**
+- Feed of 200 posts (list) + 4 interludes (1 H carousel, 1 hero, 2 grid) renders correctly, each at the right anchor.
+- Insert/delete primary items shifts interludes anchored by `afterKey` correctly; `afterIndex` interludes stay put.
+- Sticky on an interlude header sticks at the right Y.
+- H carousel interlude scrolls horizontally and survives parent V-scroll out + back in (uses H-2 sub-container).
+- Per-cell renderItem for primary never re-runs when an interlude inserts/removes (element cache stays valid).
+
+**Deps:** F3.3 (✅), H-2 sub-container framework (✅), F1.2 snapshot API (✅).
+
+---
+
+### F3.7 — Sub-container framework as a public extension point _(planned, follow-up)_
+
+The H-2 `RNCollectionSubContainer` + `CollectionSubContainerShadowNode` + `ChildVisualState` framework was built to host orthogonal H sections, but it's a fully general "section that owns its own layout and applies frames + transforms + opacity natively" primitive. Document the protocol and ship it as a public extension point so consumers can:
+
+- Write a custom layout in TypeScript by implementing `CollectionViewLayout` + (optional) `processScroll`, calling `setAttributesBatch` from prepare/scroll. → free native fast path, no per-cell JSI cost.
+- Write a custom layout in C++ by implementing `LayoutEngine` + (optional) `processScroll`, registering with `registerLayoutEngine`. → same native fast path.
+- Drop a sub-container into any consumer screen (not just inside CollectionView) — RiffDemo's four H-2 tabs (radial / carousel3D / spiral / hex) prove this works standalone.
+
+**Deliverable:**
+- `docs/Contributing-Layouts.md` walkthrough.
+- Public type re-exports: `LayoutAttributes` (with `transform/opacity/zIndex`), `CollectionViewLayout`, `LayoutContext`, `CollectionSubContainerProps`.
+- C++ port of one of the four H-2 layouts (probably `hex`) as a reference for native custom layouts.
+
+**Deps:** H-2 ✅, DOC.1.
+
+### F3.8 — Per-section + decoupled V/H windowing knobs _(planned, paired with H-3)_
+
+**Motivation (Bench 1, 2026-05-13):** All windowing knobs (`renderMultiplier`, `mountedWindowSize`, `measureAhead`) are top-level CollectionView props applied uniformly to V and H paths. `SectionConfig` has no windowing fields. Storefront's `renderMultiplier={0.25}` (tuned for V efficiency) collapses every H section to `pad = 0.25 * vpWidth`, which contributes to user-observed "H windowing too tight" alongside the missing velocity boost. Real apps need V tight + H wide, and individual sections (hero banner vs dense H carousel vs always-off-screen footer block) have different cost profiles that one global multiplier can't express.
+
+**Solution:**
+1. Add top-level `hRenderMultiplier?: number` (defaults to `renderMultiplier`). H path uses this; V path keeps `renderMultiplier`.
+2. Add optional `renderMultiplier?` / `mountedWindowSize?` / `measureAhead?` on `SectionConfig`.
+3. Build a `sectionWindowingOverrides` map at prepare time, route per-section values into `handleHScroll` and the V render loop.
+4. **Precedence:** `section.X` ?? `hRenderMultiplier` (for H sections, where applicable) ?? top-level `X` ?? default. Documented in `docs/Compositional.md`.
+
+**Deliverable:**
+- Type changes in `src/types/protocol.ts`.
+- Wiring changes in `example/components/CollectionView.tsx`.
+- Demo update on `StorefrontDemo.tsx` (`renderMultiplier={0.25}` + `hRenderMultiplier={1.0}` + per-section override on at least one H section to demonstrate).
+
+**Acceptance:**
+- Existing usage of top-level props is byte-identical (purely additive).
+- Storefront H sections show no leading-edge blank during fast horizontal flings even when V `renderMultiplier=0.25`.
+- PerfHood per-section render-range readout reflects per-section overrides.
+
+**Deps:** none (independent of H-3 mechanically; landed together because both touch the H windowing prop plumbing).
 
 ---
 
@@ -1289,7 +1397,8 @@ METRICS:      P5.1 (collection) → P5.2 (HUD) → P5.3 (traces)
 FEATURES:     F1.1 (diff engine) ✅ → F1.2 (snapshot API) ✅ → F1.3 (prefetch) ✅
               F2.1 (supplementary) ✅ → F2.2 (sticky) ✅ → F2.3 (sticky push) ✅ → F2.4 (decorations) ✅
               F3.1 (grid C++) ✅ → F3.2 (masonry C++) ✅ → F3.5 (flow C++) ✅
-              F3.3 (compositional) → F3.4 (orthogonal)
+              F3.3 (compositional) ✅ → F3.4 (orthogonal — superseded by H-2 sub-container) ✅
+              F3.6 (compositional with intermixed special sections) → F3.7 (sub-container as public extension point)
               F4.1–F4.4 (state persistence + scroll restore)
               F5.1 (Android) → F5.2 (Web / React Native Web)
                                                                     ↓
@@ -1340,6 +1449,10 @@ Alignment of shorter items within a row when `heightForItem` produces uneven hei
 - [ ] **R1: Hexagonal architecture review** — Audit the current layout engine ↔ LayoutCache ↔ ShadowNode ↔ native view boundaries. Ensure we have clean ports/adapters: LayoutEngine protocol (contract-first), LayoutCache as the shared port, ShadowNode as a layout-agnostic consumer. Verify no layer reaches into another's internals. Document the contract boundaries.
 
 - [ ] **Sticky supplementary view animations during MVC** — Section headers/footers that are actively sticking show a minor flicker during insert/delete mutations. Regular cells have LayoutAnimation support but supplementary views don't transition smoothly when their positions shift during MVC correction. Investigate adding LayoutAnimation or CATransaction-based animation for sticky view transform updates during mutations.
+
+- [ ] **Opt E: ShadowNode short-circuit** — Skip Phases 1-3 in `correctChildPositionsIfNeeded()` when children and cache version are unchanged. Low impact: ShadowNode only runs on Fabric commits (child mount/unmount), not every scroll tick, and most commits during scroll *do* change positions. Only saves ~30-60μs on commits triggered by non-position reasons (e.g. prop-only re-renders). Implement after profiling shows unnecessary ShadowNode work.
+
+- [ ] **Homepage/Storefront memory investigation** — Riff uses 62.5 MB (Homepage) and 72.3 MB (Storefront) vs FlashList's 78.8 / 50.2 MB. Storefront is the one screen where FlashList wins on memory. Likely causes: H-section mount/unmount churn, masonry S7 (60 items), per-type recycle pool overhead. Requires Instruments Allocations profiling on device — cannot diagnose from code alone.
 
 ### R2: Horizontal Grid — Fill Order (column-major vs row-major)
 
@@ -1523,10 +1636,14 @@ Frame N: Scroll event fires
 | P2.1 ✗ | YGMeasureFunc infeasible — leaf-node constraint; M4.2 (layoutSubviews) is equivalent |
 | P5.2 ✅ | Perf HUD — live FPS, blank area, cold mount rate, memory overlay |
 | P4.1 ✅ | Memory budget — os_proc_available_memory, pressure levels, automatic budget reduction |
-| F1.2 | Snapshot API — insert/delete/move with per-item animation, O(delta) reconciliation |
-| F2.3 | Sticky headers, UICollectionView-style — one instance repositioned, no duplication |
-| F3.3 | CompositionalLayout — list + grid + masonry + carousel in one scroll view |
+| F1.2 ✅ | Snapshot API — insert/delete/move with per-item animation, O(delta) reconciliation |
+| F2.3 ✅ | Sticky headers, UICollectionView-style — one instance repositioned, no duplication |
+| F3.3 ✅ | CompositionalLayout — list + grid + masonry + flow + H sections in one scroll view |
+| F3.4 ✅ | Orthogonal sections — H-2 sub-container framework (`RNCollectionSubContainer`) |
+| F3.6 | Compositional as flow-with-interludes — primary feed + special blocks at named anchors |
+| F3.7 | Sub-container as public extension point — TS + C++ custom layouts via `setAttributesBatch` |
+| F3.8 | Per-section + decoupled V/H windowing knobs — `hRenderMultiplier` top-level + `renderMultiplier`/`mountedWindowSize`/`measureAhead` on `SectionConfig` |
 | F4.3 | State restoration — navigate away and back, exact position on frame 0 |
-| P6.2 | **Full FlashList comparison on release build — the money shot** |
+| P6.2 ✅ | **Full FlashList comparison on release build — the money shot** (Riff dominates Search; wins Min/p5 FPS + Active Mounts everywhere) |
 | F5.1 | Android port — same C++ engine, cross-platform |
 | DOC.1 | Complete solution document with all optimizations and design decisions |

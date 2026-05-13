@@ -1,5 +1,6 @@
 #include "CollectionViewModule.h"
 
+#include <chrono>
 #include <limits>
 #include <unordered_map>
 
@@ -472,10 +473,12 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           }
           bool sectioned = !sections.empty();
 
-          // Read scroll offset + velocity from LayoutCache (set by native scrollViewDidScroll:)
-          auto snapshot = _layoutCache->getScrollOffsetAndVelocity();
+          // Opt D: Read scroll offset + velocity + version in a single lock
+          // (was 2 locks: getScrollOffsetAndVelocity + version).
+          auto snapshot = _layoutCache->getScrollSnapshotWithVersion();
           double scrollPrimary = isHoriz ? snapshot.offset.x : snapshot.offset.y;
           double velocity = snapshot.velocity;
+          int32_t curVersion = static_cast<int32_t>(snapshot.version);
 
           // Flat-index computation — mirrors JS attrToFlatIndex()
           auto toFlatIdx = [&](const rncv::LayoutAttributes& a) -> int {
@@ -498,7 +501,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
           // Helper: return an empty result with just the current cache version
           auto makeEmpty = [&]() -> Value {
-            double ver = static_cast<double>(_layoutCache->version());
+            double ver = static_cast<double>(curVersion);
             Object r(rt);
             r.setProperty(rt, "renderFirst",  Value(0));
             r.setProperty(rt, "renderLast",   Value(-1));
@@ -513,11 +516,6 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
           };
 
           if (vpPrimary <= 0.0 || itemCount == 0) return makeEmpty();
-
-          // ── Opt 6: Stable-band early return ────────────────────────────
-          // If cacheVersion is unchanged and scroll offset is within the band
-          // where the integer ranges wouldn't change, return cached result.
-          int32_t curVersion = static_cast<int32_t>(_layoutCache->version());
           if (curVersion == _lastScrollResult.cacheVersion &&
               scrollPrimary >= _lastScrollResult.bandLow &&
               scrollPrimary <= _lastScrollResult.bandHigh) {
@@ -560,9 +558,14 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
           if (sorted) {
             // ── Sorted-layout path: O(log n) binary search, zero struct copies ──
+            // Opt D: both render + visible searches in a single lock (was 2 locks).
             double renderLo = scrollPrimary - abovePad;
             double renderHi = scrollPrimary + vpPrimary + belowPad;
-            auto rRange = _layoutCache->findRangeByPrimary(renderLo, renderHi, isHoriz);
+            auto dualRange = _layoutCache->findDualRangeByPrimary(
+                renderLo, renderHi,
+                scrollPrimary, scrollPrimary + vpPrimary,
+                isHoriz);
+            auto& rRange = dualRange.render;
             if (rRange.firstIdx < 0) return makeEmpty();
             rFirst = rRange.firstIdx;
             rLast  = rRange.lastIdx;
@@ -571,7 +574,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             blankLastPos   = rRange.lastPos;
             blankLastSize  = rRange.lastSize;
 
-            auto vRange = _layoutCache->findRangeByPrimary(scrollPrimary, scrollPrimary + vpPrimary, isHoriz);
+            auto& vRange = dualRange.visible;
             vFirst = vRange.firstIdx >= 0 ? vRange.firstIdx : rFirst;
             vLast  = vRange.lastIdx  >= 0 ? vRange.lastIdx  : rLast;
           } else {
@@ -623,7 +626,8 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
             mLast  = mr.last;
           }
 
-          double ver = static_cast<double>(_layoutCache->version());
+          // Opt D: reuse version from initial snapshot (same JS thread, no interleaving).
+          double ver = static_cast<double>(curVersion);
 
           // ── Blank area ────────────────────────────────────────────────────
           double blankBefore = 0.0, blankAfter = 0.0;
@@ -690,7 +694,7 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
     // processHScroll(sectionIndex, scrollX, vpWidth, renderMult,
     //                sectionY, sectionHeight, flatBase, itemCount)
-    //   → { renderFirst, renderLast }
+    //   → { renderFirst, renderLast, frames?, framesFirst?, cacheVersion? }
     //
     // Computes the H-axis render range for a single orthogonal section.
     // Called from JS on every onHScroll event from RNOrthogonalSectionView.
@@ -699,6 +703,14 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
     // × H render window (scrollX ± renderMult*vpWidth), then clamps to the section's
     // flat index range [flatBase, flatBase+itemCount). This correctly excludes items
     // from adjacent V-sections that share the same X coordinates.
+    //
+    // H-1: After the range is determined, this function bulk-reads frames for
+    // [renderFirst, renderLast] under a single mutex acquisition and returns
+    // them as a packed flat [x, y_section_local, w, h, ...] array. Y values are
+    // section-local (frame.y - sectionY) so they remain valid even if MVC
+    // corrections shift section.y above this section. JS uses this to bypass
+    // per-cell attributesForItem JSI calls — same Change C win that V cells get
+    // from processScroll's frames return.
     obj.setProperty(rt, "processHScroll",
       Function::createFromHostFunction(rt,
         PropNameID::forAscii(rt, "processHScroll"), 8,
@@ -722,17 +734,47 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
           if (vpWidth <= 0.0 || itemCount == 0) return makeEmpty(flatBase);
 
-          // Velocity-adaptive padding along H axis.
-          // H-sections don't yet write velocity to LayoutCache, so use a fixed
-          // multiplier. TODO: extend setScrollOffset to track per-section H velocity.
-          double pad = renderMult * vpWidth;
+          // H-3: Velocity-adaptive padding along the H axis.
+          // Track per-section (scrollX, wallClockMs) to derive px/ms velocity.
+          // Apply the same asymmetric lead/trail formula as V processScroll:
+          //   speed     = |velocity| in px/ms
+          //   leadBoost = min(1.5, speed) * renderMult
+          //   leadMult  = renderMult + leadBoost   (grow toward direction of travel)
+          //   trailMult = max(0.75, renderMult - leadBoost * 0.5)  (shrink behind)
+          // This guarantees the window is at least renderMult wide on the trailing
+          // side, while expanding up to 2.5× renderMult on the leading side at
+          // maximum velocity.
+          int sectionIdx = args[0].isNumber() ? static_cast<int>(args[0].getNumber()) : 0;
+
+          auto nowMs = static_cast<double>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+
+          auto& hState = _hScrollStates[sectionIdx];
+          if (hState.lastTimestampMs >= 0.0) {
+            double dt = nowMs - hState.lastTimestampMs;
+            if (dt > 0.5) {  // skip if < 0.5 ms apart (duplicate event noise)
+              hState.velocity = (scrollX - hState.lastScrollX) / dt;
+            }
+          }
+          hState.lastScrollX     = scrollX;
+          hState.lastTimestampMs = nowMs;
+
+          double speed     = std::abs(hState.velocity);
+          double leadBoost = std::min(1.5, speed) * renderMult;
+          double leadMult  = renderMult + leadBoost;
+          double trailMult = std::max(0.75, renderMult - leadBoost * 0.5);
+          bool   goingRight = hState.velocity >= 0.0;
+
+          double leftPad  = (goingRight ? trailMult : leadMult) * vpWidth;
+          double rightPad = (goingRight ? leadMult  : trailMult) * vpWidth;
 
           // Spatial rect: H render window × section V band.
           rncv::Rect queryRect = {
-            scrollX - pad,          // x (may be negative — clamped by getAttributesInRect)
-            sectionY,               // y
-            vpWidth + 2.0 * pad,    // width
-            sectionHeight           // height
+            scrollX - leftPad,                // x (may be negative — clamped inside getAttributesInRect)
+            sectionY,                         // y
+            vpWidth + leftPad + rightPad,     // width
+            sectionHeight                     // height
           };
 
           auto attrs = _layoutCache->getAttributesInRect(queryRect);
@@ -753,9 +795,29 @@ Value CollectionViewModule::getWindowControllerObject(Runtime& rt) {
 
           if (rFirst == std::numeric_limits<int>::max()) return makeEmpty(flatBase);
 
+          // H-1: Bulk-read frames for [rFirst, rLast] under a single mutex acquisition.
+          // getFramesForFlatRangeWithVersion returns y in V-absolute coords (as stored
+          // in LayoutCache after CompositionalLayout::finalizeHSection shifts H-section
+          // item Y to V-absolute for processScroll spatial queries). We subtract
+          // sectionY here to convert to section-local for the renderCell consumer —
+          // section-local y is invariant under V-section reflows that change section.y.
+          auto fwv = _layoutCache->getFramesForFlatRangeWithVersion(rFirst, rLast);
+          // Convert y to section-local in place. Layout: [x, y, w, h, x, y, w, h, ...]
+          for (size_t i = 1; i < fwv.frames.size(); i += 4) {
+            fwv.frames[i] -= sectionY;
+          }
+
+          // Pack frames into a JSI Array (matches processScroll's pattern).
+          auto frameArr = Array(rt, fwv.frames.size());
+          for (size_t i = 0; i < fwv.frames.size(); ++i)
+            frameArr.setValueAtIndex(rt, i, Value(fwv.frames[i]));
+
           Object r(rt);
-          r.setProperty(rt, "renderFirst", Value(rFirst));
-          r.setProperty(rt, "renderLast",  Value(rLast));
+          r.setProperty(rt, "renderFirst",  Value(rFirst));
+          r.setProperty(rt, "renderLast",   Value(rLast));
+          r.setProperty(rt, "frames",       Value(rt, std::move(frameArr)));
+          r.setProperty(rt, "framesFirst",  Value(rFirst));
+          r.setProperty(rt, "cacheVersion", Value(static_cast<double>(fwv.version)));
           return Value(rt, r);
         }));
 

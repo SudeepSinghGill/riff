@@ -61,7 +61,11 @@ import NativeCollectionViewModule from './NativeCollectionViewModule';
 import RNMeasuredCell from './RNMeasuredCellNativeComponent';
 import RNScrollCoordinatedView from './RNScrollCoordinatedViewNativeComponent';
 import RNCollectionViewContainer from './RNCollectionViewContainerNativeComponent';
+// H-2: replaced by RNCollectionSubContainer (generic native sub-container with
+// internal UIScrollView and native frame/transform application). Old wrapper
+// kept available behind the flag for fallback debugging only.
 import RNOrthogonalSectionView from './RNOrthogonalSectionNativeComponent';
+import RNCollectionSubContainer from './RNCollectionSubContainerNativeComponent';
 import type { HSectionMeta } from '@riff/layouts/compositional';
 import { RiffSnapshot } from './CollectionSnapshot';
 import { SlotManager } from './SlotManager';
@@ -175,12 +179,23 @@ const nativeMod = NativeCollectionViewModule as unknown as {
       frames?: number[]; framesFirst?: number;
     };
     // Phase 2: H-section render range computation from scroll offset.
+    // H-1: Returns the same range as before, plus a packed frame array
+    // (flat [x, y_section_local, w, h] per flat index in [framesFirst, framesFirst+N-1])
+    // and the cache version at sample time. JS uses these to skip per-cell
+    // attributesForItem JSI calls in renderCell for H cells. Frame Y is
+    // section-local (relative to section.y) so it's invariant under V-section
+    // reflows from MVC corrections above this section.
+    // frames/framesFirst are absent when no items intersect (renderLast < renderFirst).
     processHScroll(
       sectionIndex: number, scrollX: number,
       vpWidth: number, renderMult: number,
       sectionY: number, sectionHeight: number,
       flatBase: number, itemCount: number,
-    ): { renderFirst: number; renderLast: number };
+    ): {
+      renderFirst: number; renderLast: number;
+      frames?: number[]; framesFirst?: number;
+      cacheVersion?: number;
+    };
   };
 };
 const nativeWindowController = nativeMod.windowController;
@@ -208,6 +223,13 @@ export interface SectionConfig<T> {
     sticky?: boolean;
   };
   insets?: { top?: number; bottom?: number; left?: number; right?: number };
+
+  // H-3.5: Per-section windowing overrides.
+  // Precedence for H sections: section.renderMultiplier ?? hRenderMultiplier ?? renderMultiplier ?? 0.5
+  // Precedence for V sections: section.renderMultiplier ?? renderMultiplier ?? 0.5
+  renderMultiplier?: number;
+  mountedWindowSize?: number;
+  measureAhead?: number;
 }
 
 export interface SectionedRenderItemInfo<T> {
@@ -355,6 +377,20 @@ export interface RiffProps<T = unknown> {
    * the visible area. Default 1.0 → total render window = 3× viewport.
    */
   renderMultiplier?: number;
+
+  /**
+   * H-3.5 — Render multiplier used specifically for horizontal sections.
+   * Decouples the H window size from the V window size so you can tune them
+   * independently. For example, a long feed can use renderMultiplier={0.25}
+   * for V efficiency while horizontal carousels use hRenderMultiplier={1.0}
+   * so they never show a blank leading edge.
+   *
+   * Precedence for H sections:
+   *   section.renderMultiplier ?? hRenderMultiplier ?? renderMultiplier ?? 0.5
+   *
+   * Defaults to renderMultiplier (backward-compatible — same behaviour as before).
+   */
+  hRenderMultiplier?: number;
 
   /**
    * M3.5 — Maximum mounted content expressed as a viewport-height multiple.
@@ -635,6 +671,12 @@ const RNCV_DEBUG_LOGS = false;
 // measuredHeightForItem lookups, processScroll ranges, onScroll events.
 // Keep false in normal development; enable only to debug insert/delete/correction bugs.
 const RNCV_MVC_TRACE = false;
+
+// H-1 debug: 1-second JS-thread health summary.
+// Logs renders/sec, cv bumps/sec, handleHScroll calls/sec per section, and
+// rAF gaps (JS thread blocked). Filter "RNCV-H-DIAG" in the log stream.
+// Kept available behind this flag for future H-section gesture/scroll debugging.
+const RNCV_HGEST_DIAG = false;
 
 function rncvMvcTrace(msg: string) {
   if (!__DEV__ || !RNCV_MVC_TRACE) return;
@@ -944,6 +986,7 @@ export function Riff<T = unknown>({
   sectionInsetLeft = 0,
   sectionInsetRight = 0,
   renderMultiplier = 0.5,
+  hRenderMultiplier: hRenderMultiplierProp,
   mountedWindowSize = 2.0,
   measureAhead = 0,
   initialNumToRender = 10,
@@ -974,6 +1017,61 @@ export function Riff<T = unknown>({
   initialHeight,
   maintainVisibleContentPosition = false,
 }: RiffProps<T>) {
+
+  // ── H-1 debug: 1-second JS health summary ──────────────────────────────────
+  // Counts per second (flushed via setInterval from inside an effect):
+  //   renders: every Riff() call increments this counter
+  //   cvBumps: setLayoutCacheVersion calls (each one triggers a full re-render)
+  //   hScrolls per section: handleHScroll calls
+  //   rafGapsMs: requestAnimationFrame gaps > 32ms (JS thread blocked)
+  // Filter "RNCV-H-DIAG" in the log stream to see this summary.
+  const diagRef = useRef({
+    renders:    0,
+    cvBumps:    0,
+    hScrolls:   new Map<number, number>(),
+    rafGapsMs:  [] as number[],
+    lastRafTs:  0,
+  });
+  if (__DEV__ && RNCV_HGEST_DIAG) {
+    diagRef.current.renders++;
+  }
+  useEffect(() => {
+    if (!__DEV__ || !RNCV_HGEST_DIAG) return;
+    let rafId = 0;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    const tick = () => {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      const last = diagRef.current.lastRafTs;
+      if (last > 0) {
+        const gap = now - last;
+        if (gap > 32) diagRef.current.rafGapsMs.push(gap);
+      }
+      diagRef.current.lastRafTs = now;
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    intervalId = setInterval(() => {
+      const d = diagRef.current;
+      const hParts: string[] = [];
+      d.hScrolls.forEach((v, k) => hParts.push(`s${k}=${v}`));
+      const gapStr = d.rafGapsMs.length === 0
+        ? 'none'
+        : `[${d.rafGapsMs.map(g => g.toFixed(0)).join(',')}]`;
+      // eslint-disable-next-line no-console
+      console.log(
+        `RNCV-H-DIAG renders=${d.renders}/s cvBumps=${d.cvBumps}/s ` +
+        `hScrolls={${hParts.join(',') || 'none'}} rafGaps>32ms=${gapStr}`,
+      );
+      d.renders = 0;
+      d.cvBumps = 0;
+      d.hScrolls.clear();
+      d.rafGapsMs = [];
+    }, 1000);
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, []);
 
   // ── Section flattening ──────────────────────────────────────────────────────
   // If `sections` is provided, flatten to a flat item array. The rest of the
@@ -1170,6 +1268,24 @@ export function Riff<T = unknown>({
   }, []);
   const effectiveMountedWindowSize = mountedWindowSize * memoryMultiplier;
 
+  // H-3.5: Resolved H multiplier — falls back to V renderMultiplier when not set.
+  // All H section windowing uses this instead of renderMultiplier directly.
+  const hRenderMultiplier = hRenderMultiplierProp ?? renderMultiplier;
+
+  // H-3.5: Per-section windowing override map, built from sections[].
+  // Maps sectionIndex → the section's own renderMultiplier (when set).
+  // Used by handleHScroll and the initial H-range computation in scrollContent.
+  const sectionWindowingOverrides = useMemo(() => {
+    const map = new Map<number, { renderMultiplier?: number }>();
+    const secs = propSections ?? (propData !== undefined ? [{ key: '__single', data: propData }] : []);
+    secs.forEach((sec, idx) => {
+      if (sec.renderMultiplier !== undefined) {
+        map.set(idx, { renderMultiplier: sec.renderMultiplier });
+      }
+    });
+    return map;
+  }, [propSections, propData]);
+
   // ── Phase 5: ShadowNode ↔ LayoutCache bridge ──────────────────────────────
   // layoutCacheId: opaque ID registered in CollectionViewModule's static registry.
   // ShadowNode looks up the shared LayoutCache during layout() via this ID.
@@ -1177,6 +1293,28 @@ export function Riff<T = unknown>({
   // changes (e.g. after heightForItem seeding or batch measurement updates).
   const layoutCacheId = nativeMod.layoutCacheId;
   const [layoutCacheVersion, setLayoutCacheVersion] = useState(0);
+
+  // H-section windowing: per-section horizontal render ranges.
+  // Updated by handleHScroll when processHScroll returns a changed range.
+  // hRangeVersion bumps trigger re-render so SlotManager can exclude H items
+  // outside their section's H viewport.
+  //
+  // H-1: Each entry also carries the packed frame data returned by processHScroll
+  // (flat [x, y_section_local, w, h] for indices in [framesFirst, framesFirst+N-1])
+  // plus gen + cacheVersion bookkeeping for staleness detection. renderCell
+  // reads cell width/height/x/y from this map for H cells, eliminating the
+  // per-cell attributesForItem JSI call. Equivalent to V cells' frameDataRef
+  // fast path. Y is section-local — invariant under V-section reflows above.
+  type HRangeEntry = {
+    first: number;
+    last: number;
+    frames?: number[];
+    framesFirst?: number;
+    gen: number;
+    cacheVersion: number;
+  };
+  const hRenderRangesRef = useRef(new Map<number, HRangeEntry>());
+  const [hRangeVersion, setHRangeVersion] = useState(0);
 
   // Stable renderItem wrapper for MemoizedCellContent.
   // Keeps the latest consumer function in a ref so memo's prop comparison
@@ -1238,17 +1376,11 @@ export function Riff<T = unknown>({
   // Reads from LayoutCache (ShadowNode writes Yoga-measured heights there).
   const measuredHeightForItemRef = useRef<(index: number, section: number) => number | undefined>(() => undefined);
   measuredHeightForItemRef.current = (index: number, section: number): number | undefined => {
-    // Read the canonical key from the single source of truth: layoutContext.sections[s].itemKeys.
-    // This is the same array passed to C++ as params.keys — guaranteed to match what LayoutCache stores.
-    // DO NOT reconstruct the key here (sectionKey prefix + propKeyExtractor call) — that caused a
-    // regression when Opt 4+7 rewrote this callback without knowing about the prefix format.
-    // The closure captures layoutContext from the render scope; by the time prepare() calls this
-    // callback, layoutContext has already been computed (prepare useMemo depends on it).
-    const sectionKeys = layoutContext?.sections[section]?.itemKeys;
-    const kPrefix = effectiveLayout.keyPrefixForSection
-      ? effectiveLayout.keyPrefixForSection(section)
-      : (effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type);
-    const key = sectionKeys?.[index] ?? `${kPrefix}-${section}-${index}`;
+    // Delegate key construction to the layout engine — single source of truth.
+    // effectiveLayout.cacheKeyForItem matches what C++ writes to LayoutCache.
+    const key = effectiveLayout.cacheKeyForItem?.(index, section)
+      ?? (layoutContext?.sections[section]?.itemKeys?.[index]
+        ?? `${effectiveLayout.keyPrefixForSection?.(section) ?? (effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type)}-${section}-${index}`);
     const attr = nativeMod.layoutCache.getAttributes(key);
     return attr ? attr.frame.height : undefined;
   };
@@ -1327,6 +1459,9 @@ export function Riff<T = unknown>({
     // (pre-Yoga) would produce corrections based on estimate heights, not actual.
     // Sync version ref so scroll handler doesn't re-trigger.
     lastCacheVersionRef.current = nativeLayoutCache.version();
+    // Clear H render ranges — flat indices may have shifted after insert/delete.
+    // The proactive processHScroll(scrollX=0) in scrollContent will recompute them.
+    hRenderRangesRef.current.clear();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLayout, layoutContext]);
 
@@ -1348,6 +1483,7 @@ export function Riff<T = unknown>({
       const nv = nativeLayoutCache.version();
       if (nv !== lastCacheVersionRef.current) {
         lastCacheVersionRef.current = nv;
+        if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
         setLayoutCacheVersion(v => v + 1);
       }
     });
@@ -1513,6 +1649,7 @@ export function Riff<T = unknown>({
       const cacheVer = nativeLayoutCache.version();
       if (cacheVer !== lastCacheVersionRef.current) {
         lastCacheVersionRef.current = cacheVer;
+        if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
         setLayoutCacheVersion(v => v + 1);
       }
     }, 100);
@@ -1662,6 +1799,7 @@ export function Riff<T = unknown>({
 
     invalidateKeys: (keys: Iterable<string>) => {
       for (const k of keys) nativeLayoutCache.removeAttributes(k);
+      if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
       setLayoutCacheVersion(v => v + 1);
     },
   }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1771,6 +1909,7 @@ export function Riff<T = unknown>({
       const _lcvChanged = scrollResult.cacheVersion !== lastCacheVersionRef.current;
       if (_lcvChanged) {
         lastCacheVersionRef.current = scrollResult.cacheVersion;
+        if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
         setLayoutCacheVersion(v => v + 1);
       }
 
@@ -1930,21 +2069,66 @@ export function Riff<T = unknown>({
     ((s: number) => boolean) | undefined)?.bind(effectiveLayout);
   const hSectionInfoFn = ((effectiveLayout as any).hSectionInfo as
     ((s: number) => HSectionMeta | null) | undefined)?.bind(effectiveLayout);
-
   const handleHScroll = useCallback((event: any) => {
-    // Phase 2: onHScroll fires from RNOrthogonalSectionView on every H scroll tick.
-    // For now we log and call processHScroll (result unused — no H windowing yet).
-    // Phase 3 will update per-section H render ranges here.
+    // onHScroll fires from RNCollectionSubContainer (H-2) — adapted via
+    // handleHSubScroll defined after this callback. Previously fired from
+    // RNOrthogonalSectionView.
+    // processHScroll returns the windowed H render range for this section,
+    // plus a packed frame array (H-1) that renderCell uses to skip per-cell
+    // attributesForItem JSI calls for H cells.
+    //
+    // Always overwrite the stored entry — even if the range didn't change,
+    // the frame data may have updated (cacheVersion bump from a Yoga
+    // measurement) and renderCell's H fast path needs the latest frames.
+    // We only bump hRangeVersion (which forces a React re-render) when the
+    // range actually changes, preserving the existing render-trigger semantics.
     if (!viewportWidth) return;
     const { sectionIndex, scrollX } = event.nativeEvent;
+    if (__DEV__ && RNCV_HGEST_DIAG) {
+      const m = diagRef.current.hScrolls;
+      m.set(sectionIndex, (m.get(sectionIndex) ?? 0) + 1);
+    }
     const meta = hSectionInfoFn?.(sectionIndex);
     if (!meta || !meta.itemCount) return;
-    nativeWindowController.processHScroll(
-      sectionIndex, scrollX, viewportWidth, renderMultiplier,
+    // H-3.5: Section-specific override → hRenderMultiplier → renderMultiplier.
+    const sectionMult = sectionWindowingOverrides.get(sectionIndex)?.renderMultiplier
+      ?? hRenderMultiplier;
+    const result = nativeWindowController.processHScroll(
+      sectionIndex, scrollX, viewportWidth, sectionMult,
       meta.sectionY, meta.sectionHeight, meta.flatBase, meta.itemCount,
     );
+    const prev = hRenderRangesRef.current.get(sectionIndex);
+    hRenderRangesRef.current.set(sectionIndex, {
+      first: result.renderFirst,
+      last: result.renderLast,
+      frames: result.frames,
+      framesFirst: result.framesFirst,
+      gen: renderGenRef.current,
+      cacheVersion: result.cacheVersion ?? lastCacheVersionRef.current,
+    });
+    const rangeChanged = !prev || prev.first !== result.renderFirst || prev.last !== result.renderLast;
+    if (__DEV__ && RNCV_HGEST_DIAG) {
+      // eslint-disable-next-line no-console
+      console.log(`RNCV-H-GEST [s${sectionIndex}] handleHScroll x=${scrollX.toFixed(1)} ` +
+        `range=${result.renderFirst}..${result.renderLast} ` +
+        `frames=${result.frames?.length ?? 0} cw=${meta.contentWidth.toFixed(1)} ` +
+        `cv=${result.cacheVersion ?? 'n/a'} bumpRender=${rangeChanged}`);
+    }
+    if (rangeChanged) {
+      setHRangeVersion(v => v + 1);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewportWidth, renderMultiplier, hSectionInfoFn]);
+  }, [viewportWidth, hRenderMultiplier, sectionWindowingOverrides, hSectionInfoFn]);
+
+  // H-2: adapter that lets RNCollectionSubContainer drive the same windowing
+  // logic as the old RNOrthogonalSectionView. The new event payload includes
+  // both scrollX and scrollY; for horizontal sub-containers we only need scrollX.
+  const handleHSubScroll = useCallback((event: any) => {
+    handleHScroll({ nativeEvent: {
+      sectionIndex: event.nativeEvent.sectionIndex,
+      scrollX: event.nativeEvent.scrollX,
+    }});
+  }, [handleHScroll]);
 
   // ── Sticky supplementary config for ScrollCoordinatedView ───────────────────
   // Build a map: flatIndex → { kind, naturalY, boundaryY, primaryAxisExtent }
@@ -2090,36 +2274,79 @@ export function Riff<T = unknown>({
     let frameX = 0;
     let frameY = 0;
 
-    // Change C: read width/height from the frame array returned by processScroll
-    // (single bulk JSI call) instead of making a per-cell JSI call here.
-    // Guards:
-    //  - gen === renderGen        — invalidates cache on extraData/layout/vpWidth changes.
-    //  - cacheVersion match       — invalidates cache on data-shape mutations
-    //                                (insert/delete/resize). prepare() runs synchronously
-    //                                in a useMemo above, so lastCacheVersionRef.current
-    //                                already reflects the post-mutation version when
-    //                                renderCell executes. Without this check, the OLD
-    //                                frame array would be re-indexed by NEW flat indices,
-    //                                handing items header/footer widths and vice versa.
-    const fd = frameDataRef.current;
+    // Early H-section detection: needed for both the H-cell fast path below
+    // and to choose the right Y semantic in containerStyle (section-local vs V-absolute).
+    const cellSectionIdxEarly = (fiDesc as any)?.sectionIndex ?? 0;
+    const isHCellEarly = !measureOnly && fiDesc?._kind === 'item' && !!isHSectionFn?.(cellSectionIdxEarly);
+
+    // Change C / H-1: read width/height/x/y from a packed frame array instead
+    // of making a per-cell attributesForItem JSI call.
+    //
+    //  - V cells use frameDataRef populated by processScroll (whole render range).
+    //  - H cells (H-1) use hRenderRangesRef[sectionIndex] populated by
+    //    processHScroll. H frames are stored in section-local Y so they remain
+    //    valid even when MVC reflows V sections above this section.
+    //
+    // Guards (both paths):
+    //  - gen === renderGen        — invalidates on extraData/layout/vpWidth changes.
+    //  - cacheVersion match       — invalidates on data-shape mutations
+    //                                (insert/delete/resize). prepare() runs
+    //                                synchronously in a useMemo above, so
+    //                                lastCacheVersionRef.current already reflects
+    //                                the post-mutation version when renderCell
+    //                                executes. Without this check, the OLD frame
+    //                                array would be re-indexed by NEW flat
+    //                                indices, handing items header/footer widths
+    //                                and vice versa.
     let frameSource: 'fd' | 'jsi' = 'jsi';
-    if (
-      fd &&
-      fd.gen === renderGen &&
-      fd.cacheVersion === lastCacheVersionRef.current &&
-      index >= fd.first &&
-      index < fd.first + (fd.frames.length >> 2)
-    ) {
-      frameSource = 'fd';
-      const off = (index - fd.first) * 4;
-      frameX = fd.frames[off];
-      frameY = fd.frames[off + 1];
-      const w = fd.frames[off + 2];
-      if (w > 0) cellWidth = w;
-      attrHeight = fd.frames[off + 3];
+    // frameYIsLocal: true when frameY came from the H fast path (section-local).
+    // false when from V fast path (V-absolute) or JSI fallback (V-absolute).
+    // Drives the containerStyle top semantic for H cells below.
+    let frameYIsLocal = false;
+
+    if (isHCellEarly) {
+      const hf = hRenderRangesRef.current.get(cellSectionIdxEarly);
+      if (
+        hf?.frames &&
+        hf.framesFirst !== undefined &&
+        hf.gen === renderGen &&
+        hf.cacheVersion === lastCacheVersionRef.current &&
+        index >= hf.framesFirst &&
+        index < hf.framesFirst + (hf.frames.length >> 2)
+      ) {
+        frameSource = 'fd';
+        frameYIsLocal = true;
+        const off = (index - hf.framesFirst) * 4;
+        frameX = hf.frames[off];
+        frameY = hf.frames[off + 1];  // section-local
+        const w = hf.frames[off + 2];
+        if (w > 0) cellWidth = w;
+        attrHeight = hf.frames[off + 3];
+      }
     } else {
-      // Fallback to JSI for indices outside the frame data range (e.g. sticky cells
-      // that lie outside [measureFirst, measureLast]).
+      const fd = frameDataRef.current;
+      if (
+        fd &&
+        fd.gen === renderGen &&
+        fd.cacheVersion === lastCacheVersionRef.current &&
+        index >= fd.first &&
+        index < fd.first + (fd.frames.length >> 2)
+      ) {
+        frameSource = 'fd';
+        const off = (index - fd.first) * 4;
+        frameX = fd.frames[off];
+        frameY = fd.frames[off + 1];
+        const w = fd.frames[off + 2];
+        if (w > 0) cellWidth = w;
+        attrHeight = fd.frames[off + 3];
+      }
+    }
+
+    if (frameSource === 'jsi') {
+      // Fallback to attributesForItem JSI for cases the fast path doesn't cover:
+      //   - V cells outside frameDataRef range (e.g. sticky cells outside [measureFirst, measureLast])
+      //   - H cells when hRenderRangesRef entry is stale or absent
+      //   - supplementaries (headers/footers) — never in the H frame array
       let attr = null;
       if (isSectioned) {
         if (fiDesc?._kind === 'header') {
@@ -2134,7 +2361,7 @@ export function Riff<T = unknown>({
       }
       if (attr) {
         frameX = attr.frame.x;
-        frameY = attr.frame.y;
+        frameY = attr.frame.y;  // V-absolute (LayoutCache stores V-absolute after finalizeHSection)
         cellWidth = attr.frame.width;
         attrHeight = attr.frame.height;
       }
@@ -2161,25 +2388,29 @@ export function Riff<T = unknown>({
         (fiDesc?._kind === 'header' || fiDesc?._kind === 'footer');
 
     // Phase 2: H-section cells (orthogonal sections in compositional layout).
-    // Cells inside RNOrthogonalSectionView need position: absolute with section-relative
-    // coordinates, since applyPositionsFromState only reaches direct container children.
-    // LayoutCache item frames have frame.y = sectionY + localY (V-absolute, for processScroll).
-    // Subtracting sectionOriginY (= sectionY from h-section-wrapper) gives the section-local Y.
+    //
+    // H-2: H-section cells are children of RNCollectionSubContainer, whose
+    // own ShadowNode reads cache positions and the iOS view applies frames
+    // natively via tag→view map (same model as the main container). Cells
+    // therefore need NO absolute positioning in JS — they live as flex
+    // children and get repositioned by the native side every state update.
+    //
+    // We still hint a width when the layout has computed one, so Yoga lays
+    // out content at the correct cross-axis size on first frame (before the
+    // ShadowNode's apply pass runs). Height is left unconstrained so Yoga
+    // can measure naturally; the sub-container ShadowNode reads that
+    // measured height back via Yoga's layout metrics on the next pass.
     const cellSectionIndex = fiDesc?.sectionIndex ?? 0;
     const isHSectionCell = !measureOnly && !!isHSectionFn?.(cellSectionIndex);
-    const sectionOriginY = isHSectionCell ? (hSectionInfoFn?.(cellSectionIndex)?.sectionY ?? 0) : 0;
 
     // Cells in horizontal layouts are always Yoga-measured (no height constraint).
     // Only supplementaries get their cross-axis height locked (engine computes full cross extent).
-    // Position (left, top) is set natively by ShadowNode applyPositionsFromState — not needed in JS
-    // (except for H-section cells which use CSS absolute positioning within RNOrthogonalSectionView).
+    // Position (left, top) is set natively by ShadowNode applyPositionsFromState — not needed in JS.
     const containerStyle: StyleProp<ViewStyle> = isHSectionCell ? [
       {
-        position: 'absolute' as const,
-        left: frameX,
-        top: frameY - sectionOriginY,  // convert V-absolute Y → section-local Y
-        ...(viewportWidth > 0 ? { width: cellWidth } : {}),
-        ...(attrHeight > 0 ? { height: attrHeight } : {}),
+        // H-2: no position:absolute. Frame applied natively by the
+        // CollectionSubContainerShadowNode.
+        ...(viewportWidth > 0 && cellWidth > 0 ? { width: cellWidth } : {}),
       },
     ] : [
       {
@@ -2234,6 +2465,10 @@ export function Riff<T = unknown>({
         </RNScrollCoordinatedView>
       );
     }
+
+    // H-section cell measurement is handled by ShadowNode grandchild iteration:
+    // correctChildPositionsIfNeeded() iterates RNOrthogonalSectionView children,
+    // reads Yoga-measured heights, and builds MVC deltas — no JS onLayout needed.
 
     return (
       <RNMeasuredCell
@@ -2300,24 +2535,19 @@ export function Riff<T = unknown>({
     const fd = isSectioned ? flattenResult?.flatData[index] : null;
     const sk = fd ? fd.sectionIndex : 0;
     const ik = fd && fd._kind === 'item' ? fd.itemIndex : index;
-    // Derive key without JSI: matches each layout engine's attributesForSupplementary format.
-    // list → "item-{s}-header", grid/masonry/flow → "{type}-{s}-header"
-    // compositional → per-section prefix via keyPrefixForSection()
-    const sectionPrefix = effectiveLayout.keyPrefixForSection
-      ? effectiveLayout.keyPrefixForSection(sk)
-      : (effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type);
+    // Delegate key construction to the layout engine — single source of truth.
+    // cacheKeyForSupplementary/cacheKeyForItem match what C++ writes to LayoutCache.
     if (fd?._kind === 'header') {
-      // Compositional layout owns supplementaries at the parent level:
-      // "comp-{section}-header". Non-compositional: "{prefix}-{section}-header".
-      const suppPrefix = effectiveLayout.type === 'compositional' ? 'comp' : sectionPrefix;
-      return `${suppPrefix}-${sk}-header`;
+      return effectiveLayout.cacheKeyForSupplementary?.('header', sk)
+        ?? `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sk}-header`;
     }
     if (fd?._kind === 'footer') {
-      const suppPrefix = effectiveLayout.type === 'compositional' ? 'comp' : sectionPrefix;
-      return `${suppPrefix}-${sk}-footer`;
+      return effectiveLayout.cacheKeyForSupplementary?.('footer', sk)
+        ?? `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sk}-footer`;
     }
-    const sectionKeys = layoutContext?.sections[sk]?.itemKeys;
-    return sectionKeys?.[ik] ?? `${sectionPrefix}-${sk}-${ik}`;
+    return effectiveLayout.cacheKeyForItem?.(ik, sk)
+      ?? (layoutContext?.sections[sk]?.itemKeys?.[ik]
+        ?? `${effectiveLayout.keyPrefixForSection?.(sk) ?? (effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type)}-${sk}-${ik}`);
   };
 
   let effFirst = 0;
@@ -2348,9 +2578,7 @@ export function Riff<T = unknown>({
         const fi = stickyHeaderFlatIndices[i]!;
         const sd = isSectioned ? flattenResult?.flatData[fi] : null;
         const attr = (isSectioned && sd?._kind === 'header')
-          ? nativeMod.layoutCache.getAttributes(
-              `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sd.sectionIndex}-header`,
-            )
+          ? effectiveLayout.attributesForSupplementary('header', sd.sectionIndex)
           : effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
         const pos = attr
           ? (isHoriz ? attr.frame.x : attr.frame.y)
@@ -2376,9 +2604,7 @@ export function Riff<T = unknown>({
         const fi = stickyFooterFlatIndices[i]!;
         const sd = isSectioned ? flattenResult?.flatData[fi] : null;
         const attr = (isSectioned && sd?._kind === 'footer')
-          ? nativeMod.layoutCache.getAttributes(
-              `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sd.sectionIndex}-footer`,
-            )
+          ? effectiveLayout.attributesForSupplementary('footer', sd.sectionIndex)
           : effectiveLayout.attributesForItem(isSectioned ? ((sd as any)?.itemIndex ?? fi) : fi, isSectioned ? (sd?.sectionIndex ?? 0) : 0);
         const pos = attr
           ? (isHoriz ? attr.frame.x : attr.frame.y)
@@ -2428,6 +2654,62 @@ export function Riff<T = unknown>({
     slotManagerRef.current.maxPoolSize =
       recyclePoolSize !== undefined ? recyclePoolSize : Math.max(smLast - smFirst + 1, 4);
 
+    // H-section windowing: build exclusion set for items outside their H viewport.
+    // Items in an H section that are within the V render range but outside the
+    // H render range don't get slots — they're released to the recycle pool.
+    //
+    // We only initialize an entry when none exists (first render or after
+    // prepare() clears the map on data-shape mutations). On every actual H
+    // scroll tick, handleHScroll overwrites the entry with the current
+    // scrollX result — that path is the authority for window updates.
+    //
+    // CRITICAL: do NOT recompute here when the entry is "stale" by gen/
+    // cacheVersion. cacheVersion bumps on every Yoga measurement, and a
+    // recompute at scrollX=0 would wipe the user's actual H scroll position
+    // (we don't track per-section scrollX in JS, so we can't recompute
+    // meaningfully). renderCell's H fast path already gates on
+    // gen+cacheVersion and falls through to JSI when frames are stale, so
+    // frame freshness is handled there — windowing is independent.
+    let hExcludeIndices: Set<number> | undefined;
+    if (isHSectionFn && hSectionInfoFn && layoutContext) {
+      const sectionCount = layoutContext.sections.length;
+      for (let sIdx = 0; sIdx < sectionCount; sIdx++) {
+        if (!isHSectionFn(sIdx)) continue;
+        const meta = hSectionInfoFn(sIdx);
+        if (!meta || !meta.itemCount) continue;
+
+        let hRange = hRenderRangesRef.current.get(sIdx);
+        if (!hRange && viewportWidth > 0) {
+          // First render for this section: compute initial window at scrollX=0
+          // so windowing applies immediately — no 1-frame all-items-mounted.
+          // H-3.5: use the section-specific multiplier if provided.
+          const initMult = sectionWindowingOverrides.get(sIdx)?.renderMultiplier
+            ?? hRenderMultiplier;
+          const result = nativeWindowController.processHScroll(
+            sIdx, 0, viewportWidth, initMult,
+            meta.sectionY, meta.sectionHeight, meta.flatBase, meta.itemCount,
+          );
+          hRange = {
+            first: result.renderFirst,
+            last: result.renderLast,
+            frames: result.frames,
+            framesFirst: result.framesFirst,
+            gen: renderGenRef.current,
+            cacheVersion: result.cacheVersion ?? lastCacheVersionRef.current,
+          };
+          hRenderRangesRef.current.set(sIdx, hRange);
+        }
+        if (!hRange) continue;
+
+        for (let fi = meta.flatBase; fi < meta.flatBase + meta.itemCount; fi++) {
+          if (fi < hRange.first || fi > hRange.last) {
+            if (!hExcludeIndices) hExcludeIndices = new Set<number>();
+            hExcludeIndices.add(fi);
+          }
+        }
+      }
+    }
+
     const activeSlots: Map<string, SlotInfo<any>> = slotManagerRef.current.sync(
       smFirst,
       smLast,
@@ -2450,6 +2732,7 @@ export function Riff<T = unknown>({
       (i) => data[i],
       data.length,
       mountedStickySet,
+      hExcludeIndices,
     );
     coldMountCountRef.current += slotManagerRef.current.lastColdMounts;
 
@@ -2473,10 +2756,20 @@ export function Riff<T = unknown>({
         if (slot.dataIndex > maxIdx) maxIdx = slot.dataIndex;
       }
 
+      // Detect H-section cells early — needed for both cache invalidation and routing.
+      const slotFd = isSectioned ? (flattenResult?.flatData[slot.dataIndex]) : null;
+      const slotSectionIdx = (slotFd as any)?.sectionIndex ?? 0;
+      const slotKind: string = (slotFd as any)?._kind ?? 'item';
+      const slotIsHCell = !slot.isPooled && slotKind === 'item' && !!isHSectionFn?.(slotSectionIdx);
+
       // Opt 7: reuse element if slot state and render gen are unchanged.
       // item reference check mirrors React.memo semantics — if the consumer
       // produces a new object for a changed item, this misses and the cell
       // re-renders. See COLLECTIONVIEW_INTERNALS.md § "Consumer mutation contract".
+      //
+      // H-section cells: also check layoutCacheVersion. Their positions are set
+      // via CSS style (not ShadowNode), so they must re-render when the layout
+      // cache changes (e.g. after ShadowNode MVC reflows H-section heights).
       const prev = elementCacheRef.current.get(slotKey);
       let el: React.ReactElement;
       if (
@@ -2485,7 +2778,8 @@ export function Riff<T = unknown>({
         prev.dataKey     === slot.dataKey &&
         prev.cacheKey    === slot.cacheKey &&
         prev.measureOnly === slot.measureOnly &&
-        prev.item        === slot.item
+        prev.item        === slot.item &&
+        (!slotIsHCell || prev.lcv === layoutCacheVersion)
       ) {
         el = prev.element;
         _cacheHits++;
@@ -2495,7 +2789,7 @@ export function Riff<T = unknown>({
         elementCacheRef.current.set(slotKey, {
           gen: renderGen, dataKey: slot.dataKey, cacheKey: slot.cacheKey,
           measureOnly: slot.measureOnly,
-          item: slot.item, element: el,
+          item: slot.item, element: el, lcv: layoutCacheVersion,
         });
         _cacheMisses++;
       }
@@ -2504,10 +2798,7 @@ export function Riff<T = unknown>({
       // Pooled cells always go to the V array (they're measure-only, hidden).
       // Headers/footers stay in the V array — they are V-positioned above/below
       // the UIScrollView, not inside it.
-      const slotFd = isSectioned ? (flattenResult?.flatData[slot.dataIndex]) : null;
-      const slotSectionIdx = (slotFd as any)?.sectionIndex ?? 0;
-      const slotKind: string = (slotFd as any)?._kind ?? 'item';
-      if (!slot.isPooled && slotKind === 'item' && isHSectionFn?.(slotSectionIdx)) {
+      if (slotIsHCell) {
         const bucket = hSectionCells.get(slotSectionIdx) ?? [];
         bucket.push(el);
         hSectionCells.set(slotSectionIdx, bucket);
@@ -2532,20 +2823,29 @@ export function Riff<T = unknown>({
     effFirst = minIdx <= maxIdx ? minIdx : smFirst;
     effLast  = minIdx <= maxIdx ? maxIdx : smLast;
 
-    // ── Phase 2: Build RNOrthogonalSectionView wrappers for H-sections ────────
+    // ── Phase 2: Build sub-container wrappers for H-sections ──────────────────
+    // H-2: each H section is hosted inside RNCollectionSubContainer, which
+    // embeds its own UIScrollView and applies cell frames + transforms +
+    // opacity natively from a CollectionSubContainerShadowNode (no JS work
+    // in the per-frame apply path). The sub-container's onSubScroll event
+    // is mapped through handleHSubScroll so existing windowing logic keeps
+    // working unchanged (same handleHScroll under the hood).
     const hSectionWrappers: React.ReactElement[] = [];
     if (hSectionCells.size > 0) {
       for (const [sIdx, sectionCells] of hSectionCells) {
         const meta = hSectionInfoFn?.(sIdx);
         hSectionWrappers.push(
-          <RNOrthogonalSectionView
+          <RNCollectionSubContainer
             key={`h-section-${sIdx}`}
+            layoutCacheId={layoutCacheId}
             sectionIndex={sIdx}
+            scrollDirection="horizontal"
             contentWidth={meta?.contentWidth ?? 0}
-            onHScroll={handleHScroll}
+            contentHeight={meta?.sectionHeight ?? 0}
+            onSubScroll={handleHSubScroll}
           >
             {sectionCells}
-          </RNOrthogonalSectionView>
+          </RNCollectionSubContainer>
         );
       }
     }
