@@ -1316,6 +1316,16 @@ export function Riff<T = unknown>({
   const hRenderRangesRef = useRef(new Map<number, HRangeEntry>());
   const [hRangeVersion, setHRangeVersion] = useState(0);
 
+  // Tracks which H section indices had at least one cell in the V render
+  // window on the previous render. Used in the H-windowing block of
+  // scrollContent to detect sections that are re-entering after being
+  // V-scrolled away — those sections' RNCollectionSubContainer view was
+  // recycled, contentOffset.x reset to 0 by prepareForRecycle, but the
+  // cached hRange still points at the user's old scrollX. Clearing the
+  // entry on re-entry forces a fresh `processHScroll(scrollX=0, ...)`
+  // computation so the wrapper renders the correct cells immediately.
+  const prevHSectionsRenderedRef = useRef<Set<number>>(new Set());
+
   // Stable renderItem wrapper for MemoizedCellContent.
   // Keeps the latest consumer function in a ref so memo's prop comparison
   // always sees the same function reference — even if the consumer passes a
@@ -2671,12 +2681,32 @@ export function Riff<T = unknown>({
     // gen+cacheVersion and falls through to JSI when frames are stale, so
     // frame freshness is handled there — windowing is independent.
     let hExcludeIndices: Set<number> | undefined;
+    const currHSectionsRendered = new Set<number>();
     if (isHSectionFn && hSectionInfoFn && layoutContext) {
       const sectionCount = layoutContext.sections.length;
+      const prevHSet = prevHSectionsRenderedRef.current;
       for (let sIdx = 0; sIdx < sectionCount; sIdx++) {
         if (!isHSectionFn(sIdx)) continue;
         const meta = hSectionInfoFn(sIdx);
         if (!meta || !meta.itemCount) continue;
+
+        // Detect whether this H section has ANY items in the V render range
+        // [smFirst, smLast]. Sections that re-enter after being scrolled away
+        // had their wrapper recycled by Fabric and their UIScrollView's
+        // contentOffset.x reset to 0 via prepareForRecycle — the cached
+        // hRange would still describe the user's previous scrollX position
+        // and the section would render with the wrong (off-screen) cells.
+        // Clear the entry on re-entry so the !hRange branch below recomputes
+        // a fresh window for scrollX=0.
+        const sectionStartFi = meta.flatBase;
+        const sectionEndFi   = meta.flatBase + meta.itemCount - 1;
+        const isInVRange     = !(sectionEndFi < smFirst || sectionStartFi > smLast);
+        if (isInVRange) {
+          currHSectionsRendered.add(sIdx);
+          if (!prevHSet.has(sIdx)) {
+            hRenderRangesRef.current.delete(sIdx);
+          }
+        }
 
         let hRange = hRenderRangesRef.current.get(sIdx);
         if (!hRange && viewportWidth > 0) {
@@ -2708,6 +2738,8 @@ export function Riff<T = unknown>({
           }
         }
       }
+      // Snapshot the current set for next render's re-entry detection.
+      prevHSectionsRenderedRef.current = currHSectionsRendered;
     }
 
     const activeSlots: Map<string, SlotInfo<any>> = slotManagerRef.current.sync(

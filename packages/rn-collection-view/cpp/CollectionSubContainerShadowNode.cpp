@@ -57,7 +57,14 @@ void CollectionSubContainerShadowNode::correctChildPositionsIfNeeded() {
   correctedBoundingRect_ = Rect{};
 
   if (children.empty()) {
-    correctedContentSize_ = Size{};
+    // Use props if present; the defensive retain in updateStateIfNeeded picks
+    // up the slack for any axis that's still zero. We deliberately do NOT
+    // collapse to Size{} here because that would tear down the scrollview's
+    // bounds before the next valid layout pass arrives.
+    correctedContentSize_ = Size{
+      props.contentWidth  > 0 ? props.contentWidth  : 0,
+      props.contentHeight > 0 ? props.contentHeight : 0,
+    };
     return;
   }
 
@@ -279,8 +286,30 @@ void CollectionSubContainerShadowNode::updateStateIfNeeded() {
 
   bool changed = false;
 
-  if (state.contentSize != correctedContentSize_) {
-    state.contentSize = correctedContentSize_;
+  // Defensive contentSize: never collapse a previously-valid axis to zero.
+  //
+  // Symptoms this prevents:
+  //   - H bounce snap at the right edge: contentSize.width briefly shrinks ->
+  //     UIScrollView re-clamps contentOffset to (newWidth - vpWidth) ->
+  //     bounce-back animation snaps to the new (smaller) target.
+  //   - H gesture-stuck after right-edge bounce: contentSize.width <= vpWidth
+  //     -> UIScrollView disables horizontal scroll entirely on that axis.
+  //
+  // Causes the shrink existed at all: props.contentWidth/Height transiently 0
+  // (when JS meta is null momentarily during a re-render race), or the
+  // children-empty early return writing Size{}. We trust state.contentSize as
+  // the running source of truth — a zero value means "no signal this pass",
+  // not "set the scrollview to zero".
+  Size targetSize = correctedContentSize_;
+  if (targetSize.width  <= 0 && state.contentSize.width  > 0) {
+    targetSize.width = state.contentSize.width;
+  }
+  if (targetSize.height <= 0 && state.contentSize.height > 0) {
+    targetSize.height = state.contentSize.height;
+  }
+
+  if (state.contentSize != targetSize) {
+    state.contentSize = targetSize;
     changed = true;
   }
 

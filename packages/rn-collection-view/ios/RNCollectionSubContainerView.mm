@@ -151,10 +151,17 @@ using namespace facebook::react;
   }
 
   // Apply content size hints from props (layout.contentSize()).
+  //
+  // We track _propContentSize unconditionally so it can serve as the fallback
+  // in updateState:, but we only apply it to _scrollView.contentSize when both
+  // dimensions are strictly positive. A zero-or-negative dim would collapse
+  // the scrollview's scroll bounds and lock out gestures on that axis until
+  // the next valid prop arrives — visible to the user as "scrollview just
+  // doesn't think it can scroll" after a transient zero prop.
   CGSize newSize = CGSizeMake((CGFloat)p.contentWidth, (CGFloat)p.contentHeight);
   if (!CGSizeEqualToSize(newSize, _propContentSize)) {
     _propContentSize = newSize;
-    if (_scrollView) {
+    if (_scrollView && newSize.width > 0 && newSize.height > 0) {
       _scrollView.contentSize = newSize;
       _contentView.frame = CGRectMake(0, 0, newSize.width, newSize.height);
     }
@@ -242,17 +249,22 @@ using namespace facebook::react;
 
   const auto &data = _state->getData();
 
-  // Apply content size to scroll view if scrollable AND only when it
-  // actually changed. Touching _scrollView.contentSize or _contentView.frame
-  // mid-gesture re-clamps the active scroll's contentOffset and disrupts the
-  // bounce-back animation — visible as snap/cut on H bounce. The CGSize
-  // equality guard already protected scrollView.contentSize; the matching
-  // guard now also wraps _contentView.frame, which used to run unconditionally.
+  // Apply content size to scroll view ONLY when both dims are strictly
+  // positive AND it actually changed. Touching _scrollView.contentSize or
+  // _contentView.frame mid-gesture re-clamps contentOffset and disrupts the
+  // bounce-back animation. Applying a zero dim disables the scroll axis and
+  // locks the gesture out — visible after a right-edge bounce as "scrollview
+  // just doesn't think it can scroll".
+  //
+  // _propContentSize (from updateProps:) is the fallback when state contentSize
+  // hasn't been written yet; if both signals are still zero we keep the last
+  // valid _scrollView.contentSize untouched.
   if (_scrollView) {
     CGSize cs = CGSizeMake(data.contentSize.width, data.contentSize.height);
     if (cs.width <= 0)  cs.width  = _propContentSize.width;
     if (cs.height <= 0) cs.height = _propContentSize.height;
-    if (!CGSizeEqualToSize(_scrollView.contentSize, cs)) {
+    if (cs.width > 0 && cs.height > 0 &&
+        !CGSizeEqualToSize(_scrollView.contentSize, cs)) {
       _scrollView.contentSize = cs;
       _contentView.frame = CGRectMake(0, 0, cs.width, cs.height);
     }
