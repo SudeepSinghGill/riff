@@ -393,6 +393,31 @@ void CollectionSubContainerShadowNode::correctChildPositionsIfNeeded() {
     cache->endBatch();
   }
 
+  // ── Phase 4.5: Refresh section size from cache after measurement cascade ──
+  //
+  // cacheSectionSize was captured at the top of this function, before any
+  // measurement processing. CompositionalLayout::applyMeasurements (Phase 4)
+  // calls invalidateSectionsFrom → computeOneSectionFromCache →
+  // finalizeHSection, which rewrites h-section-wrapper-{N} with the
+  // now-correct cross-axis height. Without this refresh, resolveContentSize()
+  // returns the stale pre-measurement height and the iOS sub-container view
+  // frame stays at the initial estimate — the symptom visible as B0.1 (section
+  // height stuck at estimatedCrossAxisHeight on first paint) and B0.4 #2/#3
+  // (vertical scroll leaking after mutation, resize delayed until next scroll).
+  if (!deltas.empty() && cache) {
+    const auto wrapperKey = std::string("h-section-wrapper-") +
+                            std::to_string(props.sectionIndex);
+    if (const auto wa = cache->getAttributes(wrapperKey)) {
+      ySectionShift           = static_cast<Float>(wa->frame.y);
+      cacheSectionSize.height = static_cast<Float>(wa->frame.height);
+    }
+    const auto cwKey = std::string("h-section-cw-") +
+                       std::to_string(props.sectionIndex);
+    if (const auto ca = cache->getAttributes(cwKey)) {
+      cacheSectionSize.width = static_cast<Float>(ca->frame.width);
+    }
+  }
+
   // ── Phase 5: Compute content size + bounding rect ────────────────────────
   //
   // Content size MUST be the layout-declared total extent — the section's
