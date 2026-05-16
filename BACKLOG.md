@@ -1,0 +1,328 @@
+# Riff — Consolidated Backlog
+
+> Single source of truth for all remaining work. Replaces cursor-plan.md, ethereal-seeking-willow.md, PERF-PLAN.md, and perf-opti-claude.md (archived in `docs/archived-plans/`).
+>
+> Priority ordering: B0 (bugs) > B1 (architecture) > B2 (features) > B3 (API) > B4 (perf) > B5 (docs) > B6 (state) > B7 (polish) > B8 (testing) > B9 (platform)
+
+---
+
+## B0 — CompositionalLab / Compositional Demo Bugs
+
+Fix before building new features. Some may be subsumed by B1 items — tag during triage.
+
+### B0.1 S1 List H — section height much larger than max item height
+
+Section renders taller than its tallest item. Scrolling 2+ viewports causes it to resize to the correct height. Likely the known H-list cross-axis height bounce (layout starts from `estimatedCrossAxisHeight`, grows as items measure, then settles). May be subsumed by **L-1** (drop locked style.width for H list cells).
+
+### B0.2 Resize and Update mutation buttons not working
+
+Pressing "Resize" or "Update" in the toolbar has no visible effect. `resizeFirst` toggles `item.expanded` (which adds an expanded content block to the cell). `updateFirst` appends ` *` to the label and rotates the color. The state mutation fires (`setSectionDatas`), but the rendered cells may not re-render due to memo/slot caching or `extraData` reference not propagating correctly to cell re-render.
+
+**Investigation:** Check whether `extraData` change triggers `renderGen` bump. Check if `React.memo` on cell content blocks the re-render when item reference changes within the same slot.
+
+### B0.3 S4 Masonry V — all items same height (looks like a grid)
+
+Root cause is in CompositionalLab.tsx line 305: `heightForItem: () => 100` — hardcoded fixed height for all items. Should return variable heights based on item content (short/medium/long detail text) to demonstrate the masonry waterfall effect. Fix: derive height from item data or remove `heightForItem` to let Yoga measure.
+
+### B0.4 S3 Grid H — multiple issues
+
+1. **Item heights much smaller than row heights.** Grid H has `rowHeight: 80` but items render smaller. Cells may not be filling the row height.
+2. **Vertical scroll indicator / vertical scrolling.** After insert/delete mutations, the section's sub-container shows a vertical scroll indicator and allows vertical scrolling — should be horizontal only. Likely the content size exceeds the container cross-axis height after mutations.
+3. **Delayed resize.** Pressing resize doesn't take effect until the list is scrolled slightly. Suggests the mutation fires but the Fabric commit / layout invalidation is deferred until the next scroll event triggers a re-layout.
+
+### B0.5 S6 "Control" section — clarify purpose
+
+S6 is a list-V section with **no chrome** — no sticky header, no footer, no section background. It exists as a baseline/control group: behavior here proves the layout works without any decoration overhead. Not a bug, but should be documented with a visible label in the Lab UI (e.g. "S6 List V (no chrome — control)").
+
+---
+
+## B1 — Architecture (correctness that removes hacks)
+
+### B1.1 L-7: Push measured cell size as explicit Yoga dimension
+
+After Yoga first measures a cell intrinsically, the layout engine writes the measured `(w, h)` back as an explicit Yoga constraint on subsequent commits. Yoga then respects the explicit value instead of re-measuring — eliminates sub-pixel non-determinism (cell heights flipping 343/344 across commits). Drop the explicit dimension on cell-key change / content-version bump so real content changes re-run intrinsic measurement exactly once.
+
+**Subsumes:** H-2.1.1 section-level hysteresis hack, all `std::ceil` workarounds, the iOS scroll-view-frame busy-guard. This is how FlashList/RecyclerListView/UICollectionViewCompositionalLayout all work.
+
+**Effort:** ~2d
+
+### B1.2 L-1/L-2/L-3: Layout intent violations — let Yoga measure what it should
+
+| Layout | Problem | Fix |
+|---|---|---|
+| H list (L-1) | `style.width` locked from `estimatedItemHeight` | Drop the style. Engine reads Yoga's intrinsic width, cascades cumulative X positions. |
+| H grid (L-2) | `style.width` locked from `rowHeight` | Engine derives column width from `max(measured width)` per column. |
+| V flow (L-3) | `style.width` locked from `sizeForItem.width` | Cells render naked. Engine packs into rows from measured widths. |
+
+**Subsumes:** ethereal #3 (H-list cross-axis height bounce), ethereal #4 (H-list S[0] header half height). May also fix B0.1.
+
+**Effort:** ~3d total
+
+### B1.3 L-4: Rename size config APIs to "estimated"
+
+`itemHeight`, `rowHeight`, `sizeForItem` etc. imply fixed/deterministic — they're all estimates. Rename to `estimatedItemHeight` (where not already), document the "estimates only" contract.
+
+**Effort:** ~0.5d
+
+### B1.4 Decouple measureAhead from isVariableHeight
+
+`isVariableHeight` gates whether `measureAhead` is passed to `processScroll`. A list using `itemHeight` (fixed) with `measureAhead > 0` should still pre-measure. Three locations in CollectionView.tsx need `isVariableHeight && measureAhead > 0` → `measureAhead > 0`.
+
+**Source:** PERF-PLAN.md "Correctness Fixes > Fix 1"
+
+**Effort:** trivial
+
+---
+
+## B2 — High-Impact Features
+
+### B2.1 F1.1: C++ diff engine
+
+Key-based diff, runs off main thread. `diff(oldKeys, newKeys) → { inserted, removed, moved }`. O(n) for pure insertions/deletions; O(n log n) for moves.
+
+**Effort:** ~1d
+
+### B2.2 F1.2: Snapshot API (complete)
+
+NSDiffableDataSourceSnapshot-style identity-based mutation API. Partially implemented in `CollectionSnapshot.ts`. Complete: `appendItems`, `deleteItems`, `moveItem`, `reloadItems`, `apply()` with diff + animation.
+
+**Effort:** ~1d
+
+### B2.3 F1.2b: Enter/exit cell animations
+
+Deleted cells: keep mounted briefly, animate opacity→0 + collapse, then unmount. Inserted cells: mount at opacity 0, animate to 1 + expand. "Pending removal" queue in the cell renderer.
+
+**Effort:** ~1.5d
+
+### B2.4 F1.2c: UICollectionView-parity coordinated batch animations
+
+Per-item animation types (fade, slide, custom). Interruptible spring physics. Coordinated batch: inserts, deletes, and moves animate simultaneously. Visual parity with `UICollectionViewDiffableDataSource.apply(snapshot, animatingDifferences: true)`.
+
+**Effort:** ~2d
+
+### B2.5 F3.6: Interludes
+
+`{ primary, interludes }` API shape — one flat feed + special sections anchored by key/index. Pure JS splitter on top of existing compositional engine. No native changes. See PLAN.md F3.6 for full spec.
+
+**Effort:** ~1.5d
+
+### B2.6 H-6: Snap behaviors
+
+UIKit-style `orthogonalScrollingBehavior` modes: paging, groupPaging, groupPagingCentered on H sections. Snap points via `UIScrollView.decelerationRate` + `scrollViewWillEndDragging:withVelocity:targetContentOffset:`.
+
+**Effort:** ~1d
+
+---
+
+## B3 — API & Quality
+
+### B3.1 API review
+
+Comprehensive review of the public API surface before any external sharing:
+- Naming consistency (props, callbacks, layout config)
+- Prop shapes and defaults
+- ScrollView callback surface (hoist to top-level vs `scrollViewProps` pass-through)
+- Type alignment (`RiffProps` in example vs `CollectionViewProps` in src/types)
+- Package export: re-export `CollectionView` from `src/index.ts` when React hoisting is solved
+- Breaking-change surface assessment
+- Demo cleanup: remove `containerH` / `onContentSizeChange` wiring from horizontal demos
+
+**Source:** PERF-PLAN.md "API/packaging audit", user request
+
+**Effort:** ~1-2d
+
+### B3.2 Cross-section sticky headers
+
+Sticky header that stays pinned across multiple sections (e.g. a date header spanning a day's worth of sections). Not currently possible — sticky headers are per-section only.
+
+**Effort:** TBD (design first)
+
+### B3.3 F3.7: Sub-container as public extension point
+
+Document + export the H-2 `RNCollectionSubContainer` framework so consumers can write custom layouts (TS or C++) that get free native frame/transform application. C++ port of one H-2 layout (e.g. `hex`) as reference for native custom layouts.
+
+**Effort:** ~0.5d
+
+---
+
+## B4 — Residual Perf
+
+### B4.1 Main container ShadowNode short-circuit
+
+Same pattern as H-4b for sub-containers. Cache `{childTags hash, cacheVersion}` and skip `correctChildPositionsIfNeeded` when nothing changed. Helps during idle and inertial deceleration.
+
+**Effort:** ~0.5d
+
+### B4.2 Investigate spurious Yoga deltas on repeat scroll
+
+vLCV is 2-15/sec even when scrolling through already-measured content. Batch mode reduced N→1 per commit, but the commits themselves shouldn't have deltas on repeat scroll. Possible causes: sub-pixel Yoga measurement drift, H sub-container recycling. L-7 may eliminate this entirely.
+
+**Effort:** ~0.5d (investigation)
+
+### B4.3 H-cell LCV memo removal
+
+Line ~3008 in CollectionView.tsx: `(!slotIsHCell || prev.lcv === layoutCacheVersion)` invalidates ALL H cells on every LCV bump. Post-H-2, sub-container ShadowNode handles positioning natively. This check may be unnecessary, causing `hCellCount x vLCV_bumps` wasted re-renders/sec.
+
+**Effort:** ~0.25d
+
+### B4.4 Guard unconditional setContentHeight
+
+Line ~1649: `setContentHeight(layoutContentHeight)` always called, even when value is same. React does eager bailout for same-value setState, but should guard like the H-6 path does.
+
+**Effort:** trivial
+
+### B4.5 Opt 3: Transform-based cell positioning
+
+Replace `setFrame:` with `layer.transform = CATransform3DMakeTranslation(x, y, 0)` in `applyPositionsFromState:`. For position-only changes, avoids UIView layout pass. Requires `hitTest:withEvent:` override on `_contentView`. Deferred during earlier perf work — revisit if native positioning shows up in profiles.
+
+**Source:** PERF-PLAN.md Opt 3
+
+**Effort:** ~1d
+
+### B4.6 Opt 5: Flat arrays from spatial queries
+
+For layouts with `needsSpatialQuery: true`, change `getAttributesInRect` to return `Float64Array` instead of JSI objects. Eliminates ~300 JSI property constructions. Only needed if custom spatial-query layouts prove to be a bottleneck.
+
+**Source:** PERF-PLAN.md Opt 5
+
+**Effort:** ~0.5d
+
+---
+
+## B5 — Documentation
+
+### B5.1 HLD + LLDs
+
+| Doc | Covers |
+|---|---|
+| `docs/HLD.md` | 5 pillars expanded, trade-offs, design rules |
+| `docs/lld/LayoutCache.md` | Single source of truth, version tracking, spatial index |
+| `docs/lld/ShadowNode.md` | Fabric reordering bug, tag map, single source of truth, container state |
+| `docs/lld/ScrollPath.md` | 5-layer pipeline, C++/JS split, renderGen discipline |
+| `docs/lld/Recycling.md` | Three identities (cacheKey/slotKey/dataKey), element cache |
+| `docs/lld/Compositional.md` | Key generation, two-level supplementary, interludes |
+| `docs/lld/MVC.md` | Anchor lifecycle, programmaticScroll, stash |
+| `docs/lld/HSections.md` | Section-local frames, sub-container framework, ChildVisualState |
+
+**Effort:** ~2.5d
+
+### B5.2 Shareable artifacts
+
+- `README.md` refresh (elevator + install + hello world)
+- `docs/ARCHITECTURE.md` refresh (5-pillar overview with diagrams)
+- `docs/BENCHMARKS.md` (P6.2 + post-H5 numbers, methodology)
+- `docs/FlashList-Comparison.md` (feature matrix + perf matrix)
+- `docs/GLOSSARY.md` (cacheKey, slotKey, dataKey, flatIndex, fingerprint, MVC, etc.)
+
+**Effort:** ~1d
+
+### B5.3 Contributor + optimization docs
+
+- `docs/Contributing-Layouts.md` (walkthrough to add a new layout)
+- `docs/OPTIMIZATIONS.md` (one section per Opt 1-7 + H-1 through H-5)
+
+**Effort:** ~0.5d
+
+---
+
+## B6 — State Persistence & Restoration
+
+### B6.1 F4.1: Layout cache serialization (JSON)
+
+Serialize LayoutCache to disk. JSON format (temporary). MMKV via JSI. Cache key: SHA1(listId + dataHash + viewportWidth + layoutConfig).
+
+### B6.2 F4.2: Scroll position persistence (native iOS)
+
+`setContentOffset:animated:NO` synchronously on viewWillAppear from NSUserDefaults.
+
+### B6.3 F4.3: Full restoration sequence
+
+Wire F4.1 + F4.2 with data validation + cache diff.
+
+### B6.4 F4.4: FlatBuffers serialization
+
+Replace JSON with FlatBuffers. Zero-copy mmap hydration. 10k items: serialize < 3ms, deserialize < 0.1ms.
+
+**Total effort:** ~3.5d
+
+---
+
+## B7 — Layout Polish
+
+### B7.1 Flow justification
+
+Leading / center / trailing / spaceBetween / spaceEvenly.
+
+### B7.2 Flow item weight/stretching
+
+### B7.3 Grid rowAlignment
+
+Top / center / bottom for uneven `heightForItem` rows.
+
+### B7.4 H-masonry fix
+
+All items render same size in H mode. Pre-existing, needs investigation.
+
+### B7.5 L-5/L-6: Demo updates + supplementary deliberation
+
+Add H list/H grid resize test to RiffDemo. Deliberate on whether the two-level supplementary model in compositional is the right design.
+
+### B7.6 MVC should anchor on resize
+
+Container resize (orientation change, split view) should trigger MVC correction to keep the visible item anchored. Currently MVC only activates on data mutations.
+
+**Source:** PERF-PLAN.md "Known Issues #3"
+
+### B7.7 Separator toggle scroll position shifts
+
+Toggling separators on/off while scrolled causes scroll position jumps. MVC anchor correction doesn't fully compensate for separator height deltas.
+
+**Source:** PERF-PLAN.md "Known Issues #1"
+
+### B7.8 apply() removeAttributes key format mismatch
+
+`apply()` calls `removeAttributes(key)` using raw keyExtractor IDs (e.g. `"s0-5"`), but LayoutCache stores entries under prefixed keys (e.g. `"sticky-identity:s0-5"`). Removal is always a no-op. Currently harmless because fingerprint-based `cache.clear()` wipes everything.
+
+**Source:** PERF-PLAN.md "Known Issues #5"
+
+### B7.9 Duplicate item at s[0][0] after insert/delete
+
+Two instances of the same item stacked at the same position. Seen once, not fully diagnosed. Possible SlotManager edge case or LayoutAnimation overlap.
+
+**Source:** PERF-PLAN.md "Known Issues #4"
+
+---
+
+## B8 — Testing
+
+### B8.1 T1.1: C++ unit tests
+
+GoogleTest for all layout engines + LayoutCache. Empty section, single item, fixed/dynamic height, multi-section, insets, sticky, separators, backgrounds, spatial queries, invalidation.
+
+### B8.2 T1.2: TS layout wrapper tests
+
+Jest tests for list.ts, grid.ts, masonry.ts, flow.ts. Stable key rule compliance, prepare() params, attributesForItem fallbacks.
+
+**Total effort:** ~3d
+
+---
+
+## B9 — Cross-Platform
+
+### B9.1 F5.1: Android port
+
+CMakeLists wired to existing `cpp/`. TurboModule registration in Kotlin. All M1-M3 test screens pass on Android emulator.
+
+**Effort:** ~5d+
+
+### B9.2 F5.2: Web port (React Native Web)
+
+JS-only fallbacks for C++ JSI calls. ScrollView → DOM scroll container. Fabric components → DOM equivalents.
+
+**Effort:** ~3d+
+
+---
+
+## Completed Work Reference
+
+See `PLAN.md` for the full history of completed milestones (Phases 0-5, P1-P5, F2, F3.1-F3.5, H-1 through H-5, all Opts, all perf work). Archived plans in `docs/archived-plans/` contain detailed context for each completed item.

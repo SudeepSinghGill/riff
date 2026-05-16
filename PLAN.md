@@ -6,6 +6,8 @@ Graceful degradation: RN 0.76+ (new arch, Activity absent).
 **Ordering principle:** Performance, speed, memory, stability, metrics, and traces FIRST.
 Features second. Research last. Documentation closes it out.
 
+> **All remaining work is tracked in [`BACKLOG.md`](BACKLOG.md).** This file is now a record of completed milestones. Archived plans (cursor-plan.md, ethereal-seeking-willow.md, PERF-PLAN.md, perf-opti-claude.md) are in `docs/archived-plans/`.
+
 ---
 
 ## ✅ Completed Milestones
@@ -55,9 +57,9 @@ Features second. Research last. Documentation closes it out.
 
 ---
 
-## 🔥 Phase P1 — C++ Window Controller on UI Thread
+## ✅ Phase P1 — C++ Window Controller on UI Thread
 
-> **Priority: HIGHEST.** The single hottest path. Every scroll event flows through here.
+> **DONE.** `processScroll` is a single batched C++ JSI call. Binary search for sorted layouts (Opt 1), batched call (Opt 2), stable-band skip (Opt 6), incremental render (Opt 7), SlotManager recycling (Opt 4) all shipped. See `docs/archived-plans/PERF-PLAN.md` for full optimization history.
 
 ### P1.1 — Window controller → C++ JSI module
 
@@ -197,7 +199,9 @@ Instrument the example app with structured traces for release-build profiling.
 
 ---
 
-## Phase P6 — FlashList Comparison (Release Build)
+## ✅ Phase P6 — FlashList Comparison (Release Build)
+
+> **DONE.** P6.1 comparison demo shipped (7 tabs). P6.2 device measurement completed (iPhone 15 Pro). Bench 2 (post H-4/H-5) results: Riff dominates Storefront, Homepage, SRP on min FPS, p5 FPS, active mounts. Fling ↑ Storefront regression from Bench 1 is fixed (60 = 60).
 
 ### P6.1 — FlashList comparison demo
 
@@ -386,7 +390,7 @@ Objective performance characterization on real hardware.
 
 ---
 
-## Phase F1 — Data Layer (Features)
+## Phase F1 — Data Layer (Features) _(remaining work → BACKLOG.md B2.1–B2.4)_
 
 ### F1.1 — Diff engine (C++)
 
@@ -494,7 +498,7 @@ dataSource.onEvict = (keys) => { /* cancel, release */ }
 
 ---
 
-## Phase F2 — Supplementary Views & Sticky Headers
+## ✅ Phase F2 — Supplementary Views & Sticky Headers
 
 ### F2.1 — Non-sticky supplementary views
 
@@ -572,7 +576,7 @@ Data-free views: section backgrounds, separators.
 
 ---
 
-## Phase F3 — Additional Layout Types
+## Phase F3 — Additional Layout Types _(F3.1–F3.5 ✅, F3.6–F3.8 → BACKLOG.md)_
 
 ### F3.1 — GridLayout (C++)
 
@@ -753,7 +757,7 @@ The H-2 `RNCollectionSubContainer` + `CollectionSubContainerShadowNode` + `Child
 
 **Deps:** H-2 ✅, DOC.1.
 
-### F3.8 — Per-section + decoupled V/H windowing knobs _(planned, paired with H-3)_
+### F3.8 — Per-section + decoupled V/H windowing knobs ✅ DONE (shipped as H-3.5)
 
 **Motivation (Bench 1, 2026-05-13):** All windowing knobs (`renderMultiplier`, `mountedWindowSize`, `measureAhead`) are top-level CollectionView props applied uniformly to V and H paths. `SectionConfig` has no windowing fields. Storefront's `renderMultiplier={0.25}` (tuned for V efficiency) collapses every H section to `pad = 0.25 * vpWidth`, which contributes to user-observed "H windowing too tight" alongside the missing velocity boost. Real apps need V tight + H wide, and individual sections (hero banner vs dense H carousel vs always-off-screen footer block) have different cost profiles that one global multiplier can't express.
 
@@ -777,7 +781,7 @@ The H-2 `RNCollectionSubContainer` + `CollectionSubContainerShadowNode` + `Child
 
 ---
 
-## Phase F4 — State Persistence & Restoration
+## Phase F4 — State Persistence & Restoration _(→ BACKLOG.md B6)_
 
 ### F4.1 — Layout cache serialization (JSON scaffold)
 
@@ -854,7 +858,7 @@ Replace JSON with FlatBuffers. Zero-copy mmap hydration.
 
 ---
 
-## Phase F5 — Cross-Platform
+## Phase F5 — Cross-Platform _(→ BACKLOG.md B9)_
 
 ### F5.1 — Android port
 
@@ -898,7 +902,7 @@ Port to React Native Web using the same TS component layer.
 
 ---
 
-## Phase T1 — Testing (Unit + Integration)
+## Phase T1 — Testing (Unit + Integration) _(→ BACKLOG.md B8)_
 
 UTs and ITs for every component in the list view, UI or otherwise.
 
@@ -1330,7 +1334,7 @@ Two compounding issues:
 
 ---
 
-## Phase DOC — Documentation
+## Phase DOC — Documentation _(→ BACKLOG.md B5)_
 
 ### DOC.1 — Solution document (HLD, LLD, optimizations)
 
@@ -1642,7 +1646,7 @@ Frame N: Scroll event fires
 | F3.4 ✅ | Orthogonal sections — H-2 sub-container framework (`RNCollectionSubContainer`) |
 | F3.6 | Compositional as flow-with-interludes — primary feed + special blocks at named anchors |
 | F3.7 | Sub-container as public extension point — TS + C++ custom layouts via `setAttributesBatch` |
-| F3.8 | Per-section + decoupled V/H windowing knobs — `hRenderMultiplier` top-level + `renderMultiplier`/`mountedWindowSize`/`measureAhead` on `SectionConfig` |
+| F3.8 ✅ | Per-section + decoupled V/H windowing knobs — shipped as H-3.5 |
 | F4.3 | State restoration — navigate away and back, exact position on frame 0 |
 | P6.2 ✅ | **Full FlashList comparison on release build — the money shot** (Riff dominates Search; wins Min/p5 FPS + Active Mounts everywhere) |
 | F5.1 | Android port — same C++ engine, cross-platform |
