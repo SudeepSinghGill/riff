@@ -228,6 +228,54 @@ float CompositionalLayout::finalizeHSection(
   return sectionH;
 }
 
+// ── refreshHSectionWrapperHeight ──────────────────────────────────────────────
+//
+// Re-derives the wrapper height from the current item frames in the cache.
+// Called by CollectionSubContainerShadowNode after applyMeasurements so that
+// the wrapper stays in sync with real Yoga heights even when applyMeasurements'
+// internal thresholds suppressed a full recompute via invalidateSectionsFrom.
+//
+// Items in H sections are stored at V-shifted Y positions (finalizeHSection
+// applied contentCursorY to each item).  We subtract wrapper.frame.y to get
+// the section-local cross-axis extent, matching what finalizeHSection computes
+// when it calls from local-Y space.
+// static
+void CompositionalLayout::refreshHSectionWrapperHeight(
+    LayoutCache& cache, int sectionIndex) {
+
+  const auto wrapperKey = std::string("h-section-wrapper-") +
+                          std::to_string(sectionIndex);
+  auto wrapper = cache.getAttributes(wrapperKey);
+  if (!wrapper) return; // non-compositional sub-container; skip
+
+  const double wrapperY = wrapper->frame.y;
+
+  // Scan all items for this section across the full H content extent.
+  auto hItems = cache.getAttributesInRect({
+      -1e5, wrapperY, 2e5, 1e5
+  });
+
+  float maxCrossExtent = 0.0f;
+  for (const auto& a : hItems) {
+    if (a.section != sectionIndex || a.isDecoration || a.isSupplementary) continue;
+    float extent = static_cast<float>((a.frame.y - wrapperY) + a.frame.height);
+    if (extent > maxCrossExtent) maxCrossExtent = extent;
+  }
+
+  // Preserve existing height if no measured items were found yet.
+  float rawSectionH = maxCrossExtent > 0.0f
+      ? std::ceil(maxCrossExtent)
+      : wrapper->frame.height;
+
+  // Same 2pt hysteresis as finalizeHSection: suppresses gesture-cancelling
+  // scroll-view frame changes caused by Yoga sub-pixel measurement drift.
+  if (std::abs(rawSectionH - wrapper->frame.height) < 2.0f) return;
+
+  auto updated = *wrapper;
+  updated.frame.height = rawSectionH;
+  cache.setAttributes(updated);
+}
+
 // ── computeOneSection / computeOneSectionFromCache ─────────────────────────────
 //
 // Two-level supplementary system:

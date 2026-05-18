@@ -98,6 +98,17 @@ public:
       const std::vector<MeasurementDelta>& deltas,
       LayoutCache& cache) override;
 
+  /**
+   * Re-derives h-section-wrapper-{sectionIndex}.frame.height from the current
+   * state of item frames in the cache.  Called by the sub-container ShadowNode
+   * after applyMeasurements so the wrapper stays in sync with real Yoga heights
+   * even when applyMeasurements' thresholds suppressed a full recompute.
+   *
+   * Early-returns if the wrapper key is absent (non-compositional sub-containers
+   * — radial/spiral/carousel3D — carry their size via props, not this key).
+   */
+  static void refreshHSectionWrapperHeight(LayoutCache& cache, int sectionIndex);
+
   ContentDimension contentDeterminedDimension() const override {
     // Phase 1: vertical-only. Sub-engines may determine height or both.
     // Return Both to be safe: the ShadowNode sends the most useful deltas.

@@ -1,6 +1,7 @@
 #include "CollectionSubContainerShadowNode.h"
 #include "CollectionViewModule.h"
 #include "LayoutEngine.h"
+#include "layouts/CompositionalLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -374,6 +375,17 @@ void CollectionSubContainerShadowNode::correctChildPositionsIfNeeded() {
         correctedChildren_[i].h = static_cast<Float>(reread.frames[i * 4 + 3]);
       }
     }
+
+    // Refresh h-section-wrapper-{N} height directly from current item frames.
+    // applyMeasurements' 0.5pt threshold and finalizeHSection's 2pt hysteresis
+    // can both suppress the wrapper rewrite when deltas are below-threshold or
+    // when _sectionInfos hasn't converged yet. The helper scans cached item
+    // frames and updates only frame.height — no reflow, no cascade overhead.
+    // Phase 4.5 below then re-reads the updated value into cacheSectionSize.
+    cache->beginBatch();
+    CompositionalLayout::refreshHSectionWrapperHeight(*cache, props.sectionIndex);
+    cache->endBatch();
+
   } else if (!deltas.empty() && cache) {
     // No engine — write Yoga measurements back to cache directly.
     cache->beginBatch();
@@ -393,17 +405,12 @@ void CollectionSubContainerShadowNode::correctChildPositionsIfNeeded() {
     cache->endBatch();
   }
 
-  // ── Phase 4.5: Refresh section size from cache after measurement cascade ──
+  // ── Phase 4.5: Re-read section size into cacheSectionSize ───────────────
   //
-  // cacheSectionSize was captured at the top of this function, before any
-  // measurement processing. CompositionalLayout::applyMeasurements (Phase 4)
-  // calls invalidateSectionsFrom → computeOneSectionFromCache →
-  // finalizeHSection, which rewrites h-section-wrapper-{N} with the
-  // now-correct cross-axis height. Without this refresh, resolveContentSize()
-  // returns the stale pre-measurement height and the iOS sub-container view
-  // frame stays at the initial estimate — the symptom visible as B0.1 (section
-  // height stuck at estimatedCrossAxisHeight on first paint) and B0.4 #2/#3
-  // (vertical scroll leaking after mutation, resize delayed until next scroll).
+  // cacheSectionSize was captured at the top of this function before any
+  // measurement processing. refreshHSectionWrapperHeight (above) has now
+  // written the correct cross-axis height to h-section-wrapper-{N}. Re-read
+  // it here so resolveContentSize() returns the correct value this commit.
   if (!deltas.empty() && cache) {
     const auto wrapperKey = std::string("h-section-wrapper-") +
                             std::to_string(props.sectionIndex);
