@@ -105,6 +105,66 @@ std::shared_ptr<rncv::LayoutCache> layoutCacheForId(int32_t cacheId) {
 }
 
 // ── Scroll handler registry ───────────────────────────────────────────────────
+void invokeScrollHandler(int32_t cacheId, double x, double y, bool animated); // forward decl
+
+// ── Scroll helper ────────────────────────────────────────────────────────────
+// Core scroll-to-key logic shared by scrollToKey, scrollToIndexPath, scrollToSection.
+// Looks up attrs by key, computes target primary-axis offset (accounting for sticky
+// supplementary pin sizes derived from the cache), clamps, and invokes the handler.
+static void doScrollToKey(
+    const std::shared_ptr<rncv::LayoutCache>& cache,
+    int32_t cacheId,
+    const std::string& key,
+    bool isHoriz, double vpW, double vpH,
+    bool leadPin, bool trailPin,
+    const std::string& position,
+    double curScroll, bool animated) {
+
+  auto attrsOpt = cache->getAttributes(key);
+  if (!attrsOpt.has_value()) return;
+  const auto& attrs = attrsOpt.value();
+
+  double leadSz = 0.0, trailSz = 0.0;
+  if (leadPin || trailPin) {
+    const auto colon = key.find(':');
+    if (colon != std::string::npos) {
+      const std::string pfx = key.substr(0, colon + 1);
+      if (leadPin) {
+        auto h = cache->getAttributes(pfx + "header");
+        if (h) leadSz = isHoriz ? h->frame.width : h->frame.height;
+      }
+      if (trailPin) {
+        auto f = cache->getAttributes(pfx + "footer");
+        if (f) trailSz = isHoriz ? f->frame.width : f->frame.height;
+      }
+    }
+  }
+
+  const double primary = isHoriz ? attrs.frame.x : attrs.frame.y;
+  const double dim     = isHoriz ? attrs.frame.width : attrs.frame.height;
+  const double vp      = isHoriz ? vpW : vpH;
+
+  double target;
+  if (position == "start" || position == "top") {
+    target = primary - leadSz;
+  } else if (position == "end" || position == "bottom") {
+    target = primary - (vp - trailSz) + dim;
+  } else if (position == "center") {
+    target = primary - leadSz - ((vp - leadSz - trailSz) - dim) / 2.0;
+  } else { // "nearest"
+    const double visLead  = curScroll + leadSz;
+    const double visTrail = curScroll + vp - trailSz;
+    if (primary >= visLead && primary + dim <= visTrail) return; // already visible
+    target = (primary < visLead) ? (primary - leadSz) : (primary - (vp - trailSz) + dim);
+  }
+
+  auto sz = cache->getTotalContentSize();
+  const double maxP = std::max(0.0, (isHoriz ? sz.width : sz.height) - vp);
+  target = std::max(0.0, std::min(target, maxP));
+
+  invokeScrollHandler(cacheId, isHoriz ? target : 0.0, isHoriz ? 0.0 : target, animated);
+}
+
 // Container views register a callback so JS (nativeMod.scrollTo) can trigger
 // programmatic scrolling without direct coupling to the native view class.
 
@@ -951,6 +1011,109 @@ Value CollectionViewModule::get(Runtime& rt, const PropNameID& name) {
         const double  x       = args[1].asNumber();
         const double  y       = args[2].asNumber();
         const bool    animated = count > 3 ? args[3].getBool() : true;
+        invokeScrollHandler(cacheId, x, y, animated);
+        return Value::undefined();
+      });
+  }
+
+  // scrollToKey(cacheId, key, isHoriz, vpW, vpH, hasLeadPin, hasTrailPin, position, curScroll, animated)
+  if (prop == "scrollToKey") {
+    return Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "scrollToKey"), 10,
+      [](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count < 9) return Value::undefined();
+        const int32_t     cacheId   = static_cast<int32_t>(args[0].asNumber());
+        const std::string key       = args[1].getString(rt).utf8(rt);
+        const bool        isHoriz   = args[2].getBool();
+        const double      vpW       = args[3].asNumber();
+        const double      vpH       = args[4].asNumber();
+        const bool        leadPin   = args[5].getBool();
+        const bool        trailPin  = args[6].getBool();
+        const std::string position  = args[7].getString(rt).utf8(rt);
+        const double      curScroll = args[8].asNumber();
+        const bool        animated  = count > 9 ? args[9].getBool() : true;
+        auto cache = CollectionViewModule::getLayoutCacheForId(cacheId);
+        if (!cache) return Value::undefined();
+        doScrollToKey(cache, cacheId, key, isHoriz, vpW, vpH, leadPin, trailPin, position, curScroll, animated);
+        return Value::undefined();
+      });
+  }
+
+  // scrollToIndexPath(cacheId, section, item, isHoriz, vpW, vpH, hasLeadPin, hasTrailPin, position, curScroll, animated)
+  // Resolves (section, item) → key via O(1) reverse index, then scrolls.
+  if (prop == "scrollToIndexPath") {
+    return Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "scrollToIndexPath"), 11,
+      [](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count < 10) return Value::undefined();
+        const int32_t     cacheId   = static_cast<int32_t>(args[0].asNumber());
+        const int32_t     section   = static_cast<int32_t>(args[1].asNumber());
+        const int32_t     item      = static_cast<int32_t>(args[2].asNumber());
+        const bool        isHoriz   = args[3].getBool();
+        const double      vpW       = args[4].asNumber();
+        const double      vpH       = args[5].asNumber();
+        const bool        leadPin   = args[6].getBool();
+        const bool        trailPin  = args[7].getBool();
+        const std::string position  = args[8].getString(rt).utf8(rt);
+        const double      curScroll = args[9].asNumber();
+        const bool        animated  = count > 10 ? args[10].getBool() : true;
+        auto cache = CollectionViewModule::getLayoutCacheForId(cacheId);
+        if (!cache) return Value::undefined();
+        auto keyOpt = cache->getKeyForIndexPath(section, item);
+        if (!keyOpt) return Value::undefined();
+        doScrollToKey(cache, cacheId, *keyOpt, isHoriz, vpW, vpH, leadPin, trailPin, position, curScroll, animated);
+        return Value::undefined();
+      });
+  }
+
+  // scrollToSection(cacheId, sectionIndex, isHoriz, vpW, vpH, position, curScroll, animated)
+  // Scrolls to section header if present; falls back to first item of section.
+  if (prop == "scrollToSection") {
+    return Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "scrollToSection"), 8,
+      [](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count < 7) return Value::undefined();
+        const int32_t     cacheId   = static_cast<int32_t>(args[0].asNumber());
+        const int32_t     section   = static_cast<int32_t>(args[1].asNumber());
+        const bool        isHoriz   = args[2].getBool();
+        const double      vpW       = args[3].asNumber();
+        const double      vpH       = args[4].asNumber();
+        const std::string position  = args[5].getString(rt).utf8(rt);
+        const double      curScroll = args[6].asNumber();
+        const bool        animated  = count > 7 ? args[7].getBool() : true;
+        auto cache = CollectionViewModule::getLayoutCacheForId(cacheId);
+        if (!cache) return Value::undefined();
+        // Header first (scroll to section header, no pin offset — we're showing the header itself)
+        auto hdrOpt = cache->getHeaderKeyForSection(section);
+        if (hdrOpt) {
+          doScrollToKey(cache, cacheId, *hdrOpt, isHoriz, vpW, vpH, false, false, position, curScroll, animated);
+          return Value::undefined();
+        }
+        // Fallback: first item of section
+        auto itemOpt = cache->getKeyForIndexPath(section, 0);
+        if (!itemOpt) return Value::undefined();
+        doScrollToKey(cache, cacheId, *itemOpt, isHoriz, vpW, vpH, false, false, position, curScroll, animated);
+        return Value::undefined();
+      });
+  }
+
+  // scrollToEnd(cacheId, isHoriz, vpW, vpH, animated)
+  // Scrolls to the trailing edge of content — contentSize - viewport on primary axis.
+  if (prop == "scrollToEnd") {
+    return Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "scrollToEnd"), 5,
+      [](Runtime&, const Value&, const Value* args, size_t count) -> Value {
+        if (count < 4) return Value::undefined();
+        const int32_t cacheId  = static_cast<int32_t>(args[0].asNumber());
+        const bool    isHoriz  = args[1].getBool();
+        const double  vpW      = args[2].asNumber();
+        const double  vpH      = args[3].asNumber();
+        const bool    animated = count > 4 ? args[4].getBool() : true;
+        auto cache = CollectionViewModule::getLayoutCacheForId(cacheId);
+        if (!cache) return Value::undefined();
+        auto sz = cache->getTotalContentSize();
+        const double x = isHoriz ? std::max(0.0, sz.width  - vpW) : 0.0;
+        const double y = isHoriz ? 0.0 : std::max(0.0, sz.height - vpH);
         invokeScrollHandler(cacheId, x, y, animated);
         return Value::undefined();
       });

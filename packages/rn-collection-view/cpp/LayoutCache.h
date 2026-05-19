@@ -166,6 +166,11 @@ public:
 
   Size getTotalContentSize() const;
 
+  /** O(1) reverse lookup: section + within-section item index → cache key. */
+  std::optional<std::string> getKeyForIndexPath(int section, int item) const;
+  /** O(1) lookup: section index → its header's cache key (if a header exists). */
+  std::optional<std::string> getHeaderKeyForSection(int section) const;
+
   /**
    * Returns frame data (x, y, width, height) for all cache entries whose
    * flatIndex falls in [firstFlat, lastFlat]. Result is a flat vector of
@@ -350,6 +355,13 @@ private:
 
   // Opt C: flatIndex → key lookup for O(range) getFramesForFlatRange.
   std::vector<std::string>                          _flatIndexToKey;
+
+  // (section, item) → key: O(1) reverse lookup for scrollToIndexPath.
+  // Packed as (uint32_t section << 32 | uint32_t item). Only regular items
+  // (non-supplementary, non-decoration, index >= 0).
+  std::unordered_map<uint64_t, std::string>         _indexPathToKey;
+  // section index → header key: O(1) lookup for scrollToSection.
+  std::unordered_map<int32_t, std::string>          _sectionHeaderKey;
   Point                                             _scrollOffset{0, 0};
 
   // Velocity tracking — updated by setScrollOffset on every native scroll tick.

@@ -122,6 +122,16 @@ void LayoutCache::_setAttributesLocked(const LayoutAttributes& attrs) {
     }
     _flatIndexToKey[fi] = attrs.key;
   }
+
+  // (section, item) → key reverse index for O(1) scrollToIndexPath.
+  if (!attrs.isSupplementary && !attrs.isDecoration && attrs.index >= 0) {
+    const uint64_t ip = (uint64_t(uint32_t(attrs.section)) << 32) | uint32_t(attrs.index);
+    _indexPathToKey[ip] = attrs.key;
+  }
+  // section → header key for O(1) scrollToSection.
+  if (attrs.isSupplementary && attrs.supplementaryKind == "header") {
+    _sectionHeaderKey[attrs.section] = attrs.key;
+  }
 }
 
 std::optional<LayoutAttributes> LayoutCache::getAttributes(
@@ -136,7 +146,16 @@ void LayoutCache::removeAttributes(const std::string& key) {
   std::lock_guard<std::mutex> lock(_mutex);
   auto it = _map.find(key);
   if (it != _map.end()) {
-    _index.remove(key, it->second.frame);
+    const auto& attrs = it->second;
+    // Clean up reverse index maps.
+    if (!attrs.isSupplementary && !attrs.isDecoration && attrs.index >= 0) {
+      const uint64_t ip = (uint64_t(uint32_t(attrs.section)) << 32) | uint32_t(attrs.index);
+      _indexPathToKey.erase(ip);
+    }
+    if (attrs.isSupplementary && attrs.supplementaryKind == "header") {
+      _sectionHeaderKey.erase(attrs.section);
+    }
+    _index.remove(key, attrs.frame);
     _map.erase(it);
     _insertionOrder.erase(
         std::remove(_insertionOrder.begin(), _insertionOrder.end(), key),
@@ -155,6 +174,8 @@ void LayoutCache::clear() {
   _sorted.clear();
   _sortedDirty = true;
   _flatIndexToKey.clear();
+  _indexPathToKey.clear();
+  _sectionHeaderKey.clear();
   ++_version;
 }
 
@@ -425,6 +446,21 @@ Size LayoutCache::getTotalContentSize() const {
     maxY = std::max(maxY, attrs.frame.y + attrs.frame.height);
   }
   return { maxX, maxY };
+}
+
+std::optional<std::string> LayoutCache::getKeyForIndexPath(int section, int item) const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  const uint64_t ip = (uint64_t(uint32_t(section)) << 32) | uint32_t(item);
+  auto it = _indexPathToKey.find(ip);
+  if (it == _indexPathToKey.end()) return std::nullopt;
+  return it->second;
+}
+
+std::optional<std::string> LayoutCache::getHeaderKeyForSection(int section) const {
+  std::lock_guard<std::mutex> lock(_mutex);
+  auto it = _sectionHeaderKey.find(section);
+  if (it == _sectionHeaderKey.end()) return std::nullopt;
+  return it->second;
 }
 
 std::vector<double> LayoutCache::getSectionOffsets() const {

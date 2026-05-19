@@ -14,7 +14,7 @@
  *   Item: insert top/mid/bottom, delete first/mid/last, resize first, update first
  *   Section: add/remove/swap
  *   Layout: toggle columns, toggle section bg
- *   Scroll: scrollToItem, scrollToOffset
+ *   Scroll: scrollToTop, scrollToSection
  *
  * Validation targets:
  *   - Cold mounts = 0 in steady state after mutations
@@ -102,7 +102,7 @@ const SECTION_META: SectionMeta[] = [
   { key: 'grid-h',    label: 'S3 Grid H',    type: 'grid H',    color: '#f4a261', hasBg: false, hasFooter: false, hasSticky: true },
   { key: 'masonry-v', label: 'S4 Masonry V', type: 'masonry V', color: '#6a4c93', hasBg: true,  hasFooter: true,  hasSticky: true },
   { key: 'flow-v',    label: 'S5 Flow V',    type: 'flow V',    color: '#1982c4', hasBg: false, hasFooter: true,  hasSticky: true },
-  { key: 'ctrl',      label: 'S6 Control',   type: 'list V',    color: '#264653', hasBg: false, hasFooter: false, hasSticky: false },
+  { key: 'ctrl',      label: 'S6 List V (no chrome — control)', type: 'list V', color: '#264653', hasBg: false, hasFooter: false, hasSticky: false },
 ];
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -292,7 +292,7 @@ export function CompositionalLab() {
       // 3: grid H 2-row — sticky header
       { layout: grid({ columns: 2, rowHeight: 80, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, sectionSpacing: 10, estimatedCrossAxisHeight: 180 }), horizontal: true },
       // 4: masonry V 2-col — sticky header + footer + section bg
-      { layout: masonry({ columns: gridCols, heightForItem: () => 100, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: sectionBgEnabled, sectionSpacing: 10 }) },
+      { layout: masonry({ columns: gridCols, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: sectionBgEnabled, sectionSpacing: 10 }) },
       // 5: flow V — sticky header + footer
       { layout: flow({ sizeForItem: (i: number) => ({ width: flowSizeRef.current[i]?.width ?? 100, height: 34 }), itemSpacing: 6, lineSpacing: 6, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionSpacing: 10 }) },
       // 6: list V — no chrome (control group)
@@ -372,13 +372,8 @@ export function CompositionalLab() {
   // ── Scroll helpers ─────────────────────────────────────────────────────────
 
   const scrollToSection = useCallback((si: number) => {
-    const meta = SECTION_META[si];
-    if (!meta) return;
-    const firstItem = sectionDatas[si]?.[0];
-    if (firstItem) {
-      cvRef.current?.scrollToItem(`${meta.key}:${firstItem.id}`, { position: 'top' });
-    }
-  }, [sectionDatas]);
+    cvRef.current?.scrollToSection(si, { position: 'top' });
+  }, []);
 
   const ts = targetSection;
 
@@ -426,7 +421,7 @@ export function CompositionalLab() {
         <Btn label="Sect BG" onPress={() => setSectionBgEnabled(v => !v)} small active={sectionBgEnabled} />
         <Divider />
         <Text style={styles.toolLabel}>Scroll:</Text>
-        <Btn label="Top"  onPress={() => cvRef.current?.scrollToOffset({ y: 0 })} small />
+        <Btn label="Top"  onPress={() => cvRef.current?.scrollToTop()} small />
         {SECTION_META.slice(0, Math.min(sectionDatas.length, SECTION_META.length)).map((m, i) => (
           <Btn key={m.key} label={`S${i}`} onPress={() => scrollToSection(i)} small />
         ))}

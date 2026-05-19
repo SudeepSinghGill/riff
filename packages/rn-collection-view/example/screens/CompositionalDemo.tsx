@@ -352,13 +352,13 @@ export function CompositionalDemo() {
   return (
     <View style={styles.root}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.ctrlBarScroll} contentContainerStyle={styles.ctrlBar}>
-        <CtrlBtn label="→ Top"      onPress={() => cvRef.current?.scrollToOffset({ y: 0 })} />
-        <CtrlBtn label="→ Cats"     onPress={() => cvRef.current?.scrollToItem('categories:c0',          { position: 'top' })} />
-        <CtrlBtn label="→ Tags"     onPress={() => cvRef.current?.scrollToItem('deal-tags:t0',           { position: 'top' })} />
-        <CtrlBtn label="→ Feat"     onPress={() => cvRef.current?.scrollToItem('featured-products:fp0',  { position: 'top' })} />
-        <CtrlBtn label="→ Trend"    onPress={() => cvRef.current?.scrollToItem('trending-tags:tr0',      { position: 'top' })} />
-        <CtrlBtn label="→ Products" onPress={() => cvRef.current?.scrollToItem('products:p0',            { position: 'top' })} />
-        <CtrlBtn label="→ Bot"      onPress={() => cvRef.current?.scrollToItem(`products:${products[products.length - 1]?.id ?? 'p0'}`, { position: 'bottom' })} />
+        <CtrlBtn label="→ Top"      onPress={() => cvRef.current?.scrollToTop()} />
+        <CtrlBtn label="→ Cats"     onPress={() => cvRef.current?.scrollToSection(1, { position: 'top' })} />
+        <CtrlBtn label="→ Tags"     onPress={() => cvRef.current?.scrollToSection(2, { position: 'top' })} />
+        <CtrlBtn label="→ Feat"     onPress={() => cvRef.current?.scrollToSection(3, { position: 'top' })} />
+        <CtrlBtn label="→ Trend"    onPress={() => cvRef.current?.scrollToSection(4, { position: 'top' })} />
+        <CtrlBtn label="→ Products" onPress={() => cvRef.current?.scrollToSection(5, { position: 'top' })} />
+        <CtrlBtn label="→ Bot"      onPress={() => cvRef.current?.scrollToEnd()} />
         <CtrlDivider />
         <CtrlBtn label="+Banner"  onPress={insertBanner} />
         <CtrlBtn label="−Banner"  onPress={deleteBanner}  disabled={banners.length <= 1} />

@@ -827,6 +827,8 @@ double ListLayout::computeSection(const ListLayoutParams& p,
 void ListLayout::computeSections(const std::vector<ListLayoutParams>& sections) {
   _horizontal = !sections.empty() && sections[0].horizontal;
   _viewportHeight = !sections.empty() ? sections[0].viewportHeight : 0.0;
+  _cache->clear();
+  _maxSectionCrossHeight.clear();
   double primary = 0.0;
   RNCV_LIST_LOG("computeSections begin sections=%zu horizontal=%d", sections.size(), (int)_horizontal);
   RNCV_LIST_TRACE("computeSections begin: %zu sections horizontal=%d", sections.size(), (int)_horizontal);

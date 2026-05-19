@@ -28,9 +28,26 @@ their natural height, so Placeholders converge to actual height sooner.
    (all 4 fields, 2-decimal precision) in addition to child tags. Resize changes Yoga
    dimensions without changing tags/count/cacheVersion — old hash skipped correction.
 
-### B0.3 S4 Masonry V — all items same height (looks like a grid)
+### B0.2b Compose/Lab broken when navigating from any C++ layout tab ✅ FIXED
 
-Root cause is in CompositionalLab.tsx line 305: `heightForItem: () => 100` — hardcoded fixed height for all items. Should return variable heights based on item content (short/medium/long detail text) to demonstrate the masonry waterfall effect. Fix: derive height from item data or remove `heightForItem` to let Yoga measure.
+**Root cause:** `useEffect` unmount cleanup (`layoutCache.clear()`) fired asynchronously after
+paint — after `prepare()` had correctly filled the cache, but *before* the re-render triggered
+by `ShadowNode.updateState()` arrived. The re-render's `useMemo` deps were unchanged so
+`prepare()` was skipped; `ShadowNode.layout()` read an empty cache → wrong contentSize.
+
+JS layout tabs (Radial, 3D Carousel) had no CollectionView cleanup to race, so they worked.
+
+**Fix:** Removed the unmount `useEffect` cleanup entirely. `prepare()` overwrites stale data from
+any previous C++ layout session (every `computeSections()` calls `_cache->clear()` internally),
+so the cleanup was both unnecessary for its original purpose and harmful due to the async race.
+The `if (!layoutContext)` guard in the prepare `useMemo` remains as a safety net for
+`initialWidth={0}` edge cases only.
+
+### B0.3 S4 Masonry V — all items same height (looks like a grid) ✅ FIXED
+
+**Fixed:** Removed `heightForItem: () => 100` from the masonry section in `CompositionalLab.tsx`.
+Items already have variable `detail` text (short / medium / long) so Yoga measures each cell
+naturally, producing the waterfall height variance.
 
 ### B0.4 S3 Grid H — multiple issues
 
@@ -38,15 +55,17 @@ Root cause is in CompositionalLab.tsx line 305: `heightForItem: () => 100` — h
    H-path now tracks `hasMeasuredCross[]` and only uses actually-measured cross heights to derive
    `itemCrossSize`. Placeholder items no longer keep the estimate when measured data is available.
    Committed in `2729016`.
-2. **Vertical scroll indicator / vertical scrolling.** After insert/delete mutations, the section's
-   sub-container shows a vertical scroll indicator and allows vertical scrolling. Likely the content
-   size exceeds the container cross-axis height after mutations. **Still open.**
+2. **Vertical scroll indicator / vertical scrolling.** ✅ FIXED — `refreshHSectionWrapperHeight`
+   (added in `36669f7`) re-derives wrapper height from actual item frames after every
+   `applyMeasurements`, bypassing the 2pt hysteresis that was leaving the sub-container
+   `contentSize.height` inflated after deletes.
 3. **Delayed resize.** Fixed by B0.2 Yoga-hash fix — shouldSkipCorrection no longer skips on
    content-only changes. ✅ FIXED.
 
-### B0.5 S6 "Control" section — clarify purpose
+### B0.5 S6 "Control" section — clarify purpose ✅ FIXED
 
-S6 is a list-V section with **no chrome** — no sticky header, no footer, no section background. It exists as a baseline/control group: behavior here proves the layout works without any decoration overhead. Not a bug, but should be documented with a visible label in the Lab UI (e.g. "S6 List V (no chrome — control)").
+**Fixed:** Updated `SECTION_META` label in `CompositionalLab.tsx` from `'S6 Control'` to
+`'S6 List V (no chrome — control)'`.
 
 ---
 
@@ -275,6 +294,62 @@ For layouts with `needsSpatialQuery: true`, change `getAttributesInRect` to retu
 **Source:** PERF-PLAN.md Opt 5
 
 **Effort:** ~0.5d
+
+### B4.8 LayoutEngine protocol — enforce clear-before-compute structurally
+
+Currently each engine's `computeSections()` must call `_cache->clear()` as its first operation by convention. `ListLayout` had it missing (fixed). The invariant can't be a pure virtual because each engine takes a different params type.
+
+**Fix:** Move `_cache->clear()` into each engine's JSI binding lambda (the call site that bridges JS → C++). `computeSections()` becomes a pure layout function; the JSI layer owns the clear. This is Option B from the discussion; Option A (template method with `doComputeSections` + `_cache` in base class) is the cleaner long-term fix.
+
+**Effort:** ~0.5d
+
+### B4.9 Per-instance LayoutCache — eliminate shared global cache pollution
+
+**Problem:** All CollectionView instances share one C++ `LayoutCache` and one set of layout engine singletons (ListLayout, GridLayout, etc.). When navigating between screens, each new instance's C++ `computeSections()` overwrites the global cache. The ShadowNode's first Fabric layout pass reads whichever data happens to be in the cache at commit time — potentially stale data from the previous instance.
+
+**Current mitigation (B0.2b fix):** Unmount cleanup removed. `prepare()` overwrites stale data from previous instances before the ShadowNode reads. The `if (!layoutContext)` path in the prepare `useMemo` is a residual safety net for `initialWidth={0}` only.
+
+**Real fix:** Each CollectionView instance gets a unique `cacheId` (already in `CollectionViewState.cacheId`). The C++ module maintains `std::map<int32_t, LayoutCache>` keyed by cacheId. All JSI calls (`computeSections`, `getAttributesInRect`, `version`, etc.) take `cacheId` as their first parameter. `_layoutCacheId` in the module becomes an instance lookup key, not a shared singleton.
+
+**Scope:**
+- C++: `CollectionViewModule` — change `_layoutCache` from a single `LayoutCache` to a `std::map<int32_t, LayoutCache>`. All JSI binding lambdas route to the per-instance cache.
+- TS: `CollectionView.tsx` — pass `layoutCacheId` (from native state) to every `nativeMod.layoutCache.*` call.
+- TS: Layout engines (list.ts, compositional.ts, etc.) — accept `cacheId` param or get it from a context/closure.
+- Remove all on-mount / on-unmount `layoutCache.clear()` calls (now unnecessary).
+
+**Effort:** ~1–2d
+**Priority:** after all current B0/B1 fixes are stable
+
+---
+
+### B4.10 scrollTo API for JS-layout tabs (Radial Arc, 3D Carousel, etc.)
+
+The `scrollTo*` / `scrollToSection` API implemented via `invokeScrollHandler` routes through the LayoutCache to compute target offsets. JS-layout tabs (Radial Arc, 3D Carousel, Spiral, Hex, H2-*) use plain React Native `ScrollView` — they do NOT write to the LayoutCache, so the current `scrollTo` implementation has no effect on them.
+
+**Options:**
+1. Expose a `scrollTo` imperative handle on the outer ScrollView and let callers use it directly (simplest; avoids the LayoutCache route entirely for JS layouts).
+2. Add a `layoutType === 'js'` fast-path in `invokeScrollHandler` that forwards the call to a JS-supplied `scrollRef`.
+3. Block the scrollTo buttons for JS-layout tabs (simplest non-fix; acceptable for demo).
+
+**Decision:** discuss before implementing. Note that the `scrollToSection` / `scrollToIndexPath` API semantics also differ for non-list layouts (radial has no "section" concept in the traditional sense).
+
+**Priority:** low; after core layout fixes
+
+---
+
+### B4.7 Threading model audit — JSI call sites + UIKit dispatch
+
+All `nativeMod.*` JSI calls (scroll, layout query, version polling) execute synchronously on the JS thread. The `invokeScrollHandler` path dispatches a scroll offset to the native scroll container — this ultimately calls `setContentOffset:` which **must** run on the main thread. Verify the current dispatch path is safe and not silently marshalling through the wrong thread.
+
+**Scope:**
+- Audit every JSI call site in CollectionView.tsx and native module: which thread does it run on?
+- Confirm `invokeScrollHandler` → `setContentOffset:animated:` reaches UIKit on the main thread (not JS thread). If called from JS thread, this is a UIKit thread-safety violation.
+- Evaluate whether scroll-to operations could be initiated from the UI thread directly (e.g. via a native gesture recognizer callback) to avoid occupying JS thread at all.
+- Document findings; fix any thread-safety violations; note which operations could be moved off JS thread in a future refactor.
+
+**Why:** JSI calls run on JS thread and reduce available JS time even if C++ is fast. Moving to UI-thread initiation (where safe) would give JS thread back entirely for gesture-driven scrolls.
+
+**Effort:** ~0.5d (audit + doc) + ~1d if fixes needed
 
 ---
 

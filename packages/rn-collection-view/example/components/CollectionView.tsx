@@ -83,6 +83,14 @@ const nativeMod = NativeCollectionViewModule as unknown as {
   layoutCacheId: number;
   /** Programmatic scroll. Invokes the scroll handler registered by the container view. */
   scrollTo(cacheId: number, x: number, y: number, animated: boolean): void;
+  /** Single-call scroll-to-item by cache key. C++ looks up attrs, computes offset, invokes handler. */
+  scrollToKey(cacheId: number, key: string, isHoriz: boolean, vpW: number, vpH: number, hasLeadPin: boolean, hasTrailPin: boolean, position: string, curScroll: number, animated?: boolean): void;
+  /** Single-call scroll-to-index-path. C++ resolves (section,item)→key via O(1) reverse index. */
+  scrollToIndexPath(cacheId: number, section: number, item: number, isHoriz: boolean, vpW: number, vpH: number, hasLeadPin: boolean, hasTrailPin: boolean, position: string, curScroll: number, animated?: boolean): void;
+  /** Single-call scroll-to-section. C++ tries header key first, falls back to first item. */
+  scrollToSection(cacheId: number, section: number, isHoriz: boolean, vpW: number, vpH: number, position: string, curScroll: number, animated?: boolean): void;
+  /** Single-call scroll-to-end. C++ queries content size, subtracts viewport, invokes handler. */
+  scrollToEnd(cacheId: number, isHoriz: boolean, vpW: number, vpH: number, animated?: boolean): void;
   layoutCache: {
     clear(): void;
     setAttributes(attrs: object): void;
@@ -271,14 +279,32 @@ export interface ScrollToOffsetOptions {
 
 export interface RiffHandle<T = unknown> {
   /**
-   * Scroll to the item with the given cache key.
-   * Key format for sectioned mode: `${sectionKey}:${keyExtractor(item)}`.
-   * Uses LayoutCache position — approximate for items not yet Yoga-measured.
+   * Scroll to the item at the given index path.
+   * section: 0-based section index. item: 0-based item index within the section.
    */
-  scrollToItem(key: string, options?: ScrollToItemOptions): void;
+  scrollToIndexPath(indexPath: { section: number; item: number }, options?: ScrollToItemOptions): void;
+
+  /**
+   * Scroll to the start of a section — its header if one exists, otherwise its first item.
+   * Equivalent to UICollectionView's scrollToItemAtIndexPath:item=0 atScrollPosition:.
+   */
+  scrollToSection(sectionIndex: number, options?: ScrollToItemOptions): void;
+
+  /** Scroll to the very beginning of the content (offset 0,0). */
+  scrollToTop(options?: { animated?: boolean }): void;
+
+  /** Scroll to the trailing edge of the content (right for horizontal, bottom for vertical). */
+  scrollToEnd(options?: { animated?: boolean }): void;
 
   /** Scroll to an absolute content offset. */
   scrollToOffset(options: ScrollToOffsetOptions): void;
+
+  /**
+   * Scroll to the item with the given cache key (low-level).
+   * Prefer scrollToIndexPath for consumer use.
+   * Key format for sectioned mode: `${sectionKey}:${keyExtractor(item)}`.
+   */
+  scrollToItem(key: string, options?: ScrollToItemOptions): void;
 
   /**
    * Create a snapshot seeded with the current data array and key extractor.
@@ -1517,6 +1543,19 @@ export function Riff<T = unknown>({
   // Keep layoutContextRef in sync so sectionedKeyExtractorCb can read itemKeys.
   layoutContextRef.current = layoutContext;
 
+  // B0.5 NOTE: No unmount cleanup here (removed).
+  // An unmount cleanup that calls layoutCache.clear() races against the new
+  // CollectionView instance's ShadowNode re-reads:
+  //   1. New instance mounts → prepare() fills cache correctly
+  //   2. ShadowNode.layout() reads cache → calls updateState() → schedules re-render
+  //   3. Cleanup fires (async, after paint) → clears cache
+  //   4. Re-render arrives → useMemo deps unchanged → prepare() skips
+  //   5. ShadowNode.layout() reads EMPTY cache → wrong contentSize → broken layout
+  // prepare() overwrites stale data from previous C++ layouts (computeSections
+  // clears the cache internally), so a pre-clear is unnecessary. The ShadowNode
+  // consistently reads correct data as long as nothing clears the cache after
+  // prepare() has run.
+
   // Sync MVC enabled state to LayoutCache so the ShadowNode's snapshotAnchorIfNeeded()
   // can gate on it for size-change mutations (where layoutContext doesn't change and
   // snapshotAnchor() isn't called from the prepare useMemo below).
@@ -1528,7 +1567,14 @@ export function Riff<T = unknown>({
   // Cache clearing is handled internally by each layout engine (e.g. list.ts)
   // using its own data-shape fingerprint — NOT here in the generic component.
   useMemo(() => {
-    if (!layoutContext) return;
+    if (!layoutContext) {
+      // viewportWidth = 0 (e.g. initialWidth={0} override) — container not measured yet.
+      // Clear the cache so the ShadowNode doesn't commit a stale contentSize from
+      // a previous layout session. prepare() will run on the next render when
+      // onContainerLayout fires and viewportWidth becomes non-zero.
+      nativeLayoutCache.clear();
+      return;
+    }
     // MVC: snapshot anchor BEFORE prepare() overwrites all positions in the cache.
     // Only when maintainVisibleContentPosition is enabled. The anchor is the item
     // with the smallest Y >= current scrollY — the first fully-visible item.
@@ -1545,6 +1591,10 @@ export function Riff<T = unknown>({
       }
     }
     effectiveLayout.prepare(layoutContext);
+    if (__DEV__ && RNCV_DEBUG_LOGS) {
+      const sz = nativeLayoutCache.getTotalContentSize();
+      console.log(`[RNCV-B05] prepare done type=${(effectiveLayout as any).type} contentSize=${sz.width.toFixed(0)}x${sz.height.toFixed(0)}`);
+    }
     // NOTE: computeCorrection() is NOT called here. It runs in native updateState:
     // AFTER Yoga has measured new items via applyMeasurements. Calling it here
     // (pre-Yoga) would produce corrections based on estimate heights, not actual.
@@ -1659,10 +1709,12 @@ export function Riff<T = unknown>({
     // actually changed (rare — only when Yoga measurement shifts total size).
     if (scrollHandledCVRef.current) {
       scrollHandledCVRef.current = false;
+      // Always sync the size ref — width can change via H-list Width deltas
+      // without changing height (H-6 guard was previously only syncing on height).
+      layoutContentSizeRef.current = layoutContentSize;
       if (layoutContentHeight !== contentHeightRef.current) {
         if (__DEV__ && RNCV_HEALTH_DIAG) healthRef.current.leCH++;
         contentHeightRef.current = layoutContentHeight;
-        layoutContentSizeRef.current = layoutContentSize;
         setContentHeight(layoutContentHeight);
       }
       return;
@@ -1788,83 +1840,61 @@ export function Riff<T = unknown>({
   // ── F1.2: Imperative handle ───────────────────────────────────────────────────
 
   useImperativeHandle(handle, () => ({
-    scrollToItem: (key: string, options?: ScrollToItemOptions) => {
-      // Key format: "sectionKey:itemId" (e.g. "cell-animation:s1-17").
-      // C++ ListLayout stores entries under these same stable keys when
-      // keyExtractor is provided (via layoutContext.sections[s].itemKeys).
-      const attrs = nativeLayoutCache.getAttributes(key);
-      if (!attrs) return;
-      const isHoriz = effectiveLayout.horizontal ?? false;
+    scrollToIndexPath: ({ section, item }: { section: number; item: number }, options?: ScrollToItemOptions) => {
+      const isHoriz  = effectiveLayout.horizontal ?? false;
       const position = options?.position ?? (isHoriz ? 'start' : 'top');
+      // Single C++ call: resolves (section,item)→key via O(1) reverse index in LayoutCache.
+      nativeMod.scrollToIndexPath(
+        layoutCacheId, section, item, isHoriz,
+        viewportWidthRef.current, viewportHeightRef.current,
+        hasStickyHeaders, hasStickyFooters,
+        position,
+        isHoriz ? prevScrollXRef.current : prevScrollYRef.current,
+        options?.animated ?? true,
+      );
+    },
 
-      if (isHoriz) {
-        // Horizontal: scroll along X axis.
-        const itemX = attrs.frame.x as number;
-        const itemW = attrs.frame.width as number;
-        const vpW   = viewportWidthRef.current;
-        const contentW = layoutContentSizeRef.current?.width ?? 0;
-        const maxX  = Math.max(0, contentW - vpW);
-        // Adjust for sticky headers (leading) / footers (trailing) so the item
-        // lands in the visible region, not behind a pinned supplementary view.
-        const stickyLeadW = hasStickyHeaders
-          ? (effectiveLayout.attributesForSupplementary?.('header', attrs.section)?.frame.width ?? 0)
-          : 0;
-        const stickyTrailW = hasStickyFooters
-          ? (effectiveLayout.attributesForSupplementary?.('footer', attrs.section)?.frame.width ?? 0)
-          : 0;
-        let targetX: number;
-        if (position === 'start' || position === 'top') {
-          targetX = itemX - stickyLeadW;
-        } else if (position === 'end' || position === 'bottom') {
-          targetX = itemX - (vpW - stickyTrailW) + itemW;
-        } else if (position === 'center') {
-          const effectiveVpW = vpW - stickyLeadW - stickyTrailW;
-          targetX = itemX - stickyLeadW - (effectiveVpW - itemW) / 2;
-        } else { // 'nearest'
-          const scrollX = nativeMod.windowController.getScrollPosition().x;
-          const visibleLead = scrollX + stickyLeadW;
-          const visibleTrail = scrollX + vpW - stickyTrailW;
-          if (itemX >= visibleLead && itemX + itemW <= visibleTrail) return; // fully visible
-          targetX = itemX < visibleLead ? (itemX - stickyLeadW) : (itemX - (vpW - stickyTrailW) + itemW);
-        }
-        nativeMod.scrollTo(layoutCacheId, Math.max(0, Math.min(targetX, maxX)), 0, options?.animated ?? true);
-      } else {
-        // Vertical: scroll along Y axis.
-        const itemY = attrs.frame.y as number;
-        const itemH = attrs.frame.height as number;
-        const vpH   = viewportHeightRef.current;
-        // Use ref, not state: useImperativeHandle closes over deps once and
-        // contentHeight is not in the dep array — the ref always has the live value.
-        const maxY  = Math.max(0, contentHeightRef.current - vpH);
-        // Adjust for sticky headers (top) / footers (bottom) so the item
-        // lands in the visible region, not behind a pinned supplementary view.
-        const stickyTopH = hasStickyHeaders
-          ? (effectiveLayout.attributesForSupplementary?.('header', attrs.section)?.frame.height ?? 0)
-          : 0;
-        const stickyBotH = hasStickyFooters
-          ? (effectiveLayout.attributesForSupplementary?.('footer', attrs.section)?.frame.height ?? 0)
-          : 0;
-        let targetY: number;
-        if (position === 'top' || position === 'start') {
-          targetY = itemY - stickyTopH;
-        } else if (position === 'bottom' || position === 'end') {
-          targetY = itemY - (vpH - stickyBotH) + itemH;
-        } else if (position === 'center') {
-          const effectiveVpH = vpH - stickyTopH - stickyBotH;
-          targetY = itemY - stickyTopH - (effectiveVpH - itemH) / 2;
-        } else { // 'nearest'
-          const scrollY = nativeMod.windowController.getScrollPosition().y;
-          const visibleTop = scrollY + stickyTopH;
-          const visibleBot = scrollY + vpH - stickyBotH;
-          if (itemY >= visibleTop && itemY + itemH <= visibleBot) return; // fully visible
-          targetY = itemY < visibleTop ? (itemY - stickyTopH) : (itemY - (vpH - stickyBotH) + itemH);
-        }
-        nativeMod.scrollTo(layoutCacheId, 0, Math.max(0, Math.min(targetY, maxY)), options?.animated ?? true);
-      }
+    scrollToSection: (sectionIndex: number, options?: ScrollToItemOptions) => {
+      const isHoriz  = effectiveLayout.horizontal ?? false;
+      const position = options?.position ?? (isHoriz ? 'start' : 'top');
+      // Single C++ call: tries section header key first, falls back to first item of section.
+      nativeMod.scrollToSection(
+        layoutCacheId, sectionIndex, isHoriz,
+        viewportWidthRef.current, viewportHeightRef.current,
+        position,
+        isHoriz ? prevScrollXRef.current : prevScrollYRef.current,
+        options?.animated ?? true,
+      );
+    },
+
+    scrollToTop: ({ animated = true }: { animated?: boolean } = {}) => {
+      nativeMod.scrollTo(layoutCacheId, 0, 0, animated);
+    },
+
+    scrollToEnd: ({ animated = true }: { animated?: boolean } = {}) => {
+      nativeMod.scrollToEnd(
+        layoutCacheId,
+        effectiveLayout.horizontal ?? false,
+        viewportWidthRef.current, viewportHeightRef.current,
+        animated,
+      );
     },
 
     scrollToOffset: ({ x = 0, y = 0, animated = true }: ScrollToOffsetOptions) => {
       nativeMod.scrollTo(layoutCacheId, x, y, animated);
+    },
+
+    scrollToItem: (key: string, options?: ScrollToItemOptions) => {
+      const isHoriz  = effectiveLayout.horizontal ?? false;
+      const position = options?.position ?? (isHoriz ? 'start' : 'top');
+      nativeMod.scrollToKey(
+        layoutCacheId, key, isHoriz,
+        viewportWidthRef.current, viewportHeightRef.current,
+        hasStickyHeaders, hasStickyFooters,
+        position,
+        isHoriz ? prevScrollXRef.current : prevScrollYRef.current,
+        options?.animated ?? true,
+      );
     },
 
     getItemLayout: (key: string): LayoutAttributes | null => {
@@ -2573,27 +2603,33 @@ export function Riff<T = unknown>({
     const cellSectionIndex = fiDesc?.sectionIndex ?? 0;
     const isHSectionCell = !measureOnly && !!isHSectionFn?.(cellSectionIndex);
 
-    // L-1: H-list cells (compositional or standalone) must NOT have width locked.
+    // L-1: H-list scroll items (compositional or standalone) must NOT have width locked.
     // Yoga measures intrinsic content width freely; ListLayout::applyMeasurements
     // reads it back as a Width delta and cascades X positions via aggregateShift.
+    // Supplementaries (header/footer) are excluded — they span the full visible section
+    // width and keep their explicit cellWidth.
     // H-grid/masonry/flow keep the width hint for now (L-2/L-3 will drop it).
     // V cells (list/grid/masonry V) keep width = container/column width — fixed, not free.
+    const isScrollItem = fiDesc?._kind !== 'header' && fiDesc?._kind !== 'footer';
     const isHListCell =
-      (isHorizLayout && !isHSectionCell)                             // standalone H-list
-      || (isHSectionCell && hSectionTypes?.[cellSectionIndex] === 'list'); // compositional H-list
+      (isHorizLayout && !isHSectionCell && isScrollItem)                             // standalone H-list items
+      || (isHSectionCell && isScrollItem && hSectionTypes?.[cellSectionIndex] === 'list'); // compositional H-list items
 
     const containerStyle: StyleProp<ViewStyle> = isHSectionCell ? [
       {
         // H-2: no position:absolute. Frame applied natively by ShadowNode.
-        // H-list (L-1): omit width — Yoga measures intrinsic width.
+        // H-list (L-1): omit width + alignSelf:flex-start so Yoga measures intrinsic
+        // content width (not stretched to container/viewport width).
         // H-grid/masonry: keep width hint from cache until L-2/L-3.
         ...(!isHListCell && viewportWidth > 0 && cellWidth > 0 ? { width: cellWidth } : {}),
+        ...(isHListCell ? { alignSelf: 'flex-start' as const } : {}),
       },
     ] : [
       {
         // V layouts: keep width = container width. Standalone H-list (L-1): omit width.
         ...(viewportWidth > 0 && !isHListCell ? { width: cellWidth } : {}),
         ...(isHorizSupplementary && attrHeight > 0 ? { height: attrHeight } : {}),
+        ...(isHListCell ? { alignSelf: 'flex-start' as const } : {}),
       },
     ];
 
