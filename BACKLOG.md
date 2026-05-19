@@ -91,6 +91,52 @@ MVC in H sections is only well-defined for H-list (linearly ordered items — al
 
 **Effort:** ~0.5d
 
+### B1.6 H-list content size not updated after Width delta cascade
+
+After B1.2a (free-width measurement), `applyMeasurements` correctly cascades all item X positions
+in the cache (including unmounted items outside the render window) when a Width delta fires.
+But the `contentSize.width` committed to the ScrollView state is not re-derived from the updated
+last-item extent — it either comes from the initial `computeSection` estimate (N × estimatedItemHeight)
+or from mounted children only (render-window subset).
+
+**Symptom:** Scroll stops before the actual end of the list. If cells are naturally wider than
+`estimatedItemHeight`, the cascade pushes items further right but the ScrollView still clamps to
+the original estimated width. Does not self-correct after scrolling through the full list because
+the content-size write path never picks up the post-cascade last-item extent.
+
+**Why V doesn't have this:** V content height comes from `computeSections` running in full on
+every layout cycle, covering all items including unmounted ones. The H equivalent (total content
+width after cascade) is not being re-fed into the committed content size after `applyMeasurements`.
+
+**Fix direction:** After `applyMeasurements` runs, re-derive `contentSize.width` from the
+updated last-item frame in the cache (`lastItem.frame.x + lastItem.frame.width`) rather than
+from the pre-cascade estimate. For standalone H this is in `CollectionViewContainerShadowNode`;
+for compositional H sections this is in `CollectionSubContainerShadowNode`.
+
+**Prerequisite for:** B1.7 (first-pass scroll correctness). Also partially addressed by B1.1
+(once B1.1 is in, Width deltas only fire once per cell and the content size settles immediately).
+
+**Effort:** ~0.5d
+
+### B1.7 First-pass scroll correctness — primary-axis MVC on Width delta cascade
+
+When a cell enters the viewport for the first time and its Width delta fires, the cascade shifts
+all subsequent items' X positions. If the user is already scrolled partway through the list, this
+cascade shifts the content under them, causing a visible jump — analogous to the V-scroll MVC
+problem on insert.
+
+This is the primary-axis equivalent of V-MVC: after a Width delta cascade, the scroll offset
+needs to be corrected by the sum of width changes for all items before the current viewport
+leading edge. "Correct scroll even on first time when cells get measured."
+
+**Relationship to B1.6:** B1.6 fixes the content size (you can reach the end). B1.7 fixes the
+viewport position (no jump during first-pass measurement). Both are needed for a stable first-
+scroll experience. B1.1 reduces severity — once measured sizes are frozen as explicit Yoga
+dimensions, deltas only fire once and the cascade is a one-time event rather than recurring.
+
+**Effort:** ~1d (needs primary-axis anchor snapshot + correction, similar to H-MVC but for the
+main scroll axis on Width delta, not insert.)
+
 ### B1.5 Sub-container owns its own LayoutCache slice
 
 Currently the shared main LayoutCache holds both V section items and H section items (H items at section-local X coords). The sub-container ShadowNode reads the main cache filtered by section index.
