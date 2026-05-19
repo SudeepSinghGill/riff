@@ -101,6 +101,8 @@ const nativeMod = NativeCollectionViewModule as unknown as {
     computeCorrection(): number;
     /** MVC: consume and clear pending correction (called by native view). */
     consumePendingCorrection(): number;
+    /** H-list MVC: snapshot first visible H item for sectionIndex before prepare(). */
+    snapshotHAnchor(sectionIndex: number, scrollX: number): void;
     /** Stash API: save primary-axis size for every Measured entry. Call before clear(). */
     stashHeights(): void;
     /** Stash API: release stash memory. Call after computeSections(). */
@@ -1533,6 +1535,14 @@ export function Riff<T = unknown>({
     if (maintainVisibleContentPosition) {
       rncvMvcTrace('prepare: calling snapshotAnchor() (MVC enabled, correctionConsumed reset)');
       nativeLayoutCache.snapshotAnchor();
+      // H-list MVC: snapshot per-section H anchor before positions are overwritten.
+      // Only for H sections with list layout — grid/masonry/flow correction semantics TBD.
+      const hSectionTypes = (effectiveLayout as any).sectionTypes as string[] | undefined;
+      for (const [sIdx, hScrollX] of hScrollXMapRef.current) {
+        if (hSectionTypes?.[sIdx] === 'list') {
+          nativeLayoutCache.snapshotHAnchor(sIdx, hScrollX);
+        }
+      }
     }
     effectiveLayout.prepare(layoutContext);
     // NOTE: computeCorrection() is NOT called here. It runs in native updateState:
@@ -1559,16 +1569,35 @@ export function Riff<T = unknown>({
   // causes a Fabric commit → applyMeasurements bumps the cache version. Without
   // this, naturalY stays stale until the 100ms polling timer fires, causing
   // sticky views to be offset by the height delta during that window.
+  //
+  // B0.1 fix: two nested RAFs instead of one.
+  // The [effectiveLayout, layoutContext] effect above syncs lastCacheVersionRef
+  // to the post-prepare version (e.g. 5). Fabric background layout then runs and
+  // bumps the cache to 6 — but that bump completes AFTER the first RAF fires.
+  // The second RAF fires one frame later (after Fabric background layout is done)
+  // and reliably detects 6 != 5.
   useEffect(() => {
-    const raf = requestAnimationFrame(() => {
+    let raf2: ReturnType<typeof requestAnimationFrame> | null = null;
+    const raf1 = requestAnimationFrame(() => {
       const nv = nativeLayoutCache.version();
       if (nv !== lastCacheVersionRef.current) {
         lastCacheVersionRef.current = nv;
         if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
         setLayoutCacheVersion(v => v + 1);
       }
+      raf2 = requestAnimationFrame(() => {
+        const nv2 = nativeLayoutCache.version();
+        if (nv2 !== lastCacheVersionRef.current) {
+          lastCacheVersionRef.current = nv2;
+          if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
+          setLayoutCacheVersion(v => v + 1);
+        }
+      });
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2 !== null) cancelAnimationFrame(raf2);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutContext, extraData]);
 
@@ -2952,6 +2981,7 @@ export function Riff<T = unknown>({
       data.length,
       mountedStickySet,
       hExcludeIndices,
+      renderGen,
     );
     const _lastCold = slotManagerRef.current.lastColdMounts;
     coldMountCountRef.current += _lastCold;

@@ -1,5 +1,10 @@
 #import "RNCollectionSubContainerView.h"
 #import "RNMeasuredCellView.h"
+#include <memory>
+namespace rncv { class LayoutCache; }
+namespace facebook::react {
+  std::shared_ptr<rncv::LayoutCache> layoutCacheForId(int32_t cacheId);
+}
 
 // Our custom ShadowNode + descriptor (NOT the codegen default).
 #import "CollectionSubContainerComponentDescriptor.h"
@@ -708,6 +713,23 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
       [_scrollView setContentOffset:CGPointMake(targetX, 0) animated:NO];
       _needsScrollRestore = NO;
       _pendingRestoreScrollX = 0;
+    }
+
+    // H-list MVC: apply horizontal scroll correction if an anchor was snapshotted.
+    // Computed from LayoutCache after applyMeasurements wrote final H item positions.
+    // Applied immediately (no deceleration guard) — same timing as V-scroll MVC.
+    if (_layoutCacheId > 0 && _sectionIndex >= 0) {
+      auto cache = facebook::react::layoutCacheForId(_layoutCacheId);
+      if (cache) {
+        const double correction = cache->computeHCorrection(_sectionIndex);
+        if (std::fabs(correction) > 0.5 && csApplied.width > 0) {
+          CGFloat newX = _scrollView.contentOffset.x + (CGFloat)correction;
+          CGFloat maxX = csApplied.width - _scrollView.bounds.size.width;
+          if (maxX < 0) maxX = 0;
+          newX = MAX(0, MIN(newX, maxX));
+          [_scrollView setContentOffset:CGPointMake(newX, 0) animated:NO];
+        }
+      }
     }
   }
 

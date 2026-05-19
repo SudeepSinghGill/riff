@@ -279,6 +279,20 @@ public:
   /// from cancelling an in-flight animated scrollTo.
   void setProgrammaticScrollActive(bool active);
 
+  // ── H-section MVC (per-section horizontal scroll correction) ─────────────
+  // For H-list sections only (grid/masonry/flow MVC semantics TBD).
+  // Two-step API called from JS prepare() useMemo + consumed by native sub-container updateState:
+  //   1. snapshotHAnchor(sectionIndex, scrollX) — before prepare(), records first visible H item
+  //   2. computeHCorrection(sectionIndex)        — after applyMeasurements, reads new X, returns delta
+
+  /// Snapshot the first visible H item for a section (first item at X >= scrollX).
+  /// Call BEFORE prepare() so pre-insert positions are recorded.
+  void snapshotHAnchor(int sectionIndex, double scrollX);
+
+  /// Compare anchor's new X to snapshotted X. Returns delta; clears snapshot (one-shot).
+  /// Call from native sub-container updateState: after Fabric commit.
+  double computeHCorrection(int sectionIndex);
+
   // ── Versioning ────────────────────────────────────────────────────────────
 
   uint64_t version() const;
@@ -365,6 +379,10 @@ private:
   double      _pendingCorrectionY  = 0;   // delta (newAnchorPos - oldAnchorPos)
   double      _pendingScrollTarget = 0;   // absolute: _snapshotScrollPrimary + delta
   bool        _hasPendingCorrection = false;
+
+  // Per-section H anchor snapshots (guarded by _mutex).
+  std::unordered_map<int, std::string> _hAnchorKeys;
+  std::unordered_map<int, double>      _hAnchorXs;
 
   // Internal helpers (call with lock held)
   void _setAttributesLocked(const LayoutAttributes& attrs);

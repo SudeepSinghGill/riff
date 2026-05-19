@@ -765,6 +765,55 @@ double LayoutCache::consumePendingScrollTarget() {
   return target;
 }
 
+// ─── H-section MVC ───────────────────────────────────────────────────────────
+
+void LayoutCache::snapshotHAnchor(int sectionIndex, double scrollX) {
+  std::lock_guard<std::mutex> lock(_mutex);
+  std::string bestKey;
+  double bestX = std::numeric_limits<double>::max();
+  bool found = false;
+  for (const auto& [key, attrs] : _map) {
+    if (attrs.section != sectionIndex) continue;
+    if (attrs.isSupplementary || attrs.isDecoration) continue;
+    if (attrs.frame.x >= scrollX && attrs.frame.x < bestX) {
+      bestKey = key; bestX = attrs.frame.x; found = true;
+    }
+  }
+  if (found) {
+    _hAnchorKeys[sectionIndex] = bestKey;
+    _hAnchorXs[sectionIndex]   = bestX;
+    RNCV_MVC_TRACE("snapshotHAnchor: s=%d key=%s x=%.1f scrollX=%.1f",
+                   sectionIndex, bestKey.c_str(), bestX, scrollX);
+  } else {
+    _hAnchorKeys.erase(sectionIndex);
+    _hAnchorXs.erase(sectionIndex);
+    RNCV_MVC_TRACE("snapshotHAnchor: s=%d NOT FOUND scrollX=%.1f", sectionIndex, scrollX);
+  }
+}
+
+double LayoutCache::computeHCorrection(int sectionIndex) {
+  std::lock_guard<std::mutex> lock(_mutex);
+  auto kit = _hAnchorKeys.find(sectionIndex);
+  if (kit == _hAnchorKeys.end()) return 0.0;
+
+  const std::string anchorKey = kit->second;
+  double oldX = 0.0;
+  auto xit = _hAnchorXs.find(sectionIndex);
+  if (xit != _hAnchorXs.end()) oldX = xit->second;
+
+  _hAnchorKeys.erase(sectionIndex);
+  _hAnchorXs.erase(sectionIndex);
+
+  auto it = _map.find(anchorKey);
+  if (it == _map.end()) return 0.0;
+
+  const double newX = it->second.frame.x;
+  const double correction = newX - oldX;
+  RNCV_MVC_TRACE("computeHCorrection: s=%d key=%s oldX=%.1f newX=%.1f correction=%.1f",
+                  sectionIndex, anchorKey.c_str(), oldX, newX, correction);
+  return correction;
+}
+
 // ─── JSI conversion helpers ───────────────────────────────────────────────────
 
 static std::string stringFromJSI(Runtime& rt, const Value& val) {
@@ -1174,6 +1223,18 @@ void LayoutCache::installJSIBindings(Runtime& rt, Object& target) {
       PropNameID::forAscii(rt, "consumePendingCorrection"), 0,
       [this](Runtime& rt, const Value&, const Value*, size_t) -> Value {
         return Value(consumePendingCorrection());
+      }));
+
+  // snapshotHAnchor(sectionIndex, scrollX) → undefined
+  target.setProperty(rt, "snapshotHAnchor",
+    Function::createFromHostFunction(rt,
+      PropNameID::forAscii(rt, "snapshotHAnchor"), 2,
+      [this](Runtime& rt, const Value&, const Value* args, size_t count) -> Value {
+        if (count >= 2) {
+          snapshotHAnchor(static_cast<int>(args[0].getNumber()),
+                          args[1].getNumber());
+        }
+        return Value::undefined();
       }));
 }
 

@@ -58,6 +58,19 @@ After Yoga first measures a cell intrinsically, the layout engine writes the mea
 
 **Effort:** ~3d total
 
+### B1.3 MVC semantics for non-list H sections (design TBD)
+
+MVC in H sections is only well-defined for H-list (linearly ordered items — all shift by new-item width on insert). For H-grid, masonry, and flow, inserts cause items to shift across rows/columns, making a single "anchor shift" correction semantically ambiguous.
+
+**Define what MVC should mean for each:**
+- **H-grid**: A `+top` insert shifts all items by one slot; existing items may cross row boundaries. Correction = how much the anchor item's X changed (deterministic for full-row-shift inserts, ambiguous for partial). Likely want to correct by one item-width if inserting into the leading row, zero otherwise.
+- **H-masonry**: Items are assigned to shortest column; any insert scrambles the column map. Correction is not well-defined. Suggestion: don't correct (accept the jump) or re-anchor to nearest item at old X.
+- **H-flow**: Items flow left-to-right; insert at top shifts all items by one item's width along the primary axis (similar to H-list if items are uniform). May be correctable with the same anchor-delta approach as H-list.
+
+**Current state:** H-list MVC fix applied (B1.3 fix). H-grid/masonry/flow MVC deferred.
+
+---
+
 ### B1.3 L-4: Rename size config APIs to "estimated"
 
 `itemHeight`, `rowHeight`, `sizeForItem` etc. imply fixed/deterministic — they're all estimates. Rename to `estimatedItemHeight` (where not already), document the "estimates only" contract.
@@ -320,6 +333,20 @@ CMakeLists wired to existing `cpp/`. TurboModule registration in Kotlin. All M1-
 JS-only fallbacks for C++ JSI calls. ScrollView → DOM scroll container. Fabric components → DOM equivalents.
 
 **Effort:** ~3d+
+
+---
+
+## Unconfirmed / Intermittent Bugs
+
+Bugs reported but not reproducible on re-test. Keep for reference in case they resurface.
+
+### U1 Masonry +top — main list scroll shift
+
+**Reported:** After `+top` insert in masonry section, the main V list shifts a bit and shows the previous section. Only stops when the masonry section becomes much larger than the viewport.
+
+**Hypothesis:** MVC anchor correction was under-correcting because `MasonryLayout::computeSectionFromCache` (called from `applyMeasurements`) reads item heights from the cache post-`computeSections()` fresh path (estimated), not from stash. Since all masonry items have `heightForItem: () => 100`, actual heights may equal estimates, making the error zero — which may explain why it's not reproducible once B0.3 (hardcoded heights) is fixed.
+
+**Next steps if it resurfaces:** Enable `RNCV_MVC_TRACE` logs and capture `snapshotAnchor` / `computeCorrection` output around a `+top` insert. Check whether `MasonryLayout::computeSectionFromCache` needs stash fallback (analogous to the fix applied to `ListLayout::computeSection` in this session).
 
 ---
 
