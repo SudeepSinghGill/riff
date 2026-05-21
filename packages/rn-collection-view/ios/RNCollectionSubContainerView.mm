@@ -70,18 +70,9 @@ using namespace facebook::react;
 #define RNCV_ENABLE_HSUB_GEST_TRACE 0
 #endif
 
-// A/B toggle for H-2.1.1's deferred-frame logic. When 1, frame writes from
-// -layoutSubviews apply immediately even when the scroll view is
-// tracking/dragging/decelerating, and -_flushPendingScrollViewFrameIfNeeded
-// becomes a no-op (nothing ever gets queued). Use this to confirm or rule
-// out the deferred-frame flush as the source of the "H list goes dead at
-// end of decel" wedge.
-//
-// Default 0 (defer logic active, matching H-2.1.1 behavior). Flip to 1 to
-// reproduce the pre-H-2.1.1 immediate-apply path for comparison.
-#ifndef RNCV_DISABLE_HSUB_DEFERRED_FRAME
-#define RNCV_DISABLE_HSUB_DEFERRED_FRAME 0
-#endif
+// B1.1: deferred-frame guard removed. Explicit Yoga dim injection in
+// CollectionViewContainerShadowNode::layoutTree prevents H-section wrapper
+// height from changing during a gesture, so frame writes are safe mid-scroll.
 
 #if RNCV_ENABLE_HSUB_GEST_TRACE
 
@@ -209,12 +200,6 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
   // resized — updateState: handles the "real state changed" path separately.
   CGRect _lastAppliedBounds;
 
-  // Pending _scrollView.frame value deferred from layoutSubviews because the
-  // scroll view was actively tracking / dragging / decelerating at the time.
-  // CGRectNull means "no pending update". See -layoutSubviews and the
-  // scrollViewDidEnd* delegate hooks for the apply path.
-  CGRect _pendingScrollViewFrame;
-
   // Last observed UIGestureRecognizerState for the inner scroll view's pan
   // recognizer (only updated when RNCV_ENABLE_HSUB_GEST_TRACE is 1).
   UIGestureRecognizerState _lastPanState;
@@ -245,7 +230,6 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
     _shadowNodePositioned  = NO;
     _lastScrollEventTime   = 0;
     _lastAppliedBounds     = CGRectZero;
-    _pendingScrollViewFrame = CGRectNull;
     _lastPanState          = UIGestureRecognizerStatePossible;
 
     // Default to non-scrollable: contentView is the immediate child of self.
@@ -322,7 +306,6 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
   _lastScrollEventTime  = 0;
   _propContentSize      = CGSizeZero;
   _lastAppliedBounds    = CGRectZero;
-  _pendingScrollViewFrame = CGRectNull;
   _lastPanState         = UIGestureRecognizerStatePossible;
   _needsScrollRestore   = NO;
   _pendingRestoreScrollX = 0;
@@ -774,24 +757,12 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
   RNHGEST_TRACE_ENTER("layoutSubviews");
   [super layoutSubviews];
 
-  // Keep _contentView frame in sync with bounds when not scrollable.
+  // Keep _contentView / _scrollView frame in sync with bounds.
+  // B1.1: explicit Yoga dim injection stabilises H-section wrapper heights,
+  // so self.bounds no longer changes during a gesture. Direct frame apply is safe.
   if (!_scrollView) {
     _contentView.frame = self.bounds;
   } else {
-    // Explicit _scrollView.frame management with a gesture-active guard.
-    //
-    // Setting a UIScrollView's frame while isTracking / isDragging /
-    // isDecelerating is true CANCELS the active pan recognizer
-    // (UIGestureRecognizerStateCancelled) and leaves UIKit in an
-    // isDragging=1 isDecel=1 isTracking=0 wedge state. The user's symptom
-    // is "bounce decays slowly and then no further gestures register until
-    // I lift my finger and tap again." See _reconfigureScrollViewForDirection
-    // for the full rationale.
-    //
-    // If the scroll view is busy when self.bounds changes, defer the frame
-    // write into _pendingScrollViewFrame and apply it on scroll-end. The
-    // user-visible cost of the deferral is at most a 1-2pt cropping mismatch
-    // until the gesture ends, which is hidden by self.clipsToBounds = YES.
     [self _applyOrDeferScrollViewFrame];
   }
 
@@ -814,83 +785,20 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
   RNHGEST_TRACE_EXIT("layoutSubviews");
 }
 
-// Apply self.bounds to _scrollView.frame when the scroll view is idle.
-// When the scroll view is busy (tracking/dragging/decelerating), record the
-// pending target so it can be applied from a scroll-end delegate callback.
+// Apply self.bounds to _scrollView.frame.
+// B1.1: no busy-guard needed — H-section wrapper heights are stable during gestures.
 - (void)_applyOrDeferScrollViewFrame
 {
   RNHGEST_TRACE_ENTER("_applyOrDeferScrollViewFrame");
-  if (!_scrollView) {
-    RNHGEST_TRACE_EXIT("_applyOrDeferScrollViewFrame");
-    return;
+  if (_scrollView && !CGRectEqualToRect(_scrollView.frame, self.bounds)) {
+    _scrollView.frame = self.bounds;
   }
-
-  if (CGRectEqualToRect(_scrollView.frame, self.bounds)) {
-    _pendingScrollViewFrame = CGRectNull;
-    RNHGEST_TRACE_EXIT("_applyOrDeferScrollViewFrame");
-    return;
-  }
-
-  const BOOL svBusy = _scrollView.isTracking ||
-                      _scrollView.isDragging ||
-                      _scrollView.isDecelerating;
-#if RNCV_DISABLE_HSUB_DEFERRED_FRAME
-  // A/B test mode: bypass the H-2.1.1 defer-and-flush pathway. Apply the
-  // frame change immediately even when the scroll view is busy. This will
-  // re-introduce the original symptoms H-2.1.1 was masking (recognizer
-  // cancellation mid-drag, isDragging=1 isDecel=1 wedge state) but isolates
-  // the deferred-flush as either the cause of the post-decel "H list dead"
-  // wedge or not.
-  const BOOL deferAllowed = NO;
-#else
-  const BOOL deferAllowed = YES;
-#endif
-  if (svBusy && deferAllowed) {
-    _pendingScrollViewFrame = self.bounds;
-#if RNCV_ENABLE_HSUB_LOGS
-    NSLog(@"[RNCV-HSUB-IOS-LAYOUT] s=%d DEFER svFrame=(%.1f,%.1f,%.1fx%.1f) "
-          @"target=(%.1f,%.1f,%.1fx%.1f) busy=tracking%d/drag%d/decel%d",
-          _sectionIndex,
-          _scrollView.frame.origin.x, _scrollView.frame.origin.y,
-          _scrollView.frame.size.width, _scrollView.frame.size.height,
-          self.bounds.origin.x, self.bounds.origin.y,
-          self.bounds.size.width, self.bounds.size.height,
-          _scrollView.isTracking ? 1 : 0,
-          _scrollView.isDragging ? 1 : 0,
-          _scrollView.isDecelerating ? 1 : 0);
-#endif
-    RNHGEST_TRACE_EXIT("_applyOrDeferScrollViewFrame");
-    return;
-  }
-
-  _scrollView.frame = self.bounds;
-  _pendingScrollViewFrame = CGRectNull;
   RNHGEST_TRACE_EXIT("_applyOrDeferScrollViewFrame");
 }
 
-// Apply any deferred _scrollView.frame target. Called from the scroll-end
-// delegate hooks below (drag-end without decel, decel-end).
+// B1.1: no pending frame to flush — deferred-frame path removed.
 - (void)_flushPendingScrollViewFrameIfNeeded
 {
-  RNHGEST_TRACE_ENTER("_flushPendingScrollViewFrameIfNeeded");
-  if (!_scrollView) {
-    RNHGEST_TRACE_EXIT("_flushPendingScrollViewFrameIfNeeded");
-    return;
-  }
-  if (CGRectIsNull(_pendingScrollViewFrame)) {
-    RNHGEST_TRACE_EXIT("_flushPendingScrollViewFrameIfNeeded");
-    return;
-  }
-  // Re-resolve against current bounds — they may have moved on while the
-  // gesture was active. self.bounds is the up-to-date authoritative value.
-  CGRect target = self.bounds;
-  CGRect prev = _scrollView.frame;
-  BOOL didApply = !CGRectEqualToRect(prev, target);
-  if (didApply) {
-    _scrollView.frame = target;
-  }
-  _pendingScrollViewFrame = CGRectNull;
-  RNHGEST_TRACE_EXIT("_flushPendingScrollViewFrameIfNeeded");
 }
 
 // ── Apply ChildVisualState array to subviews via tag map ────────────────────

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <yoga/YGNode.h>
+#include <yoga/YGNodeStyle.h>
 #include <react/debug/react_native_assert.h>
 
 // Cross-platform logging for ShadowNode (runs on background thread).
@@ -47,6 +48,105 @@ namespace facebook::react {
 
 // Must match the string used in codegenNativeComponent('RNCollectionViewContainer').
 const char CollectionViewContainerComponentName[] = "RNCollectionViewContainer";
+
+// ── B1.1 helpers ─────────────────────────────────────────────────────────────
+// Inject explicit Yoga height (and optionally width) for a cell whose sizing
+// state is Measured, so Yoga returns the exact cached value on this layout pass
+// instead of re-calling the intrinsic measure function (which drifts sub-pixel).
+// Resets to auto for Placeholder cells so intrinsic measurement runs normally.
+namespace {
+void injectYogaDim(
+    yoga::Node* yogaNode,
+    const std::string& key,
+    const rncv::LayoutCache& cache,
+    rncv::ContentDimension contentDim) {
+
+  auto attrs = cache.getAttributes(key);
+  const bool isMeasured = attrs && attrs->sizingState == rncv::SizingState::Measured;
+
+  if (contentDim == rncv::ContentDimension::Height ||
+      contentDim == rncv::ContentDimension::Both) {
+    if (isMeasured && attrs->frame.height > 0) {
+      YGNodeStyleSetHeight(yogaNode, static_cast<float>(attrs->frame.height));
+    } else {
+      YGNodeStyleSetHeightAuto(yogaNode);
+    }
+  }
+  if (contentDim == rncv::ContentDimension::Width ||
+      contentDim == rncv::ContentDimension::Both) {
+    if (isMeasured && attrs->frame.width > 0) {
+      YGNodeStyleSetWidth(yogaNode, static_cast<float>(attrs->frame.width));
+    } else {
+      YGNodeStyleSetWidthAuto(yogaNode);
+    }
+  }
+}
+} // anonymous namespace
+
+void CollectionViewContainerShadowNode::layoutTree(
+    LayoutContext layoutContext, LayoutConstraints layoutConstraints) {
+  // B1.1: inject measured dims before YGNodeCalculateLayout runs.
+  injectMeasuredDimensionsIfNeeded();
+  ConcreteViewShadowNode::layoutTree(layoutContext, layoutConstraints);
+}
+
+void CollectionViewContainerShadowNode::injectMeasuredDimensionsIfNeeded() {
+  const auto& props =
+      *std::static_pointer_cast<const RNCollectionViewContainerProps>(getProps());
+  auto cache = CollectionViewModule::getLayoutCacheForId(props.layoutCacheId);
+  if (!cache) return;
+
+  // Determine which Yoga dimension(s) are content-determined for this layout.
+  std::string layoutType = "list";
+  switch (props.layoutType) {
+    case RNCollectionViewContainerLayoutType::Grid:          layoutType = "grid";          break;
+    case RNCollectionViewContainerLayoutType::Masonry:       layoutType = "masonry";       break;
+    case RNCollectionViewContainerLayoutType::Flow:          layoutType = "flow";          break;
+    case RNCollectionViewContainerLayoutType::Compositional: layoutType = "compositional"; break;
+    default: break;
+  }
+  auto engine = CollectionViewModule::getLayoutEngineForId(
+      props.layoutCacheId, layoutType);
+  const auto contentDim = engine
+      ? engine->contentDeterminedDimension()
+      : rncv::ContentDimension::Height;
+
+  const auto children       = getLayoutableChildNodes();
+  const auto& childYogaNodes = yogaNode_.getChildren();
+  const size_t N = std::min(children.size(), childYogaNodes.size());
+
+  for (size_t i = 0; i < N; ++i) {
+    auto* yogaChild = childYogaNodes[i];
+    const auto& childNodeProps = children[i]->getProps();
+
+    // H-sub-container (RNCollectionSubContainer or legacy RNOrthogonalSectionView):
+    // inject for each H-cell grandchild — both axes (compositional = ContentDimension::Both).
+    if (std::dynamic_pointer_cast<const RNCollectionSubContainerProps>(childNodeProps) ||
+        std::dynamic_pointer_cast<const RNOrthogonalSectionViewProps>(childNodeProps)) {
+      const auto hChildren    = children[i]->getLayoutableChildNodes();
+      const auto& hYogaNodes  = yogaChild->getChildren();
+      const size_t M = std::min(hChildren.size(), hYogaNodes.size());
+      for (size_t j = 0; j < M; ++j) {
+        auto gcProps = std::dynamic_pointer_cast<const RNMeasuredCellProps>(
+            hChildren[j]->getProps());
+        if (!gcProps || gcProps->cacheKey.empty()) continue;
+        injectYogaDim(hYogaNodes[j], gcProps->cacheKey, *cache,
+                      rncv::ContentDimension::Both);
+      }
+      continue;
+    }
+
+    // V-section cell: inject the content-determined axis for this layout type.
+    std::string key;
+    if (auto p = std::dynamic_pointer_cast<const RNMeasuredCellProps>(childNodeProps)) {
+      key = p->cacheKey;
+    } else if (auto p = std::dynamic_pointer_cast<const RNScrollCoordinatedViewProps>(childNodeProps)) {
+      key = p->cacheKey;
+    }
+    if (key.empty()) continue;
+    injectYogaDim(yogaChild, key, *cache, contentDim);
+  }
+}
 
 void CollectionViewContainerShadowNode::layout(LayoutContext layoutContext) {
   RNCV_SN_LOG("layout() BEGIN");

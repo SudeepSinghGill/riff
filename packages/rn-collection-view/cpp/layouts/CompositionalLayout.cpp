@@ -197,50 +197,10 @@ float CompositionalLayout::finalizeHSection(
     }
   }
 
-  // Section height = max of any (Yoga-reported) cell height the layout knows
-  // about. The std::ceil normalizes to integer points so the wrapper frame
-  // (and downstream UIScrollView frame) are stable across runs even
-  // when raw sub-pixel cell heights drift slightly between Yoga passes.
-  float rawSectionH = maxCrossExtent > 0.0f
-      ? std::ceil(maxCrossExtent)
-      : std::ceil(estimatedH);
-
-  // Hysteresis: suppress section-height changes < 2pt vs the previously cached
-  // wrapper height. This is a defensive guard against Yoga's intrinsic
-  // measurement non-determinism — the same React tree commit-after-commit can
-  // produce slightly different intrinsic heights at sub-pixel resolution
-  // (e.g. cell h=335.3 on one pass, 334.7 on the next), which after ceil()
-  // flips the per-section max between, say, 343 and 344.
-  //
-  // Why this matters mid-gesture: the wrapper frame flows
-  //   cache → CollectionSubContainerShadowNode::correctContentSize → iOS view,
-  // which on iOS sets the inner UIScrollView's frame via FlexibleHeight
-  // autoresize. A scroll view frame change while the user is touching CANCELS
-  // the active pan gesture recognizer (UIGestureRecognizerStateCancelled),
-  // which leaves UIKit in an isDragging=1 isDecel=1 isTracking=0 wedge state
-  // and makes subsequent gestures unrecognizable until the touch is fully
-  // released and re-acquired.
-  //
-  // 2pt threshold rationale: Yoga's sub-pixel drift is bounded by ~1px on
-  // either side of the rounding boundary, so a 2pt window absorbs all
-  // measurement noise. Real layout changes (insert/remove cell, content
-  // swap, image aspect change, font metric change) produce >= 4pt deltas
-  // and propagate immediately.
-  //
-  // NOTE: this is a tactical fix. The proper fix is for the leaf layout
-  // engines to push measured cell sizes back as explicit dimensions on the
-  // cell (FlashList/RecyclerListView model), so Yoga measures intrinsically
-  // exactly once per content version instead of every commit. Tracked as
-  // L-tier "Layout engine pushes measured size as explicit dimension" in
-  // cursor-plan.md / ethereal-seeking-willow.md.
-  float sectionH = rawSectionH;
-  auto prevWrapper = _cache->getAttributes(
-      "h-section-wrapper-" + std::to_string(sectionIndex));
-  if (prevWrapper && prevWrapper->frame.height > 0.0f) {
-    if (std::abs(rawSectionH - prevWrapper->frame.height) < 2.0f) {
-      sectionH = prevWrapper->frame.height;
-    }
-  }
+  // Section height = max cross-axis extent of any cell in this H section.
+  // B1.1: explicit Yoga dim injection eliminates sub-pixel drift, so std::ceil
+  // and the former 2pt hysteresis guard are no longer needed here.
+  float sectionH = maxCrossExtent > 0.0f ? maxCrossExtent : estimatedH;
 
   // Wrapper entry: V position (0, contentCursorY), size (vpW, sectionH).
   LayoutAttributes wrapper;
@@ -249,8 +209,8 @@ float CompositionalLayout::finalizeHSection(
   wrapper.section       = sectionIndex;
   wrapper.isDecoration  = true;
   wrapper.decorationKind = "h-section-wrapper";
-  RNCV_COMP_LOG("finalizeHSection sIdx=%d contentCursorY=%.1f maxCE=%.1f rawH=%.1f sectionH=%.1f",
-               sectionIndex, (float)contentCursorY, maxCrossExtent, rawSectionH, sectionH);
+  RNCV_COMP_LOG("finalizeHSection sIdx=%d contentCursorY=%.1f maxCE=%.1f sectionH=%.1f",
+               sectionIndex, (float)contentCursorY, maxCrossExtent, sectionH);
   _cache->setAttributes(wrapper);
 
   // Content-width entry for TS (frame.width = total H content width).
@@ -316,26 +276,21 @@ void CompositionalLayout::refreshHSectionWrapperHeight(
   }
 
   // Preserve existing height if no measured items were found yet.
-  float rawSectionH = maxCrossExtent > 0.0f
-      ? std::ceil(maxCrossExtent)
-      : wrapper->frame.height;
+  // B1.1: std::ceil and 2pt hysteresis removed — explicit Yoga dim injection
+  // eliminates sub-pixel drift so wrapper height is now stable across commits.
+  float newSectionH = maxCrossExtent > 0.0f ? maxCrossExtent : wrapper->frame.height;
 
   RNCV_COMP_LOG("refreshHSectionWrapper sIdx=%d wrapperY=%.1f "
-                "candidates=%d maxCrossExtent=%.1f rawSectionH=%.1f oldH=%.1f",
+                "candidates=%d maxCrossExtent=%.1f newSectionH=%.1f oldH=%.1f",
                 sectionIndex, (float)wrapperY,
-                candidateCount, maxCrossExtent, rawSectionH, wrapper->frame.height);
+                candidateCount, maxCrossExtent, newSectionH, wrapper->frame.height);
 
-  // Same 2pt hysteresis as finalizeHSection: suppresses gesture-cancelling
-  // scroll-view frame changes caused by Yoga sub-pixel measurement drift.
-  if (std::abs(rawSectionH - wrapper->frame.height) < 2.0f) {
-    RNCV_COMP_LOG("  → suppressed by hysteresis (diff=%.2f < 2pt)", std::abs(rawSectionH - wrapper->frame.height));
-    return;
-  }
+  if (newSectionH == wrapper->frame.height) return;
 
   auto updated = *wrapper;
-  updated.frame.height = rawSectionH;
+  updated.frame.height = newSectionH;
   cache.setAttributes(updated);
-  RNCV_COMP_LOG("  → updated wrapper height %.1f → %.1f", wrapper->frame.height, rawSectionH);
+  RNCV_COMP_LOG("  → updated wrapper height %.1f → %.1f", wrapper->frame.height, newSectionH);
 }
 
 // ── computeOneSection / computeOneSectionFromCache ─────────────────────────────
