@@ -274,9 +274,17 @@ LayoutCache::PrimaryRange LayoutCache::findRangeByPrimary(
       if (a.isDecoration) continue;
       double pos  = horizontal ? a.frame.x : a.frame.y;
       double size = horizontal ? a.frame.width : a.frame.height;
-      // V-flow: use row extent so shorter items in a multi-height row stay in
-      // range until the tallest peer exits. Safe for other layouts (rowExtentHeight==0).
-      if (!horizontal) size = std::max(size, a.rowExtentHeight);
+      if (!horizontal) {
+        if (a.rowGroupPos >= 0) {
+          // Masonry rank group: all items in the group share pos+size so they
+          // enter and exit the render range together — prevents partial-row pop-in.
+          pos  = a.rowGroupPos;
+          size = a.rowExtentHeight;
+        } else {
+          // V-flow: keep shorter row peers in range until tallest exits.
+          size = std::max(size, a.rowExtentHeight);
+        }
+      }
       SortedEntry entry;
       entry.pos = pos;
       entry.size = size;
@@ -553,7 +561,14 @@ LayoutCache::DualRange LayoutCache::findDualRangeByPrimary(
       if (a.isDecoration) continue;
       double pos  = horizontal ? a.frame.x : a.frame.y;
       double size = horizontal ? a.frame.width : a.frame.height;
-      if (!horizontal) size = std::max(size, a.rowExtentHeight);
+      if (!horizontal) {
+        if (a.rowGroupPos >= 0) {
+          pos  = a.rowGroupPos;
+          size = a.rowExtentHeight;
+        } else {
+          size = std::max(size, a.rowExtentHeight);
+        }
+      }
       SortedEntry entry;
       entry.pos = pos;
       entry.size = size;
