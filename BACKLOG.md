@@ -71,13 +71,15 @@ naturally, producing the waterfall height variance.
 
 ## B1 — Architecture (correctness that removes hacks)
 
-### B1.1 L-7: Push measured cell size as explicit Yoga dimension
+### B1.1 L-7: Push measured cell size as explicit Yoga dimension ✅ FIXED
 
-After Yoga first measures a cell intrinsically, the layout engine writes the measured `(w, h)` back as an explicit Yoga constraint on subsequent commits. Yoga then respects the explicit value instead of re-measuring — eliminates sub-pixel non-determinism (cell heights flipping 343/344 across commits). Drop the explicit dimension on cell-key change / content-version bump so real content changes re-run intrinsic measurement exactly once.
-
-**Subsumes:** H-2.1.1 section-level hysteresis hack, all `std::ceil` workarounds, the iOS scroll-view-frame busy-guard. This is how FlashList/RecyclerListView/UICollectionViewCompositionalLayout all work.
-
-**Effort:** ~2d
+**Fixed in `ba9869b`:** Override `layoutTree` in `CollectionViewContainerShadowNode` to call
+`YGNodeStyleSetHeight`/`Width` on `Measured` cells before `YGNodeCalculateLayout` runs.
+Covers V-section cells (Height axis) and H-section grandchildren (Both axes).
+`Placeholder` cells receive `YGNodeStyleSetHeightAuto` so intrinsic measurement runs normally
+on first render. With drift eliminated, also removed:
+- `std::ceil` + 2pt hysteresis in `CompositionalLayout::finalizeHSection` and `refreshHSectionWrapperHeight`
+- `_applyOrDeferScrollViewFrame` busy-guard in `RNCollectionSubContainerView`
 
 ### B1.2 L-1/L-2/L-3: Layout intent violations — let Yoga measure what it should ✅ FIXED
 
