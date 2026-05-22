@@ -20,6 +20,26 @@
 #define RNCV_ENABLE_MVC_TRACE 0
 #endif
 
+// Mirrors RNCV_ENABLE_HSUB_LOGS from CollectionSubContainerShadowNode.cpp.
+// Set to 1 alongside that flag to see B1.1 injection diagnostics:
+//   [RNCV-HSUB-CPP-INJECT]  hChildren/hYogaNodes sizes per H-sub-container,
+//                            isMeasured + injected value per H-cell.
+#ifndef RNCV_ENABLE_HSUB_LOGS
+#define RNCV_ENABLE_HSUB_LOGS 0
+#endif
+
+#if RNCV_ENABLE_HSUB_LOGS
+  #ifdef __APPLE__
+    #include <cstdio>
+    #define RNCV_SN_HSUB_LOG(fmt, ...) do { fprintf(stderr, "[RNCV-HSUB-CPP-INJECT] " fmt "\n", ##__VA_ARGS__); fflush(stderr); } while(0)
+  #else
+    #include <android/log.h>
+    #define RNCV_SN_HSUB_LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "RNCV-HSUB-CPP-INJECT", fmt, ##__VA_ARGS__)
+  #endif
+#else
+  #define RNCV_SN_HSUB_LOG(fmt, ...) ((void)0)
+#endif
+
 #if DEBUG && RNCV_ENABLE_NATIVE_LOGS
   #ifdef __APPLE__
     #include <cstdio>
@@ -121,8 +141,30 @@ void CollectionViewContainerShadowNode::injectMeasuredDimensionsIfNeeded() {
 
     // H-sub-container (RNCollectionSubContainer or legacy RNOrthogonalSectionView):
     // inject for each H-cell grandchild — both axes (compositional = ContentDimension::Both).
-    if (std::dynamic_pointer_cast<const RNCollectionSubContainerProps>(childNodeProps) ||
-        std::dynamic_pointer_cast<const RNOrthogonalSectionViewProps>(childNodeProps)) {
+    if (auto subProps = std::dynamic_pointer_cast<const RNCollectionSubContainerProps>(childNodeProps)) {
+      const auto hChildren    = children[i]->getLayoutableChildNodes();
+      const auto& hYogaNodes  = yogaChild->getChildren();
+      const size_t M = std::min(hChildren.size(), hYogaNodes.size());
+      // Diagnostic: if hYogaNodes is empty while hChildren is not, injection is
+      // a no-op — H-cells won't get B1.1 protection this commit → yoga returns 0.
+      RNCV_SN_HSUB_LOG("sIdx=%d hChildren=%zu hYogaNodes=%zu M=%zu",
+                       subProps->sectionIndex, hChildren.size(), hYogaNodes.size(), M);
+      for (size_t j = 0; j < M; ++j) {
+        auto gcProps = std::dynamic_pointer_cast<const RNMeasuredCellProps>(
+            hChildren[j]->getProps());
+        if (!gcProps || gcProps->cacheKey.empty()) continue;
+        auto attrs = cache->getAttributes(gcProps->cacheKey);
+        const bool isMeasured = attrs && attrs->sizingState == rncv::SizingState::Measured;
+        RNCV_SN_HSUB_LOG("  cell[%zu] key='%s' isMeasured=%d cachedH=%.1f cachedW=%.1f",
+                         j, gcProps->cacheKey.c_str(), isMeasured ? 1 : 0,
+                         attrs ? (float)attrs->frame.height : 0.0f,
+                         attrs ? (float)attrs->frame.width  : 0.0f);
+        injectYogaDim(hYogaNodes[j], gcProps->cacheKey, *cache,
+                      rncv::ContentDimension::Both);
+      }
+      continue;
+    }
+    if (std::dynamic_pointer_cast<const RNOrthogonalSectionViewProps>(childNodeProps)) {
       const auto hChildren    = children[i]->getLayoutableChildNodes();
       const auto& hYogaNodes  = yogaChild->getChildren();
       const size_t M = std::min(hChildren.size(), hYogaNodes.size());

@@ -906,14 +906,20 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
     const BOOL diffH = std::abs(curNH - targetH) > kEps;
 
 #if RNCV_ENABLE_HSUB_LOGS
+    // wasZeroH=1 → cell was just mounted (native h was 0 before first apply) — first-render, not stutter.
+    // wasZeroH=0 + diffH=1 → repeated height correction on an already-visible cell.
+    // drag/decel during diffH=1 → correction mid-gesture → likely visible stutter.
+    const BOOL wasZeroH = curNH < kEps;
     NSLog(@"[RNCV-HSUB-IOS-APPLY] s=%d i=%zu tag=%d "
           @"target=(%.1f,%.1f,%.1fx%.1f) cur=(%.1f,%.1f,%.1fx%.1f) "
-          @"diff=(x%d,y%d,w%d,h%d) hasTransform=%d alpha=%.2f z=%.0f",
+          @"diff=(x%d,y%d,w%d,h%d) wasZeroH=%d drag=%d decel=%d",
           _sectionIndex, i, childTags[i],
           targetX, targetY, targetW, targetH,
           curNX, curNY, curNW, curNH,
           diffX ? 1 : 0, diffY ? 1 : 0, diffW ? 1 : 0, diffH ? 1 : 0,
-          hasActiveTransform ? 1 : 0, cv.opacity, cv.zIndex);
+          wasZeroH ? 1 : 0,
+          _scrollView.isDragging ? 1 : 0,
+          _scrollView.isDecelerating ? 1 : 0);
 #endif
 
     // Always claim authority over this cell's position, even when the
