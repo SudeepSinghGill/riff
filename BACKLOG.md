@@ -304,11 +304,9 @@ eliminated the feedback loop entirely.
 
 **Effort:** ~0.5d (investigation)
 
-### B4.3 H-cell LCV memo removal
+### ~~B4.3 H-cell LCV memo removal~~ ✅ FIXED (2026-05-22)
 
-Line ~3008 in CollectionView.tsx: `(!slotIsHCell || prev.lcv === layoutCacheVersion)` invalidates ALL H cells on every LCV bump. Post-H-2, sub-container ShadowNode handles positioning natively. This check may be unnecessary, causing `hCellCount x vLCV_bumps` wasted re-renders/sec.
-
-**Effort:** ~0.25d
+Removed `(!slotIsHCell || prev.lcv === layoutCacheVersion)` from the Opt-7 element cache check. H-cell positions are owned by the sub-container ShadowNode, not CSS style, so the extra LCV guard was causing every H cell to miss the memo on every V scroll tick. Also removed the now-unused `lcv` field from elementCache set calls.
 
 ### B4.4 Guard unconditional setContentHeight ✅ FIXED
 
@@ -334,13 +332,9 @@ For layouts with `needsSpatialQuery: true`, change `getAttributesInRect` to retu
 
 **Effort:** ~0.5d
 
-### B4.8 LayoutEngine protocol — enforce clear-before-compute structurally
+### ~~B4.8 LayoutEngine protocol — enforce clear-before-compute structurally~~ ✅ FIXED (2026-05-22)
 
-Currently each engine's `computeSections()` must call `_cache->clear()` as its first operation by convention. `ListLayout` had it missing (fixed). The invariant can't be a pure virtual because each engine takes a different params type.
-
-**Fix:** Move `_cache->clear()` into each engine's JSI binding lambda (the call site that bridges JS → C++). `computeSections()` becomes a pure layout function; the JSI layer owns the clear. This is Option B from the discussion; Option A (template method with `doComputeSections` + `_cache` in base class) is the cleaner long-term fix.
-
-**Effort:** ~0.5d
+Moved `_cache->clear()` from each engine's `computeSections()` body into the JSI binding lambda. `computeSections()` is now a pure layout function; the clear is structurally enforced at the JSI call site for all 5 engines. Legacy `compute()` functions retain their own clears and are unaffected. LayoutEngine.h contract comment updated.
 
 ### ~~B4.9 Per-instance LayoutCache — eliminate shared global cache pollution~~ ✅ FIXED (2026-05-22)
 
