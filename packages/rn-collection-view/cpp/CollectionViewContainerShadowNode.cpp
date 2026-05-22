@@ -190,11 +190,55 @@ void CollectionViewContainerShadowNode::injectMeasuredDimensionsIfNeeded() {
   }
 }
 
+bool CollectionViewContainerShadowNode::shouldSkipCorrection() {
+  const auto& props =
+      *std::static_pointer_cast<const RNCollectionViewContainerProps>(getProps());
+  auto cache = CollectionViewModule::getLayoutCacheForId(props.layoutCacheId);
+  if (!cache) return false;
+
+  const uint64_t cv = cache->version();
+  if (cv != lastCacheVersion_) return false;
+
+  const auto children = getLayoutableChildNodes();
+  const size_t N = children.size();
+  if (N != lastChildCount_) return false;
+  if (N == 0) return true;
+
+  size_t tagHash  = N;
+  size_t yogaHash = N;
+  for (size_t i = 0; i < N; ++i) {
+    const auto tag = static_cast<size_t>(children[i]->getTag());
+    tagHash ^= std::hash<size_t>{}(tag) + 0x9e3779b9 + (tagHash << 6) + (tagHash >> 2);
+
+    const auto& f = children[i]->getLayoutMetrics().frame;
+    const size_t vals[4] = {
+      static_cast<size_t>(std::lround(f.origin.x      * 100.0f)),
+      static_cast<size_t>(std::lround(f.origin.y      * 100.0f)),
+      static_cast<size_t>(std::lround(f.size.width    * 100.0f)),
+      static_cast<size_t>(std::lround(f.size.height   * 100.0f)),
+    };
+    for (const size_t v : vals) {
+      yogaHash ^= v + 0x9e3779b9 + (yogaHash << 6) + (yogaHash >> 2);
+    }
+  }
+  if (tagHash  != lastChildTagsHash_)  return false;
+  if (yogaHash != lastYogaHeightHash_) return false;
+
+  return true;
+}
+
 void CollectionViewContainerShadowNode::layout(LayoutContext layoutContext) {
   RNCV_SN_LOG("layout() BEGIN");
 
   // Step 1: Call parent layout — Yoga computes child dimensions.
   ConcreteViewShadowNode::layout(layoutContext);
+
+  // B4.1: Skip correction + state update when children + cache are unchanged.
+  // Cloned member state from previous commit is still valid.
+  if (shouldSkipCorrection()) {
+    RNCV_SN_LOG("layout() SKIP — children + cache unchanged");
+    return;
+  }
 
   // Step 2: Read Yoga-computed heights, compute correct positions.
   correctChildPositionsIfNeeded();
@@ -665,6 +709,33 @@ void CollectionViewContainerShadowNode::correctChildPositionsIfNeeded() {
       Point{correctedPositions_[i * 4], correctedPositions_[i * 4 + 1]},
       Size{correctedPositions_[i * 4 + 2], correctedPositions_[i * 4 + 3]}
     });
+  }
+
+  // B4.1: Update short-circuit tracking state for next layout's shouldSkipCorrection check.
+  lastChildCount_ = N;
+  {
+    size_t tagHash  = N;
+    size_t yogaHash = N;
+    for (size_t i = 0; i < N; ++i) {
+      const auto tag = static_cast<size_t>(children[i]->getTag());
+      tagHash ^= std::hash<size_t>{}(tag) + 0x9e3779b9 + (tagHash << 6) + (tagHash >> 2);
+
+      const auto& f = children[i]->getLayoutMetrics().frame;
+      const size_t vals[4] = {
+        static_cast<size_t>(std::lround(f.origin.x      * 100.0f)),
+        static_cast<size_t>(std::lround(f.origin.y      * 100.0f)),
+        static_cast<size_t>(std::lround(f.size.width    * 100.0f)),
+        static_cast<size_t>(std::lround(f.size.height   * 100.0f)),
+      };
+      for (const size_t v : vals) {
+        yogaHash ^= v + 0x9e3779b9 + (yogaHash << 6) + (yogaHash >> 2);
+      }
+    }
+    lastChildTagsHash_  = tagHash;
+    lastYogaHeightHash_ = yogaHash;
+  }
+  if (cache) {
+    lastCacheVersion_ = cache->version();
   }
 }
 

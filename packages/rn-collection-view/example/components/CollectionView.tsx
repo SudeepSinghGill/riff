@@ -1727,7 +1727,7 @@ export function Riff<T = unknown>({
     if (__DEV__ && RNCV_HEALTH_DIAG && chChanged) healthRef.current.leCH++;
     contentHeightRef.current = layoutContentHeight;
     layoutContentSizeRef.current = layoutContentSize;
-    setContentHeight(layoutContentHeight);
+    if (chChanged) setContentHeight(layoutContentHeight);
 
     if (itemCount === 0) {
       setRenderRange({ first: 0, last: -1 });

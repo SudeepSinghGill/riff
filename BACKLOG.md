@@ -284,15 +284,23 @@ Document + export the H-2 `RNCollectionSubContainer` framework so consumers can 
 
 ## B4 — Residual Perf
 
-### B4.1 Main container ShadowNode short-circuit
+### B4.1 Main container ShadowNode short-circuit ✅ FIXED
 
-Same pattern as H-4b for sub-containers. Cache `{childTags hash, cacheVersion}` and skip `correctChildPositionsIfNeeded` when nothing changed. Helps during idle and inertial deceleration.
+**Fixed:** `shouldSkipCorrection()` added to `CollectionViewContainerShadowNode` — same H-4b
+pattern as the sub-container. Caches `{cacheVersion, childCount, childTagsHash, yogaFrameHash}`.
+`layout()` calls it after `ConcreteViewShadowNode::layout()` and returns early if all four match,
+skipping `correctChildPositionsIfNeeded` + `updateStateIfNeeded` entirely. The cloned member
+state from the previous commit is valid and the Fabric-carried state is already correct.
 
 **Effort:** ~0.5d
 
-### B4.2 Investigate spurious Yoga deltas on repeat scroll
+### B4.2 Investigate spurious Yoga deltas on repeat scroll ✅ RESOLVED
 
-vLCV is 2-15/sec even when scrolling through already-measured content. Batch mode reduced N→1 per commit, but the commits themselves shouldn't have deltas on repeat scroll. Possible causes: sub-pixel Yoga measurement drift, H sub-container recycling. L-7 may eliminate this entirely.
+**Resolved by B1.8 (computeSection preserves Measured heights).** Post-fix HEALTH logs confirm
+`vLCV=0` during steady-state scroll through already-measured content. The root cause was
+`computeSection` resetting Measured cells to estimated heights on every layout effect run,
+not Yoga drift or sub-container recycling. L-7 (B1.1) eliminated sub-pixel drift; B1.8
+eliminated the feedback loop entirely.
 
 **Effort:** ~0.5d (investigation)
 
@@ -302,9 +310,11 @@ Line ~3008 in CollectionView.tsx: `(!slotIsHCell || prev.lcv === layoutCacheVers
 
 **Effort:** ~0.25d
 
-### B4.4 Guard unconditional setContentHeight
+### B4.4 Guard unconditional setContentHeight ✅ FIXED
 
-Line ~1649: `setContentHeight(layoutContentHeight)` always called, even when value is same. React does eager bailout for same-value setState, but should guard like the H-6 path does.
+**Fixed:** `setContentHeight(layoutContentHeight)` in the main `useLayoutEffect` path (line ~1730)
+now guarded by `chChanged` (already computed on the line above). Avoids the React reconciler
+overhead on layout effect runs where content height is stable.
 
 **Effort:** trivial
 
