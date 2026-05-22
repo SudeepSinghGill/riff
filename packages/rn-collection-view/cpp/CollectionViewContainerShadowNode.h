@@ -81,6 +81,14 @@ class CollectionViewContainerShadowNode final
   void injectMeasuredDimensionsIfNeeded();
 
   /**
+   * B4.1: Skip correction + state update when children + cache are unchanged.
+   * Caches {cacheVersion, childCount, childTagsHash, yogaFrameHash} and returns
+   * true when all four match — same short-circuit pattern as H-4b in
+   * CollectionSubContainerShadowNode.
+   */
+  bool shouldSkipCorrection();
+
+  /**
    * Layout-agnostic position correction:
    * - Read positions from LayoutCache
    * - Diff Yoga measurements against cache
@@ -104,6 +112,12 @@ class CollectionViewContainerShadowNode final
   Float correctedContentWidth_  = 0;  // populated for horizontal layouts (ContentDimension::Width)
   // Opt F: bounding rect computed in correctChildPositionsIfNeeded, used by updateStateIfNeeded.
   Rect correctedBoundingRect_{};
+
+  // B4.1: short-circuit tracking state (copied on Fabric clone → persists across commits).
+  uint64_t lastCacheVersion_   = 0;
+  size_t   lastChildCount_     = 0;
+  size_t   lastChildTagsHash_  = 0;
+  size_t   lastYogaHeightHash_ = 0;
 };
 
 } // namespace facebook::react
