@@ -342,22 +342,13 @@ Currently each engine's `computeSections()` must call `_cache->clear()` as its f
 
 **Effort:** ~0.5d
 
-### B4.9 Per-instance LayoutCache — eliminate shared global cache pollution
+### ~~B4.9 Per-instance LayoutCache — eliminate shared global cache pollution~~ ✅ FIXED (2026-05-22)
 
-**Problem:** All CollectionView instances share one C++ `LayoutCache` and one set of layout engine singletons (ListLayout, GridLayout, etc.). When navigating between screens, each new instance's C++ `computeSections()` overwrites the global cache. The ShadowNode's first Fabric layout pass reads whichever data happens to be in the cache at commit time — potentially stale data from the previous instance.
+**Problem:** All CollectionView instances share one C++ `LayoutCache` and one set of layout engine singletons (ListLayout, GridLayout, etc.). When navigating between screens, each new instance's C++ `computeSections()` overwrites the global cache.
 
-**Current mitigation (B0.2b fix):** Unmount cleanup removed. `prepare()` overwrites stale data from previous instances before the ShadowNode reads. The `if (!layoutContext)` path in the prepare `useMemo` is a residual safety net for `initialWidth={0}` only.
+**Fix:** `PerInstanceData` struct + `_instances` map in `CollectionViewModule`. `createLayoutCache()` / `destroyLayoutCache(id)` lifecycle JSI handlers. Per-instance JSI accessors (`layoutCacheById`, `getListLayoutById`, etc.). `processScroll` + `processHScroll` take `cacheId` as first arg. All 9 layout classes wire `_cache`/`_engine` to per-instance objects via `context.cacheId` in `prepare()`. `CollectionView.tsx` creates cache on mount, destroys on unmount, threads cacheId into all call sites.
 
-**Real fix:** Each CollectionView instance gets a unique `cacheId` (already in `CollectionViewState.cacheId`). The C++ module maintains `std::map<int32_t, LayoutCache>` keyed by cacheId. All JSI calls (`computeSections`, `getAttributesInRect`, `version`, etc.) take `cacheId` as their first parameter. `_layoutCacheId` in the module becomes an instance lookup key, not a shared singleton.
-
-**Scope:**
-- C++: `CollectionViewModule` — change `_layoutCache` from a single `LayoutCache` to a `std::map<int32_t, LayoutCache>`. All JSI binding lambdas route to the per-instance cache.
-- TS: `CollectionView.tsx` — pass `layoutCacheId` (from native state) to every `nativeMod.layoutCache.*` call.
-- TS: Layout engines (list.ts, compositional.ts, etc.) — accept `cacheId` param or get it from a context/closure.
-- Remove all on-mount / on-unmount `layoutCache.clear()` calls (now unnecessary).
-
-**Effort:** ~1–2d
-**Priority:** after all current B0/B1 fixes are stable
+**Branch:** `feat/b4-9-per-instance-cache` → merged to `main`
 
 ---
 
