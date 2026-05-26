@@ -345,7 +345,17 @@ export interface RiffProps<T = unknown> {
    * Initial height estimate for uniform-height items. Yoga is always the authority
    * for final cell dimensions — this value seeds the layout before measurement.
    * When provided, the onLayout measurement pass is skipped (no per-cell height updates).
-   * Use when cells are visually uniform and you want zero measurement overhead.
+   *
+   * WARNING: Only use this if you can guarantee that all items render at the same
+   * height in practice. If items render taller or shorter than this value, layout
+   * positions will be wrong and scroll offsets will drift — there is no correction
+   * pass to catch the error. When in doubt, use estimatedItemHeight instead.
+   *
+   * Only meaningful for the default vertical list (no `layout` prop). When a layout
+   * is provided, sizing is owned by the layout's heightForItem/sizeForItem delegates;
+   * this prop is used only as a stride fallback for the JS window computation and
+   * as the H-container height seed before the first measurement.
+   *
    * Mutually exclusive with estimatedItemHeight.
    */
   itemHeight?: number;
@@ -355,6 +365,12 @@ export interface RiffProps<T = unknown> {
    * Enables the onLayout measurement pass: cells report their measured height,
    * LayoutCache is updated incrementally, and scroll position is corrected so
    * visible content does not jump when an item above it changes size.
+   *
+   * Only meaningful for the default vertical list (no `layout` prop). When a layout
+   * is provided, sizing is owned by the layout's heightForItem/sizeForItem delegates;
+   * this prop is used only as a stride fallback for the JS window computation and
+   * as the H-container height seed before the first measurement.
+   *
    * Mutually exclusive with itemHeight.
    */
   estimatedItemHeight?: number;
