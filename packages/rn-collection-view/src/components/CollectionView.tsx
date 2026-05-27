@@ -465,14 +465,54 @@ export interface RiffProps<T = unknown> {
   onContentSizeChange?: (width: number, height: number) => void;
 
   /**
-   * P5.3 / FlashList-compatible blank area callback.
-   * Fires on every scroll event with the number of blank (unrendered) pixels
-   * at the top and bottom of the visible viewport.
-   *   offsetStart: blank px at the leading edge (top when scrolling down)
-   *   offsetEnd:   blank px at the trailing edge (bottom when scrolling down)
+   * @experimental
+   *
+   * Fires on every scroll event with an estimate of how many pixels of the
+   * visible viewport are not covered by the render window.
+   *   offsetStart: gap px at the leading edge (top when scrolling down)
+   *   offsetEnd:   gap px at the trailing edge (bottom when scrolling down)
    * Both are 0 when the render window fully covers the viewport.
+   *
+   * Important caveats — read before relying on this:
+   *
+   * 1. Geometry-based, not pixel-based. Values are derived from the position
+   *    of the first/last rendered item in LayoutCache vs the current scroll
+   *    offset. A non-zero value means the render window boundary has receded
+   *    past the viewport edge — it does NOT mean blank pixels were actually
+   *    painted on screen (cells may already be mid-mount).
+   *
+   * 2. Always 0 for custom layouts. The computation only works on sorted
+   *    layouts (list, grid, masonry, flow). Custom spatial-query layouts
+   *    always return 0.
+   *
+   * 3. Fires on every scroll tick (not throttled). Gate expensive work inside
+   *    the callback yourself.
+   *
+   * For a reliable indication of what the user can see, use onViewableRangeChange.
+   * Only enable RNCV_DEBUG_CALLBACKS to receive this callback.
    */
   onBlankArea?: (event: { offsetStart: number; offsetEnd: number }) => void;
+
+  /**
+   * Fires when any windowing range boundary changes. Ranges are flat indices
+   * into the data array (or the flattened sections array in sectioned mode).
+   *
+   *   visible:  items whose frame overlaps the current viewport
+   *   render:   items currently mounted (the render window around visible)
+   *   measure:  items pre-mounted off-screen for height measurement
+   *             (only present in variable-height mode, i.e. estimatedItemHeight)
+   *
+   * Called only when at least one boundary actually changes — not on every
+   * scroll tick. Zero overhead on scroll events where the window is stable.
+   *
+   * Use this instead of onBlankArea for reliable visibility tracking. To get
+   * the item or its frame for a given index, call ref.current.getItemLayout(key).
+   */
+  onViewableRangeChange?: (ranges: {
+    visible: { first: number; last: number };
+    render:  { first: number; last: number };
+    measure?: { first: number; last: number };
+  }) => void;
 
   // ref is exposed via React.forwardRef — not declared here.
   // Usage: const ref = useRef<RiffHandle<T>>(null); <Riff ref={ref} />
@@ -1020,6 +1060,7 @@ function RiffBase<T = unknown>({
   recyclePoolSize,
   onRenderCountChange,
   onBlankArea,
+  onViewableRangeChange,
   onDataChange,
   onPrefetch,
   onEvict,
@@ -1211,6 +1252,8 @@ function RiffBase<T = unknown>({
 
   // Previous range for O(1) change detection — compared by value, not string.
   const prevRenderRef = useRef<Range | null>(null);
+  // Last ranges delivered to onViewableRangeChange — used to suppress no-op calls.
+  const prevViewableRef = useRef<{ visFirst: number; visLast: number; renFirst: number; renLast: number; measFirst: number; measLast: number } | null>(null);
 
   // Scroll position tracking — used for onContentSizeChange synthesis and
   // blank area computation. Velocity is now derived natively in LayoutCache
@@ -1997,6 +2040,13 @@ function RiffBase<T = unknown>({
       prevRenderRef.current = budgeted;
       setRenderRange(budgeted);
 
+      if (onViewableRangeChange) {
+        const vF = ws.visible.first, vL = ws.visible.last;
+        const rF = budgeted.first,   rL = budgeted.last;
+        prevViewableRef.current = { visFirst: vF, visLast: vL, renFirst: rF, renLast: rL, measFirst: -1, measLast: -1 };
+        onViewableRangeChange({ visible: { first: vF, last: vL }, render: { first: rF, last: rL } });
+      }
+
       // Seed content height from estimates so scroll view has a size.
       const estContent = sectionInsetTop + itemCount * effectiveStride - itemSpacing + sectionInsetBottom;
       contentHeightRef.current = estContent;
@@ -2135,6 +2185,29 @@ function RiffBase<T = unknown>({
         const offsetEnd   = scrollResult.blankAfter  ?? 0;
         lastBlankAreaRef.current = { offsetStart, offsetEnd };
         onBlankArea({ offsetStart, offsetEnd });
+      }
+
+      // onViewableRangeChange — fires only when a boundary actually changes.
+      // visibleFirst/Last come directly from processScroll (already computed).
+      if (onViewableRangeChange) {
+        const vF = scrollResult.visibleFirst;
+        const vL = scrollResult.visibleLast;
+        const rF = budgetedR.first;
+        const rL = budgetedR.last;
+        const mF = measureAhead > 0 ? scrollResult.measureFirst : -1;
+        const mL = measureAhead > 0 ? scrollResult.measureLast  : -1;
+        const prev = prevViewableRef.current;
+        if (!prev || prev.visFirst !== vF || prev.visLast !== vL ||
+            prev.renFirst !== rF || prev.renLast !== rL ||
+            prev.measFirst !== mF || prev.measLast !== mL) {
+          prevViewableRef.current = { visFirst: vF, visLast: vL, renFirst: rF, renLast: rL, measFirst: mF, measLast: mL };
+          const ranges: Parameters<typeof onViewableRangeChange>[0] = {
+            visible: { first: vF, last: vL },
+            render:  { first: rF, last: rL },
+          };
+          if (measureAhead > 0) ranges.measure = { first: mF, last: mL };
+          onViewableRangeChange(ranges);
+        }
       }
 
       // F1.3 — Prefetch/evict callbacks.
