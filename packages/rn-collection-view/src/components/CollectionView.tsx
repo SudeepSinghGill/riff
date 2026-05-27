@@ -270,16 +270,29 @@ export interface RiffHandle<T = unknown> {
   snapshot(): RiffSnapshot<T>;
 
   /**
-   * Apply a snapshot: compute new data, evict stale heights for
-   * removed/reloaded items, trigger LayoutAnimation for position changes,
-   * and commit the update inside startTransition.
-   * The new data is delivered via the onDataChange prop.
+   * Apply a snapshot: diff old vs new keys, evict stale heights for removed
+   * items, trigger LayoutAnimation for position shifts, and commit the update
+   * inside startTransition.
+   *
+   * Two ways to deliver the new data array to your state:
+   *
+   *   // Option A — pass the setter at the call site (recommended):
+   *   ref.current.apply(snap, setData);
+   *
+   *   // Option B — wire onDataChange in JSX and call apply with no setter:
+   *   <Riff onDataChange={setData} ... />
+   *   ref.current.apply(snap);
+   *
+   * If both are provided, the call-site setter wins.
+   * If neither is provided, a dev warning is logged and the data does not update.
    */
-  apply(snap: RiffSnapshot<T>, animated?: boolean): void;
+  apply(snap: RiffSnapshot<T>, setData?: ((data: T[]) => void) | boolean, animated?: boolean): void;
 
   /**
    * Evict cached heights for the given keys so they are re-measured on the
-   * next render. Call this when item content changes behind the same key.
+   * next render. Prefer the remeasureOnItemChange prop for automatic invalidation
+   * when item content changes. Use this as an escape hatch when the change is
+   * not reflected in the data prop (e.g. height driven by context or global state).
    */
   invalidateKeys(keys: Iterable<string>): void;
 
@@ -374,6 +387,24 @@ export interface RiffProps<T = unknown> {
    * Mutually exclusive with itemHeight.
    */
   estimatedItemHeight?: number;
+
+  /**
+   * Called when an item's object reference changes behind the same key to decide
+   * whether its cached height should be invalidated and the cell re-measured.
+   *
+   * Default: `(prev, next) => prev !== next` — any reference change triggers
+   * re-measurement. Override to skip remeasure when only non-height fields change
+   * (e.g. a badge count update that doesn't affect cell height).
+   *
+   * Only active in variable-height mode (estimatedItemHeight or a layout with
+   * heightForItem). Has no effect when itemHeight is used.
+   *
+   * Eliminates the need to call ref.current.invalidateKeys() manually for the
+   * common case of updating item content via setData. Matches the mental model
+   * of FlatList/FlashList: just update your data array, re-measurement is automatic.
+   */
+  remeasureOnItemChange?: (prev: T, next: T) => boolean;
+
   itemSpacing?: number;
   sectionInsetTop?: number;
   sectionInsetBottom?: number;
@@ -518,9 +549,17 @@ export interface RiffProps<T = unknown> {
   // Usage: const ref = useRef<RiffHandle<T>>(null); <Riff ref={ref} />
 
   /**
-   * F1.2 — Called by ref.current.apply(snap) with the new data array.
-   * The consumer should update their data state with this value.
-   * Already wrapped in startTransition internally — no extra wrapping needed.
+   * Called by ref.current.apply(snap) with the mutated data array so you
+   * can sync your React state. Equivalent to passing your state setter directly
+   * to apply(): `ref.current.apply(snap, setData)`.
+   *
+   * Wire this in JSX when you always want the same setter:
+   *   const [data, setData] = useState(initialItems);
+   *   <Riff data={data} onDataChange={setData} ref={listRef} />
+   *   ref.current.apply(snap); // no setter needed at call site
+   *
+   * Already wrapped in startTransition internally — do not wrap again.
+   * If both onDataChange and a call-site setter are provided, the call-site wins.
    */
   onDataChange?: (data: T[]) => void;
 
@@ -1047,6 +1086,7 @@ function RiffBase<T = unknown>({
   getSupplementaryType: propGetSupplementaryType,
   itemHeight,
   estimatedItemHeight,
+  remeasureOnItemChange,
   itemSpacing = 0,
   sectionInsetTop = 0,
   sectionInsetBottom = 0,
@@ -1933,7 +1973,18 @@ function RiffBase<T = unknown>({
 
     snapshot: () => new RiffSnapshot(data, keyExtractor),
 
-    apply: (snap: RiffSnapshot<T>, animated = true) => {
+    apply: (snap: RiffSnapshot<T>, setDataOrAnimated?: ((data: T[]) => void) | boolean, animated = true) => {
+      // Resolve overloaded second arg: function = call-site setter, boolean = legacy animated flag.
+      const callSiteSetter = typeof setDataOrAnimated === 'function' ? setDataOrAnimated : undefined;
+      const isAnimated     = typeof setDataOrAnimated === 'boolean'  ? setDataOrAnimated : animated;
+      const effectiveSetter = callSiteSetter ?? onDataChange;
+      if (__DEV__ && !effectiveSetter) {
+        console.warn(
+          'Riff: apply() was called but no data setter is wired. ' +
+          'Pass your state setter at the call site — ref.current.apply(snap, setData) — ' +
+          'or wire onDataChange={setData} in JSX. Without one of these the data will not update.',
+        );
+      }
       // Build a raw-key → canonical-key map from current sections BEFORE the mutation.
       // Needed to normalize reloadedKeys (caller-supplied raw keys) to LayoutCache canonical format.
       // sectionedKeyExtractorCb already produces canonical keys via layoutContextRef.itemKeys,
@@ -1971,7 +2022,7 @@ function RiffBase<T = unknown>({
 
       // LayoutAnimation for position changes (moves, shifts after insert/delete).
       // 350ms spring gives a clearly visible animation on absolute-positioned cells.
-      if (animated && (diff.moved.length > 0 || diff.removed.length > 0 || diff.inserted.length > 0)) {
+      if (isAnimated && (diff.moved.length > 0 || diff.removed.length > 0 || diff.inserted.length > 0)) {
         LayoutAnimation.configureNext({
           duration: 350,
           create:  { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
@@ -1982,7 +2033,7 @@ function RiffBase<T = unknown>({
 
       // Commit inside startTransition so scroll is not interrupted
       React.startTransition(() => {
-        onDataChange?.(newData);
+        effectiveSetter?.(newData);
       });
     },
 
@@ -1991,7 +2042,52 @@ function RiffBase<T = unknown>({
       if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
       setLayoutCacheVersion(v => v + 1);
     },
-  }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps -- onDataChange intentionally included; callSiteSetter is pass-through
+
+  // ── remeasureOnItemChange — auto height-cache invalidation ───────────────────
+  // Tracks item object identity per key. When data changes, scans items in the
+  // current render+measure range (O(window), never O(n)). If an item reference
+  // changed and remeasureOnItemChange returns true, evicts the cached height so
+  // the cell re-measures on the next render.
+  // Fires on any data prop change — including non-scroll triggers like a widget
+  // content update — not just on scroll events.
+  const prevItemMapRef = useRef<Map<string, T>>(new Map());
+  useEffect(() => {
+    if (!isVariableHeight || !remeasureOnItemChange) {
+      // Still keep the map current so it's accurate if the prop is toggled on later.
+      if (data.length > 0 && keyExtractor) {
+        for (let i = 0; i < data.length; i++) {
+          const item = data[i]!;
+          const key = keyExtractor(item, i);
+          prevItemMapRef.current.set(key, item);
+        }
+      }
+      return;
+    }
+
+    // Determine the range to scan: union of render + measure ranges.
+    const rr = renderRange;
+    const mr = measureRange;
+    const scanFirst = Math.max(0, Math.min(rr?.first ?? 0, mr.first));
+    const scanLast  = Math.min(data.length - 1, Math.max(rr?.last ?? -1, mr.last));
+
+    const keysToInvalidate: string[] = [];
+    for (let i = scanFirst; i <= scanLast; i++) {
+      const item = data[i];
+      if (!item) continue;
+      const key = keyExtractor ? keyExtractor(item, i) : String(i);
+      const prev = prevItemMapRef.current.get(key);
+      if (prev !== undefined && prev !== item && remeasureOnItemChange(prev, item)) {
+        keysToInvalidate.push(key);
+      }
+      prevItemMapRef.current.set(key, item);
+    }
+
+    if (keysToInvalidate.length > 0) {
+      for (const k of keysToInvalidate) nativeLayoutCache.removeAttributes(k);
+      setLayoutCacheVersion(v => v + 1);
+    }
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps -- intentional: only recheck when data changes
 
   // ── Debug callbacks ──────────────────────────────────────────────────────────
 
