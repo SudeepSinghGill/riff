@@ -1923,6 +1923,7 @@ export function HorizontalListDemo() {
           renderItem={renderCard}
           keyExtractor={keyExtractor}
           estimatedItemHeight={140}
+          remeasureOnItemChange={(prev: HCard, next: HCard) => (prev.resized ?? false) !== (next.resized ?? false)}
           maintainVisibleContentPosition={mvcEnabled}
           decorationRenderers={decorationRenderers}
           onDecorationCountChange={setDecoCount}
@@ -2183,6 +2184,7 @@ export function HorizontalGridDemo() {
           renderItem={renderCard}
           keyExtractor={keyExtractor}
           estimatedItemHeight={HG_ITEM_CROSS_H}
+          remeasureOnItemChange={(prev: HGCard, next: HGCard) => (prev.resized ?? false) !== (next.resized ?? false)}
           maintainVisibleContentPosition={mvcEnabled}
           decorationRenderers={decorationRenderers}
           onDecorationCountChange={setDecoCount}
