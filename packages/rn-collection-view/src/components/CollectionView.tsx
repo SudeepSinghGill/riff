@@ -264,6 +264,24 @@ export interface RiffHandle<T = unknown> {
   scrollToItem(key: string, options?: RiffScrollOptions): void;
 
   /**
+   * Scroll to item at flat index (flat mode convenience).
+   * Equivalent to scrollToIndexPath({ section: 0, item: index }).
+   */
+  scrollToIndex(index: number, options?: RiffScrollOptions): void;
+
+  /**
+   * Get layout attributes for item at flat index (flat mode convenience).
+   * Returns null if the index is out of range or the item has no cached layout.
+   */
+  getItemLayoutAt(index: number): LayoutAttributes | null;
+
+  /**
+   * Evict cached heights for items at the given flat indices.
+   * Flat-mode convenience for invalidateKeys — resolves indices to keys internally.
+   */
+  invalidateAt(indices: number[]): void;
+
+  /**
    * Create a snapshot seeded with the current data array and key extractor.
    * Record mutations on it, then pass to apply().
    */
@@ -2040,6 +2058,36 @@ function RiffBase<T = unknown>({
     invalidateKeys: (keys: Iterable<string>) => {
       for (const k of keys) nativeLayoutCache.removeAttributes(k);
       if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
+      setLayoutCacheVersion(v => v + 1);
+    },
+
+    scrollToIndex: (index: number, options?: RiffScrollOptions) => {
+      const isHoriz  = effectiveLayout.horizontal ?? false;
+      const position = options?.position ?? (isHoriz ? 'start' : 'top');
+      nativeMod.scrollToIndexPath(
+        layoutCacheId, 0, index, isHoriz,
+        viewportWidthRef.current, viewportHeightRef.current,
+        hasStickyHeaders, hasStickyFooters,
+        position,
+        isHoriz ? prevScrollXRef.current : prevScrollYRef.current,
+        options?.animated ?? true,
+      );
+    },
+
+    getItemLayoutAt: (index: number): LayoutAttributes | null => {
+      const item = data[index];
+      if (item == null) return null;
+      const key = keyExtractor ? keyExtractor(item, index) : String(index);
+      return nativeLayoutCache.getAttributes(key) ?? null;
+    },
+
+    invalidateAt: (indices: number[]) => {
+      for (const index of indices) {
+        const item = data[index];
+        if (item == null) continue;
+        const k = keyExtractor ? keyExtractor(item, index) : String(index);
+        nativeLayoutCache.removeAttributes(k);
+      }
       setLayoutCacheVersion(v => v + 1);
     },
   }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps -- onDataChange intentionally included; callSiteSetter is pass-through
