@@ -76,10 +76,40 @@ export class RiffSnapshot<T> {
     return this;
   }
 
+  /**
+   * Insert items so they end up at `index` in the result.
+   * `index = 0` prepends. `index >= data.length` appends.
+   *
+   * Indices resolve against the data at snapshot() time, not post-prior-op state.
+   * For complex batches that mix index and key ops, prefer insertItems().
+   */
+  insertItemsAt(items: T[], index: number): this {
+    if (items.length === 0) return this;
+    if (index <= 0) return this.insertItems(items, null);
+    const afterItem = this._origData[index - 1];
+    if (afterItem === undefined) return this.appendItems(items);
+    return this.insertItems(items, this._ke(afterItem, index - 1));
+  }
+
   /** Remove items by key. Items whose keys are not found are silently skipped. */
   deleteItems(keys: string[]): this {
     if (keys.length > 0) this._ops.push({ type: 'delete', keys: new Set(keys) });
     return this;
+  }
+
+  /**
+   * Remove items at the given flat indices.
+   *
+   * Indices resolve against the data at snapshot() time, not post-prior-op state.
+   * For complex batches that mix index and key ops, prefer deleteItems().
+   */
+  deleteItemsAt(indices: number[]): this {
+    const keys: string[] = [];
+    for (const i of indices) {
+      const item = this._origData[i];
+      if (item !== undefined) keys.push(this._ke(item, i));
+    }
+    return this.deleteItems(keys);
   }
 
   /**
@@ -90,6 +120,32 @@ export class RiffSnapshot<T> {
   moveItem(key: string, afterKey: string | null): this {
     this._ops.push({ type: 'move', key, afterKey });
     return this;
+  }
+
+  /**
+   * Move the item at `fromIndex` so it ends up at `toIndex` in the result.
+   *
+   * Indices resolve against the data at snapshot() time, not post-prior-op state.
+   * For complex batches that mix index and key ops, prefer moveItem().
+   */
+  moveItemFromTo(fromIndex: number, toIndex: number): this {
+    if (fromIndex === toIndex) return this;
+    const fromItem = this._origData[fromIndex];
+    if (fromItem === undefined) return this;
+    const fromKey = this._ke(fromItem, fromIndex);
+    if (toIndex <= 0) return this.moveItem(fromKey, null);
+    if (fromIndex < toIndex) {
+      // Items between from+1..toIndex shift left by 1 after the move.
+      // The item at toIndex in _origData becomes the after-anchor.
+      const afterItem = this._origData[toIndex];
+      if (afterItem === undefined) return this.moveItem(fromKey, null);
+      return this.moveItem(fromKey, this._ke(afterItem, toIndex));
+    } else {
+      // fromIndex > toIndex: insert after the item currently at toIndex-1.
+      const afterItem = this._origData[toIndex - 1];
+      if (afterItem === undefined) return this.moveItem(fromKey, null);
+      return this.moveItem(fromKey, this._ke(afterItem, toIndex - 1));
+    }
   }
 
   /**
