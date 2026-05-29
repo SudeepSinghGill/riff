@@ -24,7 +24,6 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
     "build": "bob build --target commonjs --target module && (tsc --declaration --emitDeclarationOnly --declarationDir lib/typescript --noEmitOnError false || true)",
-    "prepare": "yarn build",
     "example": "yarn workspace CollectionViewExample"
   },
   "keywords": [
