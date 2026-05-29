@@ -1038,7 +1038,10 @@ function RiffBase({
           bottom: sectionInsetBottom,
           left: sectionInsetLeft,
           right: sectionInsetRight
-        }
+        },
+        itemKeys: propKeyExtractor ? data.map((item, i) => propKeyExtractor(item, i)) : Array.from({
+          length: data.length
+        }, (_, i) => `_cv-0-${i}`)
       }],
       measuredHeightForItem: (index, section) => measuredHeightForItemRef.current(index, section)
     };

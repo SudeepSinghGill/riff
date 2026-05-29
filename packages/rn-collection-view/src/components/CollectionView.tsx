@@ -1633,6 +1633,9 @@ function RiffBase<T = unknown>({
               left: sectionInsetLeft,
               right: sectionInsetRight,
             },
+            itemKeys: propKeyExtractor
+              ? data.map((item: any, i: number) => propKeyExtractor!(item, i))
+              : Array.from({ length: data.length }, (_, i) => `_cv-0-${i}`),
           }],
       measuredHeightForItem: (index: number, section: number) =>
         measuredHeightForItemRef.current(index, section),
