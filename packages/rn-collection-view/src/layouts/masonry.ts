@@ -101,7 +101,7 @@ class MasonryLayoutEngine implements RiffLayout {
         itemHeights = new Array(sec.itemCount);
         for (let i = 0; i < sec.itemCount; i++) {
           const measured = context.measuredHeightForItem?.(i, sectionIndex);
-          itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, sectionIndex, w) : (d.estimatedItemHeight ?? 44));
+          itemHeights[i] = measured ?? (d.estimatedHeightForItem?.(sectionIndex, i) ?? (d.estimatedItemHeight ?? 44));
         }
       }
 

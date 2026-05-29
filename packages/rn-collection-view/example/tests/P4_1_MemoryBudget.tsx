@@ -157,7 +157,7 @@ export default function P4_1_MemoryBudget() {
       <View style={S.listWrapper}>
         <Riff
           data={DATA}
-          itemHeight={44}
+          estimatedItemHeight={44}
           mountedWindowSize={baseMws}
           onRenderCountChange={(n) => { mountedRef.current = n; }}
           renderItem={({ item }) => (

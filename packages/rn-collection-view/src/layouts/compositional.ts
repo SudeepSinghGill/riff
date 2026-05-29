@@ -165,19 +165,17 @@ function buildListSectionParams(
   hasFooter: boolean,
   measuredHeightForItem: MeasuredHeightFn,
 ): Record<string, unknown> {
-  const itemHeightVal =
-    (typeof d.itemHeight === 'function' ? d.itemHeight(w) : d.itemHeight) ??
-    d.estimatedItemHeight ?? 44;
+  const itemHeightVal = d.estimatedItemHeight ?? 44;
 
   let itemHeights: number[] | undefined;
-  if (d.heightForItem || measuredHeightForItem) {
+  if (d.estimatedHeightForItem || measuredHeightForItem) {
     itemHeights = [];
     for (let i = 0; i < sec.itemCount; i++) {
       const measured = measuredHeightForItem?.(i, sectionIndex);
       if (measured !== undefined) {
         itemHeights.push(measured);
-      } else if (d.heightForItem) {
-        itemHeights.push(d.heightForItem(i, sectionIndex, w));
+      } else if (d.estimatedHeightForItem) {
+        itemHeights.push(d.estimatedHeightForItem(sectionIndex, i));
       } else {
         itemHeights.push(itemHeightVal);
       }
@@ -255,15 +253,12 @@ function buildGridSectionParams(
   measuredHeightForItem: MeasuredHeightFn,
 ): Record<string, unknown> {
   const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
-  const effectiveRowHeight =
-    typeof d.rowHeight === 'function' ? d.rowHeight(w) : (d.rowHeight ?? 0);
-
   let itemHeights: number[] | undefined;
-  if (!effectiveRowHeight && (d.heightForItem || measuredHeightForItem)) {
+  if (d.estimatedHeightForItem || measuredHeightForItem) {
     itemHeights = new Array(sec.itemCount);
     for (let i = 0; i < sec.itemCount; i++) {
       const measured = measuredHeightForItem?.(i, sectionIndex);
-      itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, sectionIndex, w) : 44);
+      itemHeights[i] = measured ?? (d.estimatedHeightForItem?.(sectionIndex, i) ?? 44);
     }
   }
 
@@ -290,7 +285,7 @@ function buildGridSectionParams(
     columnSpacing: d.columnSpacing ?? 0,
     rowSpacing: d.rowSpacing ?? 0,
     viewportWidth: w,
-    rowHeight: effectiveRowHeight,
+    rowHeight: d.estimatedItemHeight ?? 0,
     sectionInsetTop: sec.insets?.top ?? 0,
     sectionInsetBottom: sec.insets?.bottom ?? 0,
     sectionInsetLeft: sec.insets?.left ?? 0,
@@ -330,7 +325,7 @@ function buildFlowSectionParams(
   const itemHeights: number[] = new Array(sec.itemCount);
 
   for (let i = 0; i < sec.itemCount; i++) {
-    const size = d.sizeForItem(i, sectionIndex, w);
+    const size = d.estimatedSizeForItem?.(sectionIndex, i) ?? { width: w, height: d.estimatedItemHeight ?? 44 };
     const measuredH = measuredHeightForItem?.(i, sectionIndex);
     itemWidths[i] = size.width;
     itemHeights[i] = measuredH ?? size.height;
@@ -398,7 +393,7 @@ function buildMasonrySectionParams(
   const itemHeights: number[] = new Array(sec.itemCount);
   for (let i = 0; i < sec.itemCount; i++) {
     const measured = measuredHeightForItem?.(i, sectionIndex);
-    itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, sectionIndex, w) : (d.estimatedItemHeight ?? 44));
+    itemHeights[i] = measured ?? (d.estimatedHeightForItem?.(sectionIndex, i) ?? (d.estimatedItemHeight ?? 44));
   }
 
   const keyPrefix = `masonry-${sectionIndex}-`;
@@ -624,7 +619,7 @@ class CompositionalLayoutEngine implements RiffLayout {
           let vh = entry.estimatedSectionHeight;
           if (!vh) {
             const fd = (layout as unknown as { delegate: RiffFlowConfig }).delegate;
-            const itemH = sec.itemCount > 0 ? fd.sizeForItem(0, sectionIndex, w).height : 44;
+            const itemH = sec.itemCount > 0 ? (fd.estimatedSizeForItem?.(sectionIndex, 0)?.height ?? fd.estimatedItemHeight ?? 44) : 44;
             const topInset  = (params as any).sectionInsetTop    ?? 0;
             const botInset  = (params as any).sectionInsetBottom ?? 0;
             vh = itemH + topInset + botInset;

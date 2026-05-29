@@ -4,205 +4,27 @@
 
 ---
 
+# 🔲 Active / Remaining
+
 ## Execution Order
 
 | # | Item | Est | Notes |
 |---|------|-----|-------|
-| 1 | **B1.5b** Re-render burst — H-MVC version isolation | 0.5d | ✅ DONE |
-| 2 | **B1.3** MVC semantics for H sections | 1d | ✅ DONE — snapshotHAnchor now layout-agnostic (list/grid/masonry/flow) |
-| 3 | **B2.5** Interludes — `splitInterludes` API | 1.5d | ✅ DONE — `src/layouts/interludes.ts`; `splitInterludes(primary, interludes)` → `{ sections, layout }` |
-| 3b | **B0.4.4** H scroll vertical bounce | 0.5d | ✅ DONE — `updateState:` syncs `frame.size.height = contentSize.height` for H sections; `_applyOrDeferScrollViewFrame` clamps height to max(bounds, contentSize) |
-| 4 | **P6.2** Device measurement session | — | ✅ DONE — `docs/BENCHMARKS.md`; Search fast-scroll: Riff 59 FPS vs Flash 37–38; HP: tied FPS, Riff 2× lower CPU + ~27 MB lower memory; Storefront: broadly even |
-| 5 | **B3.1** API review | 1–2d | ✅ DONE (rename pass) — all public types Riff-prefixed (RiffLayout, RiffSection, RiffListConfig, etc.); handle→ref via forwardRef; renderItem → RiffRenderItemInfo<T>. Remaining: ScrollView callback surface, deprecated prop cleanup, renderSectionHeader missing prop |
 | 7 | **JS layouts audit** | 1d | Review Radial/Carousel/Spiral/Hex implementations: layout math stays in JS, but verify they wire through the core C++ engine (LayoutCache, ShadowNode positioning) correctly rather than going around it. Fix any bypasses found. B4.10 (scrollTo for these tabs) folds in here. |
 | 8 | **B2.6** Snap behaviors (H-6) | 1d | UIKit paging/groupPaging on H sections; FlashList has no equivalent |
-| 9 | **B5.2** Shareable artifacts — round 1 | 1d | README, benchmarks doc, FlashList comparison matrix (needs P6.2 numbers) |
+| 9 | **B5.2** Shareable artifacts — round 1 | 1d | README, benchmarks doc, FlashList comparison matrix (needs P6.2 numbers — now done) |
 | 10 | **B2.2 + B2.1** Snapshot API + C++ diff engine | 2d | NSDiffableDataSource-style mutation API + off-thread key diff |
 | 11 | Post-POC items | — | See section below |
 
 ---
 
-## B0 — CompositionalLab / Compositional Demo Bugs
-
-Fix before building new features. Some may be subsumed by B1 items — tag during triage.
-
-### B0.1 S1 List H — section height much larger than max item height ✅ FIXED
-
-**Fixed:** `finalizeHSection` + `refreshHSectionWrapperHeight` now cap Placeholder item heights
-at `maxMeasuredH` (tallest Measured cell in section). Placeholder items at `estimatedCrossAxisHeight`
-no longer inflate the wrapper past actual content height. Committed in `2729016`.
-Also subsumed by **L-1** (B1.2a): without a locked style.width, H-list cells measure
-their natural height, so Placeholders converge to actual height sooner.
-
-### B0.2 Resize and Update mutation buttons not working ✅ FIXED
-
-**Fixed:** Two-part fix in `2729016`:
-1. `SlotManager.sync()` now accepts `renderGen` and includes it in the short-circuit check.
-   In-place mutations (Resize, Update) bump `renderGen` via `extraData` change, forcing a
-   Phase 3 run that refreshes `slot.item` references so Yoga re-measures new content.
-2. `CollectionSubContainerShadowNode::shouldSkipCorrection` now hashes per-child Yoga frame
-   (all 4 fields, 2-decimal precision) in addition to child tags. Resize changes Yoga
-   dimensions without changing tags/count/cacheVersion — old hash skipped correction.
-
-### B0.2b Compose/Lab broken when navigating from any C++ layout tab ✅ FIXED
-
-**Root cause:** `useEffect` unmount cleanup (`layoutCache.clear()`) fired asynchronously after
-paint — after `prepare()` had correctly filled the cache, but *before* the re-render triggered
-by `ShadowNode.updateState()` arrived. The re-render's `useMemo` deps were unchanged so
-`prepare()` was skipped; `ShadowNode.layout()` read an empty cache → wrong contentSize.
-
-JS layout tabs (Radial, 3D Carousel) had no CollectionView cleanup to race, so they worked.
-
-**Fix:** Removed the unmount `useEffect` cleanup entirely. `prepare()` overwrites stale data from
-any previous C++ layout session (every `computeSections()` calls `_cache->clear()` internally),
-so the cleanup was both unnecessary for its original purpose and harmful due to the async race.
-The `if (!layoutContext)` guard in the prepare `useMemo` remains as a safety net for
-`initialWidth={0}` edge cases only.
-
-### B0.3 S4 Masonry V — all items same height (looks like a grid) ✅ FIXED
-
-**Fixed:** Removed `heightForItem: () => 100` from the masonry section in `CompositionalLab.tsx`.
-Items already have variable `detail` text (short / medium / long) so Yoga measures each cell
-naturally, producing the waterfall height variance.
-
-### B0.4 S3 Grid H — multiple issues
-
-1. **Item heights much smaller than row heights.** ✅ FIXED — `GridLayout::computeSectionFromCache`
-   H-path now tracks `hasMeasuredCross[]` and only uses actually-measured cross heights to derive
-   `itemCrossSize`. Placeholder items no longer keep the estimate when measured data is available.
-   Committed in `2729016`.
-2. **Vertical scroll indicator / vertical scrolling.** ✅ FIXED — `refreshHSectionWrapperHeight`
-   (added in `36669f7`) re-derives wrapper height from actual item frames after every
-   `applyMeasurements`, bypassing the 2pt hysteresis that was leaving the sub-container
-   `contentSize.height` inflated after deletes.
-3. **Delayed resize.** Fixed by B0.2 Yoga-hash fix — shouldSkipCorrection no longer skips on
-   content-only changes. ✅ FIXED.
-4. **H scroll vertical bounce during measurement convergence.** ✅ FIXED — `alwaysBounceVertical=NO`
-   suppresses bounce only when `contentSize.height <= frame.height`. During cell measurement, the
-   ShadowNode state commit updates `contentSize.height` before the parent Fabric commit propagates
-   the updated wrapper frame, opening a temporary window where UIKit allows vertical scrolling.
-   Fix in `RNCollectionSubContainerView.mm`: in `updateState:`, when `contentSize.height` changes
-   for H sections, also sync `_scrollView.frame.size.height = cs.height` immediately. In
-   `_applyOrDeferScrollViewFrame`, clamp `targetFrame.size.height = max(bounds.height, contentSize.height)`
-   so `layoutSubviews` can't shrink the frame back below contentSize height between commits.
-
-### B0.5 S6 "Control" section — clarify purpose ✅ FIXED
-
-**Fixed:** Updated `SECTION_META` label in `CompositionalLab.tsx` from `'S6 Control'` to
-`'S6 List V (no chrome — control)'`.
-
----
-
-## B1 — Architecture (correctness that removes hacks)
-
-### B1.1 L-7: Push measured cell size as explicit Yoga dimension ✅ FIXED
-
-**Fixed in `ba9869b`:** Override `layoutTree` in `CollectionViewContainerShadowNode` to call
-`YGNodeStyleSetHeight`/`Width` on `Measured` cells before `YGNodeCalculateLayout` runs.
-Covers V-section cells (Height axis) and H-section grandchildren (Both axes).
-`Placeholder` cells receive `YGNodeStyleSetHeightAuto` so intrinsic measurement runs normally
-on first render. With drift eliminated, also removed:
-- `std::ceil` + 2pt hysteresis in `CompositionalLayout::finalizeHSection` and `refreshHSectionWrapperHeight`
-- `_applyOrDeferScrollViewFrame` busy-guard in `RNCollectionSubContainerView`
-
-### B1.2 L-1/L-2/L-3: Layout intent violations — let Yoga measure what it should ✅ FIXED
-
-| Layout | Problem | Fix |
-|---|---|---|
-| H list (L-1) | `style.width` locked from `estimatedItemHeight` | ✅ DONE (`d9164eb`) — `isHListCell` guard removes width for standalone + compositional H-list. |
-| H grid (L-2) | `style.width` locked from `rowHeight` | ✅ DONE — `isHFreeWidthCell` extended to cover compositional H-grid cells. GridLayout's `applyMeasurements` already cascades via `computeSectionFromCache` using per-column max measured width. No C++ changes needed. |
-| V flow (L-3) | `style.width` locked from `sizeForItem.width` | ✅ DONE — `isVFlowCell` added to `isHFreeWidthCell` condition. Standalone V-flow cells get `alignSelf:flex-start` + `maxWidth:viewportWidth`. `FlowLayout::applyMeasurements` already handles `ContentDimension::Both` (Width + Height deltas) and does a full `computeSectionFromCache` reflow. |
-
-**Subsumes:** ethereal #3 (H-list cross-axis height bounce), ethereal #4 (H-list S[0] header half height). May also fix B0.1.
-
-**Effort:** ~3d total
-
-### B1.3 MVC semantics for H sections ✅ FIXED
-
-**Fixed:** `snapshotHAnchor` in the `prepare` useMemo was gated on `hSectionTypes?.[sIdx] === 'list'`, excluding grid/masonry/flow. The correction mechanism (`snapshotHAnchor` → `computeHCorrection` in native `updateState`) is layout-agnostic — it records the first-visible item key + X before `prepare()`, then reads the item's new X from the cache after `applyMeasurements` and applies the delta to the H scroll view. Removed the type guard; correction now fires for all H layouts.
-
----
+## B1 — Architecture (Remaining)
 
 ### B1.3 L-4: Rename size config APIs to "estimated"
 
 `itemHeight`, `rowHeight`, `sizeForItem` etc. imply fixed/deterministic — they're all estimates. Rename to `estimatedItemHeight` (where not already), document the "estimates only" contract.
 
 **Effort:** ~0.5d
-
-### B1.6 H-list content size not updated after Width delta cascade ✅ FIXED
-
-**Already resolved.** `LayoutCache::getTotalContentSize()` iterates all entries in `_map`
-(not just mounted children), so after `applyMeasurements` cascades X positions for all H-list
-items the max extent is always correct. `correctChildPositionsIfNeeded` reads this into
-`correctedContentWidth_` → `updateStateIfNeeded` → `contentSize.width`.
-
-After B1.2a (free-width measurement), `applyMeasurements` correctly cascades all item X positions
-in the cache (including unmounted items outside the render window) when a Width delta fires.
-But the `contentSize.width` committed to the ScrollView state is not re-derived from the updated
-last-item extent — it either comes from the initial `computeSection` estimate (N × estimatedItemHeight)
-or from mounted children only (render-window subset).
-
-**Symptom:** Scroll stops before the actual end of the list. If cells are naturally wider than
-`estimatedItemHeight`, the cascade pushes items further right but the ScrollView still clamps to
-the original estimated width. Does not self-correct after scrolling through the full list because
-the content-size write path never picks up the post-cascade last-item extent.
-
-**Why V doesn't have this:** V content height comes from `computeSections` running in full on
-every layout cycle, covering all items including unmounted ones. The H equivalent (total content
-width after cascade) is not being re-fed into the committed content size after `applyMeasurements`.
-
-**Fix direction:** After `applyMeasurements` runs, re-derive `contentSize.width` from the
-updated last-item frame in the cache (`lastItem.frame.x + lastItem.frame.width`) rather than
-from the pre-cascade estimate. For standalone H this is in `CollectionViewContainerShadowNode`;
-for compositional H sections this is in `CollectionSubContainerShadowNode`.
-
-**Prerequisite for:** B1.7 (first-pass scroll correctness). Also partially addressed by B1.1
-(once B1.1 is in, Width deltas only fire once per cell and the content size settles immediately).
-
-**Effort:** ~0.5d
-
-### B1.7 First-pass scroll correctness — primary-axis MVC on Width delta cascade ✅ FIXED
-
-**Fixed:** Removed `!_mvcEnabled` guard from `LayoutCache::snapshotAnchorIfNeeded()`. The
-infrastructure (`snapshotAnchorIfNeeded` called before every `applyMeasurements` in ShadowNode
-Phase 3) was already in place. The guard prevented size-change MVC from firing unless the
-consumer explicitly set `maintainVisibleContentPosition={true}`. Size-change MVC is now always
-active — Yoga measurement settling should never cause visible scroll jumps. Mutation MVC
-(`snapshotAnchor()` from JS `prepare()`) remains gated on `maintainVisibleContentPosition`.
-
-**How it works:** Before `applyMeasurements` cascades X/Y positions (H-list: linear shift,
-V-flow: full reflow via `computeSectionFromCache`), `snapshotAnchorIfNeeded` takes a snapshot
-of the item at or just below `scrollOffset`. After the cascade, `computeCorrection` reads the
-item's new position and applies `newPos - oldPos` to the scroll offset. Works for both H-list
-(primary=X, Width deltas shift X) and V-flow (primary=Y, Width deltas cause row reassignment
-→ Y shifts). `_horizontal` flag already routes the anchor/correction to the right axis.
-
-### B1.8 computeSection preserves Measured heights — break vLCV feedback loop ✅ FIXED
-
-**Fixed in `fix/compute-section-preserve-measured`:**
-
-`MasonryLayout::computeSection` and `FlowLayout::computeSection` previously unconditionally
-overwrote all item frames with JS-provided estimates (`p.itemHeights[i]`, `estimatedPrimary`)
-and set `sizingState = Placeholder` (Masonry) / `Measured` with wrong heights (Flow).
-
-This caused a feedback loop:
-1. `computeSection` writes estimate → `applyMeasurements` fires with Yoga's real size → frame
-   changed → LCV bump → JS `useLayoutEffect` → `computeSection` writes estimate again → repeat.
-2. HEALTH logs showed `leRun:vLCV` near 1:1 — every layout effect produced a version bump.
-3. User-visible: light scroll stutter on masonry/flow sections in CompositionalLab.
-
-**Fix:** Before writing an item, both layouts now look up the cache for an existing `Measured`
-entry. If found, the Yoga-measured size is reused as `itemPrimary` (primary-axis size). Because
-`LayoutCache::setAttributes` only bumps `_version` when the **frame changes** (x/y/w/h), writing
-back the same frame is a no-op for the version → no LCV notification → loop broken.
-
-For Masonry: `sizingState` is now `Measured` (not `Placeholder`) for warm items, so
-`applyMeasurements` skips them on the next Fabric cycle.
-For Flow: preserving the primary size in the first pass also stabilizes `lineMaxPrimary` and
-row positions for subsequent items.
-
-**Expected result:** `vLCV` drops from ~70 per scroll to ~initial measurement count (~cold mounts
-only). Stutter in masonry/flow sections eliminated.
 
 ### B1.5 Sub-container owns its own LayoutCache slice ⚠️ ATTEMPTED — PARKED
 
@@ -221,27 +43,9 @@ only). Stutter in masonry/flow sections eliminated.
 
 **Original motivation:** H scroll `applyMeasurements` writes to the main cache → bumps `cache->version()` → `shouldSkipCorrection()` sees a bump for ALL sub-containers → all re-run their O(N) hash check → potentially triggers redundant layout cascade.
 
-**Lighter-weight alternatives for the version-burst problem (see B1.5b below).**
-
 **Re-attempt when:** B1.3 (H-grid/masonry/flow MVC semantics) is prioritised AND there is dedicated time to handle sub-cache stash lifecycle end-to-end.
 
-### B1.5b H-MVC version isolation (lightweight alternative to B1.5)
-
-**Problem being solved:** H section `applyMeasurements` during scroll bumps the shared main cache version. All V sub-containers see the bump in `shouldSkipCorrection()` and re-run their Yoga-frame hash check even though no V item moved.
-
-**Proposed fix (30–40 lines):**
-- Add `uint64_t _hMvcVersion` to `LayoutCache`, exposed as `hMvcVersion()`.
-- `CollectionSubContainerShadowNode`: when section is H, wrap `applyMeasurements` call with `cache->beginHBatch()` / `cache->endHBatch()` — these bump `_hMvcVersion` but NOT `_version`.
-- `shouldSkipCorrection()` for H sub-containers checks `_hMvcVersion`; for V sub-containers checks `_version` only.
-
-**Why this is legitimate:**
-- V sub-containers genuinely do not care when H item positions shift. Their children live in V coordinate space; H item frames in the shared cache are irrelevant to them.
-- Zero sub-cache complexity — no stash lifecycle, no injection changes, no new props.
-- The `beginBatch`/`endBatch` pattern already exists; `endHBatch` is a 3-line variant.
-
-**Estimated cost:** ~0.5d. **Priority:** medium; only measurable benefit when there are many V sections alongside busy H sections.
-
-### B1.9 Precise Activity=hidden detection via forwarded prop (guards in delta loops)
+### B1.9 Precise Activity=hidden detection via forwarded prop
 
 **Problem — current state:** Both `CollectionSubContainerShadowNode` and `CollectionViewContainerShadowNode` detect Activity=hidden via dimension proxies (`yogaHeight == 0`). This works because:
 - For H cells: cross-axis height is always > 0 when rendered; only Activity=hidden collapses it to 0.
@@ -255,15 +59,31 @@ The proxy is reliable today but not semantically precise. `displayType == Displa
 
 **Estimated cost:** ~0.5d. **Priority:** low — current proxies are reliable, this is a correctness and future-proofing improvement.
 
-### B1.4 Decouple measureAhead from isVariableHeight ✅ FIXED
+### B1.10 In-place cell resize via local setState (Fabric limitation)
 
-**Already resolved.** `measureAhead` is passed directly to `processScroll` without any
-`isVariableHeight` gate — the coupling described in PERF-PLAN.md was removed during earlier
-refactoring. No remaining instances of `isVariableHeight && measureAhead` in CollectionView.tsx.
+**Problem:** A cell whose content changes via an internal `useState` call (e.g. an expand/collapse toggle inside `renderItem` without updating the item data) does not resize in-place. The cell only picks up the new height after scrolling out of the render window and back in.
+
+**Root cause investigated (2026-05-28):**
+Fabric's reconciliation for a local `setState` inside a cell processes the update within that cell's fiber subtree. `CollectionViewContainerShadowNode` is NOT re-cloned for this change — the container's structural output (its children array) is unchanged from Fabric's perspective. This means:
+- `layout()` on the container never fires
+- `correctChildPositionsIfNeeded()` never runs
+- The stale measured height in LayoutCache is never evicted
+
+**Approaches tried:**
+1. `completeClone()` override on `CollectionViewContainerShadowNode` — the container is not re-cloned for in-place cell state changes, so the override is never reached.
+2. `completeClone()` override on a custom `RNMeasuredCellShadowNode` — the cell ShadowNode is also not re-cloned for in-place `setState`. `[CELL-CLONE]` logs never appeared on tap.
+
+**Why UICollectionView sends an explicit `invalidateLayout` signal:** UIKit's `UICollectionViewLayout` is similarly decoupled — cell content changes don't automatically propagate to layout geometry. The app must call `invalidateLayout()` (or `performBatchUpdates`) to signal that layout should re-run. Riff's equivalent is `ref.current.invalidateKeys(keys)`.
+
+**Current recommendation:** Use `ref.current.invalidateKeys([key])` in the resize handler alongside the local state update. React 19 batches both state calls into one commit; the `layoutCacheVersion` bump triggers a container `layout()` call on the next Fabric pass.
+
+**Future investigation:** Deeper Fabric internals may expose a hook (e.g. via `YGNode::markDirty` propagation to ancestor) that could automate this. Not pursued — complexity high, explicit signal is clean and reliable.
+
+**Effort for future attempt:** 2d+ (Fabric internals), low probability of clean solution.
 
 ---
 
-## B2 — High-Impact Features
+## B2 — High-Impact Features (Remaining)
 
 ### B2.1 F1.1: C++ diff engine
 
@@ -289,18 +109,6 @@ Per-item animation types (fade, slide, custom). Interruptible spring physics. Co
 
 **Effort:** ~2d
 
-### B2.5 F3.6: Interludes ✅ DONE
-
-**Fixed:** `src/layouts/interludes.ts` exports `splitInterludes(primary, interludes)` → `{ sections, layout }`.
-Pure JS splitter on top of the existing compositional engine — no native changes.
-Anchors: `{ afterKey }` (tracks item identity across mutations), `{ afterIndex }`, `{ atKey: 'top'|'bottom' }`.
-Multiple interludes at the same anchor are stacked in declaration order.
-Wrap in `useMemo` with data arrays as deps; the resulting `layout` object is created fresh each call
-but `stashHeights()` in `prepare()` preserves Yoga-measured sizes across recreations.
-
-**Limitation:** all primary chunks share the same layout config, header, and footer from `PrimaryConfig`.
-For per-chunk variation, use the explicit `compositional([...])` API directly.
-
 ### B2.6 H-6: Snap behaviors
 
 UIKit-style `orthogonalScrollingBehavior` modes: paging, groupPaging, groupPagingCentered on H sections. Snap points via `UIScrollView.decelerationRate` + `scrollViewWillEndDragging:withVelocity:targetContentOffset:`.
@@ -309,22 +117,7 @@ UIKit-style `orthogonalScrollingBehavior` modes: paging, groupPaging, groupPagin
 
 ---
 
-## B3 — API & Quality
-
-### B3.1 API review
-
-Comprehensive review of the public API surface before any external sharing:
-- Naming consistency (props, callbacks, layout config)
-- Prop shapes and defaults
-- ScrollView callback surface (hoist to top-level vs `scrollViewProps` pass-through)
-- Type alignment (`RiffProps` in example vs `CollectionViewProps` in src/types)
-- Package export: re-export `CollectionView` from `src/index.ts` when React hoisting is solved
-- Breaking-change surface assessment
-- Demo cleanup: remove `containerH` / `onContentSizeChange` wiring from horizontal demos
-
-**Source:** PERF-PLAN.md "API/packaging audit", user request
-
-**Effort:** ~1-2d
+## B3 — API & Quality (Remaining)
 
 ### B3.2 Cross-section sticky headers
 
@@ -340,39 +133,7 @@ Document + export the H-2 `RNCollectionSubContainer` framework so consumers can 
 
 ---
 
-## B4 — Residual Perf
-
-### B4.1 Main container ShadowNode short-circuit ✅ FIXED
-
-**Fixed:** `shouldSkipCorrection()` added to `CollectionViewContainerShadowNode` — same H-4b
-pattern as the sub-container. Caches `{cacheVersion, childCount, childTagsHash, yogaFrameHash}`.
-`layout()` calls it after `ConcreteViewShadowNode::layout()` and returns early if all four match,
-skipping `correctChildPositionsIfNeeded` + `updateStateIfNeeded` entirely. The cloned member
-state from the previous commit is valid and the Fabric-carried state is already correct.
-
-**Effort:** ~0.5d
-
-### B4.2 Investigate spurious Yoga deltas on repeat scroll ✅ RESOLVED
-
-**Resolved by B1.8 (computeSection preserves Measured heights).** Post-fix HEALTH logs confirm
-`vLCV=0` during steady-state scroll through already-measured content. The root cause was
-`computeSection` resetting Measured cells to estimated heights on every layout effect run,
-not Yoga drift or sub-container recycling. L-7 (B1.1) eliminated sub-pixel drift; B1.8
-eliminated the feedback loop entirely.
-
-**Effort:** ~0.5d (investigation)
-
-### ~~B4.3 H-cell LCV memo removal~~ ✅ FIXED (2026-05-22)
-
-Removed `(!slotIsHCell || prev.lcv === layoutCacheVersion)` from the Opt-7 element cache check. H-cell positions are owned by the sub-container ShadowNode, not CSS style, so the extra LCV guard was causing every H cell to miss the memo on every V scroll tick. Also removed the now-unused `lcv` field from elementCache set calls.
-
-### B4.4 Guard unconditional setContentHeight ✅ FIXED
-
-**Fixed:** `setContentHeight(layoutContentHeight)` in the main `useLayoutEffect` path (line ~1730)
-now guarded by `chChanged` (already computed on the line above). Avoids the React reconciler
-overhead on layout effect runs where content height is stable.
-
-**Effort:** trivial
+## B4 — Residual Perf (Remaining)
 
 ### B4.5 Opt 3: Transform-based cell positioning
 
@@ -390,19 +151,17 @@ For layouts with `needsSpatialQuery: true`, change `getAttributesInRect` to retu
 
 **Effort:** ~0.5d
 
-### ~~B4.8 LayoutEngine protocol — enforce clear-before-compute structurally~~ ✅ FIXED (2026-05-22)
+### B4.7 Threading model audit — JSI call sites + UIKit dispatch
 
-Moved `_cache->clear()` from each engine's `computeSections()` body into the JSI binding lambda. `computeSections()` is now a pure layout function; the clear is structurally enforced at the JSI call site for all 5 engines. Legacy `compute()` functions retain their own clears and are unaffected. LayoutEngine.h contract comment updated.
+All `nativeMod.*` JSI calls (scroll, layout query, version polling) execute synchronously on the JS thread. The `invokeScrollHandler` path dispatches a scroll offset to the native scroll container — this ultimately calls `setContentOffset:` which **must** run on the main thread. Verify the current dispatch path is safe and not silently marshalling through the wrong thread.
 
-### ~~B4.9 Per-instance LayoutCache — eliminate shared global cache pollution~~ ✅ FIXED (2026-05-22)
+**Scope:**
+- Audit every JSI call site in CollectionView.tsx and native module: which thread does it run on?
+- Confirm `invokeScrollHandler` → `setContentOffset:animated:` reaches UIKit on the main thread (not JS thread). If called from JS thread, this is a UIKit thread-safety violation.
+- Evaluate whether scroll-to operations could be initiated from the UI thread directly (e.g. via a native gesture recognizer callback) to avoid occupying JS thread at all.
+- Document findings; fix any thread-safety violations; note which operations could be moved off JS thread in a future refactor.
 
-**Problem:** All CollectionView instances share one C++ `LayoutCache` and one set of layout engine singletons (ListLayout, GridLayout, etc.). When navigating between screens, each new instance's C++ `computeSections()` overwrites the global cache.
-
-**Fix:** `PerInstanceData` struct + `_instances` map in `CollectionViewModule`. `createLayoutCache()` / `destroyLayoutCache(id)` lifecycle JSI handlers. Per-instance JSI accessors (`layoutCacheById`, `getListLayoutById`, etc.). `processScroll` + `processHScroll` take `cacheId` as first arg. All 9 layout classes wire `_cache`/`_engine` to per-instance objects via `context.cacheId` in `prepare()`. `CollectionView.tsx` creates cache on mount, destroys on unmount, threads cacheId into all call sites.
-
-**Branch:** `feat/b4-9-per-instance-cache` → merged to `main`
-
----
+**Effort:** ~0.5d (audit + doc) + ~1d if fixes needed
 
 ### B4.10 scrollTo API for JS-layout tabs (Radial Arc, 3D Carousel, etc.)
 
@@ -416,22 +175,6 @@ The `scrollTo*` / `scrollToSection` API implemented via `invokeScrollHandler` ro
 **Decision:** discuss before implementing. Note that the `scrollToSection` / `scrollToIndexPath` API semantics also differ for non-list layouts (radial has no "section" concept in the traditional sense).
 
 **Priority:** low; after core layout fixes
-
----
-
-### B4.7 Threading model audit — JSI call sites + UIKit dispatch
-
-All `nativeMod.*` JSI calls (scroll, layout query, version polling) execute synchronously on the JS thread. The `invokeScrollHandler` path dispatches a scroll offset to the native scroll container — this ultimately calls `setContentOffset:` which **must** run on the main thread. Verify the current dispatch path is safe and not silently marshalling through the wrong thread.
-
-**Scope:**
-- Audit every JSI call site in CollectionView.tsx and native module: which thread does it run on?
-- Confirm `invokeScrollHandler` → `setContentOffset:animated:` reaches UIKit on the main thread (not JS thread). If called from JS thread, this is a UIKit thread-safety violation.
-- Evaluate whether scroll-to operations could be initiated from the UI thread directly (e.g. via a native gesture recognizer callback) to avoid occupying JS thread at all.
-- Document findings; fix any thread-safety violations; note which operations could be moved off JS thread in a future refactor.
-
-**Why:** JSI calls run on JS thread and reduce available JS time even if C++ is fast. Moving to UI-thread initiation (where safe) would give JS thread back entirely for gesture-driven scrolls.
-
-**Effort:** ~0.5d (audit + doc) + ~1d if fixes needed
 
 ---
 
@@ -505,20 +248,18 @@ Replace JSON with FlatBuffers. Zero-copy mmap hydration. 10k items: serialize < 
 
 **Signal:** Detect bounce via `scrollViewDidEndDecelerating` or by checking if content offset is outside `[0, contentSize - viewportSize]`.
 
-**Estimated cost:** ~0.5d. **Priority:** TBD — discuss after current B1.5b work is verified.
+**Estimated cost:** ~0.5d. **Priority:** TBD.
 
 ### B7.0b H free-width cell measurement ceiling at vpWidth
 
 **Problem:** H free-width cells (H-list, H-grid) are measured by Yoga within the H sub-container, whose Yoga width = vpWidth. Even with the `alignSelf/alignItems: flex-start` chain on the inner wrapper, Yoga passes `YGMeasureModeAtMost(vpWidth)` to Text nodes. Cells whose content naturally needs more than vpWidth will wrap at vpWidth.
-
-The `hFreeWidthInnerStyle` fix is correct for its purpose (cells < vpWidth don't stretch to vpWidth). This is a separate ceiling issue, not a regression.
 
 **Options:**
 1. Document as known limitation: consumers should set explicit `width` on cells that need > vpWidth.
 2. Framework provides a `maxMeasureWidth` hint prop on the H sub-container that overrides the Yoga available width for cell measurement.
 3. Make H cells `position: absolute` at the React level (unconstrained Yoga measurement). Complex, likely breaks other things.
 
-**Estimated cost:** Option 1 = 0 (just docs). Option 2 = ~0.5d. **Priority:** low — real-world H-list cells are rarely wider than the screen.
+**Estimated cost:** Option 1 = 0 (just docs). Option 2 = ~0.5d. **Priority:** low.
 
 ### B7.1 Flow justification
 
@@ -604,7 +345,7 @@ Bugs reported but not reproducible on re-test. Keep for reference in case they r
 
 **Hypothesis:** MVC anchor correction was under-correcting because `MasonryLayout::computeSectionFromCache` (called from `applyMeasurements`) reads item heights from the cache post-`computeSections()` fresh path (estimated), not from stash. Since all masonry items have `heightForItem: () => 100`, actual heights may equal estimates, making the error zero — which may explain why it's not reproducible once B0.3 (hardcoded heights) is fixed.
 
-**Next steps if it resurfaces:** Enable `RNCV_MVC_TRACE` logs and capture `snapshotAnchor` / `computeCorrection` output around a `+top` insert. Check whether `MasonryLayout::computeSectionFromCache` needs stash fallback (analogous to the fix applied to `ListLayout::computeSection` in this session).
+**Next steps if it resurfaces:** Enable `RNCV_MVC_TRACE` logs and capture `snapshotAnchor` / `computeCorrection` output around a `+top` insert.
 
 ---
 
@@ -633,7 +374,7 @@ Items that don't block the POC or FlashList comparison but are worth doing after
 | **B8.2** TS layout wrapper tests | 1d | Jest for list/grid/masonry/flow |
 | **B9.1** Android port | 5d+ | CMakeLists + TurboModule Kotlin registration |
 | **B9.2** Web port | 3d+ | JS fallbacks for JSI; DOM scroll container |
-| **B7.7** Separator toggle scroll position shift | 0.5d | MVC anchor correction doesn't fully compensate for separator height delta; accept the jump for now |
+| **B7.7** Separator toggle scroll position shift | 0.5d | MVC anchor correction doesn't fully compensate for separator height delta |
 | **B1.3-masonry** MVC semantics for H-masonry | TBD | Correction not well-defined; items assigned to shortest column scramble on insert. Options: no correction or re-anchor to nearest item at old X. **Also:** revisit `setLayoutCacheVersion` guard in `CollectionView.tsx` scroll handler — current guard fires only when `effectiveLayout.contentSize()` changes. H-masonry uses per-cell explicit column-assigned widths; a width change without total contentSize change skips the JS re-render, leaving `containerStyle.width` stale. Add a per-cell width-change trigger when implementing. |
 | **B1.3-flow** MVC semantics for H-flow | 0.5d | Items flow left-to-right; same anchor-delta approach as H-list may work for uniform items. **Also:** same `setLayoutCacheVersion` guard caveat as B1.3-masonry — H-flow cells have flow-assigned explicit widths, so a reflow that changes widths without changing total contentSize would not trigger the current guard. Add a per-cell width-change trigger when implementing. |
 | **B1.5** Sub-cache isolation (reattempt) | 2.5d | Parked; re-attempt when B1.3 is done and full stash lifecycle can be handled end-to-end |
@@ -641,6 +382,184 @@ Items that don't block the POC or FlashList comparison but are worth doing after
 
 ---
 
-## Completed Work Reference
+---
 
-See `PLAN.md` for the full history of completed milestones (Phases 0-5, P1-P5, F2, F3.1-F3.5, H-1 through H-5, all Opts, all perf work). Archived plans in `docs/archived-plans/` contain detailed context for each completed item.
+---
+
+# ✅ Completed
+
+---
+
+## Execution Order — Completed
+
+| # | Item | Est | Notes |
+|---|------|-----|-------|
+| 1 | **B1.5b** Re-render burst — H-MVC version isolation | 0.5d | ✅ DONE |
+| 2 | **B1.3** MVC semantics for H sections | 1d | ✅ DONE — snapshotHAnchor now layout-agnostic (list/grid/masonry/flow) |
+| 3 | **B2.5** Interludes — `splitInterludes` API | 1.5d | ✅ DONE — `src/layouts/interludes.ts`; `splitInterludes(primary, interludes)` → `{ sections, layout }` |
+| 3b | **B0.4.4** H scroll vertical bounce | 0.5d | ✅ DONE — `updateState:` syncs `frame.size.height = contentSize.height` for H sections; `_applyOrDeferScrollViewFrame` clamps height to max(bounds, contentSize) |
+| 4 | **P6.2** Device measurement session | — | ✅ DONE — `docs/BENCHMARKS.md`; Search fast-scroll: Riff 59 FPS vs Flash 37–38; HP: tied FPS, Riff 2× lower CPU + ~27 MB lower memory; Storefront: broadly even |
+| 5 | **B3.1** API review | 1–2d | ✅ DONE (rename pass) — all public types Riff-prefixed (RiffLayout, RiffSection, RiffListConfig, etc.); handle→ref via forwardRef; renderItem → RiffRenderItemInfo<T>. Remaining: ScrollView callback surface, deprecated prop cleanup, renderSectionHeader missing prop |
+
+---
+
+## B0 — CompositionalLab / Compositional Demo Bugs ✅ All Fixed
+
+### B0.1 S1 List H — section height much larger than max item height ✅ FIXED
+
+**Fixed:** `finalizeHSection` + `refreshHSectionWrapperHeight` now cap Placeholder item heights
+at `maxMeasuredH` (tallest Measured cell in section). Placeholder items at `estimatedCrossAxisHeight`
+no longer inflate the wrapper past actual content height. Committed in `2729016`.
+Also subsumed by **L-1** (B1.2a): without a locked style.width, H-list cells measure
+their natural height, so Placeholders converge to actual height sooner.
+
+### B0.2 Resize and Update mutation buttons not working ✅ FIXED
+
+**Fixed:** Two-part fix in `2729016`:
+1. `SlotManager.sync()` now accepts `renderGen` and includes it in the short-circuit check.
+   In-place mutations (Resize, Update) bump `renderGen` via `extraData` change, forcing a
+   Phase 3 run that refreshes `slot.item` references so Yoga re-measures new content.
+2. `CollectionSubContainerShadowNode::shouldSkipCorrection` now hashes per-child Yoga frame
+   (all 4 fields, 2-decimal precision) in addition to child tags. Resize changes Yoga
+   dimensions without changing tags/count/cacheVersion — old hash skipped correction.
+
+### B0.2b Compose/Lab broken when navigating from any C++ layout tab ✅ FIXED
+
+**Root cause:** `useEffect` unmount cleanup (`layoutCache.clear()`) fired asynchronously after
+paint — after `prepare()` had correctly filled the cache, but *before* the re-render triggered
+by `ShadowNode.updateState()` arrived. The re-render's `useMemo` deps were unchanged so
+`prepare()` was skipped; `ShadowNode.layout()` read an empty cache → wrong contentSize.
+
+**Fix:** Removed the unmount `useEffect` cleanup entirely. `prepare()` overwrites stale data from
+any previous C++ layout session (every `computeSections()` calls `_cache->clear()` internally),
+so the cleanup was both unnecessary for its original purpose and harmful due to the async race.
+The `if (!layoutContext)` guard in the prepare `useMemo` remains as a safety net for
+`initialWidth={0}` edge cases only.
+
+### B0.3 S4 Masonry V — all items same height (looks like a grid) ✅ FIXED
+
+**Fixed:** Removed `heightForItem: () => 100` from the masonry section in `CompositionalLab.tsx`.
+Items already have variable `detail` text (short / medium / long) so Yoga measures each cell
+naturally, producing the waterfall height variance.
+
+### B0.4 S3 Grid H — multiple issues ✅ All Fixed
+
+1. **Item heights much smaller than row heights.** ✅ FIXED — `GridLayout::computeSectionFromCache`
+   H-path now tracks `hasMeasuredCross[]` and only uses actually-measured cross heights to derive
+   `itemCrossSize`. Placeholder items no longer keep the estimate when measured data is available.
+   Committed in `2729016`.
+2. **Vertical scroll indicator / vertical scrolling.** ✅ FIXED — `refreshHSectionWrapperHeight`
+   (added in `36669f7`) re-derives wrapper height from actual item frames after every
+   `applyMeasurements`, bypassing the 2pt hysteresis that was leaving the sub-container
+   `contentSize.height` inflated after deletes.
+3. **Delayed resize.** Fixed by B0.2 Yoga-hash fix — shouldSkipCorrection no longer skips on
+   content-only changes. ✅ FIXED.
+4. **H scroll vertical bounce during measurement convergence.** ✅ FIXED — `alwaysBounceVertical=NO`
+   suppresses bounce only when `contentSize.height <= frame.height`.
+
+### B0.5 S6 "Control" section — clarify purpose ✅ FIXED
+
+**Fixed:** Updated `SECTION_META` label in `CompositionalLab.tsx` from `'S6 Control'` to
+`'S6 List V (no chrome — control)'`.
+
+---
+
+## B1 — Architecture (Completed)
+
+### B1.1 L-7: Push measured cell size as explicit Yoga dimension ✅ FIXED
+
+**Fixed in `ba9869b`:** Override `layoutTree` in `CollectionViewContainerShadowNode` to call
+`YGNodeStyleSetHeight`/`Width` on `Measured` cells before `YGNodeCalculateLayout` runs.
+Covers V-section cells (Height axis) and H-section grandchildren (Both axes).
+`Placeholder` cells receive `YGNodeStyleSetHeightAuto` so intrinsic measurement runs normally
+on first render. With drift eliminated, also removed:
+- `std::ceil` + 2pt hysteresis in `CompositionalLayout::finalizeHSection` and `refreshHSectionWrapperHeight`
+- `_applyOrDeferScrollViewFrame` busy-guard in `RNCollectionSubContainerView`
+
+### B1.2 L-1/L-2/L-3: Layout intent violations — let Yoga measure what it should ✅ FIXED
+
+| Layout | Problem | Fix |
+|---|---|---|
+| H list (L-1) | `style.width` locked from `estimatedItemHeight` | ✅ DONE (`d9164eb`) — `isHListCell` guard removes width for standalone + compositional H-list. |
+| H grid (L-2) | `style.width` locked from `rowHeight` | ✅ DONE — `isHFreeWidthCell` extended to cover compositional H-grid cells. GridLayout's `applyMeasurements` already cascades via `computeSectionFromCache` using per-column max measured width. No C++ changes needed. |
+| V flow (L-3) | `style.width` locked from `sizeForItem.width` | ✅ DONE — `isVFlowCell` added to `isHFreeWidthCell` condition. Standalone V-flow cells get `alignSelf:flex-start` + `maxWidth:viewportWidth`. `FlowLayout::applyMeasurements` already handles `ContentDimension::Both` (Width + Height deltas) and does a full `computeSectionFromCache` reflow. |
+
+### B1.3 MVC semantics for H sections ✅ FIXED
+
+**Fixed:** `snapshotHAnchor` in the `prepare` useMemo was gated on `hSectionTypes?.[sIdx] === 'list'`, excluding grid/masonry/flow. The correction mechanism is layout-agnostic — it records the first-visible item key + X before `prepare()`, then reads the item's new X from the cache after `applyMeasurements` and applies the delta to the H scroll view. Removed the type guard; correction now fires for all H layouts.
+
+### B1.4 Decouple measureAhead from isVariableHeight ✅ FIXED
+
+**Already resolved.** `measureAhead` is passed directly to `processScroll` without any
+`isVariableHeight` gate. No remaining instances of `isVariableHeight && measureAhead` in CollectionView.tsx.
+
+### B1.5b H-MVC version isolation ✅ DONE
+
+Add `uint64_t _hMvcVersion` to `LayoutCache`. H sub-containers check `_hMvcVersion`; V sub-containers check `_version` only. Prevents V sub-containers from re-running O(N) hash check on every H scroll `applyMeasurements`.
+
+### B1.6 H-list content size not updated after Width delta cascade ✅ FIXED
+
+**Already resolved.** `LayoutCache::getTotalContentSize()` iterates all entries in `_map`
+(not just mounted children), so after `applyMeasurements` cascades X positions for all H-list
+items the max extent is always correct.
+
+### B1.7 First-pass scroll correctness — primary-axis MVC on Width delta cascade ✅ FIXED
+
+**Fixed:** Removed `!_mvcEnabled` guard from `LayoutCache::snapshotAnchorIfNeeded()`. Size-change MVC is now always active — Yoga measurement settling should never cause visible scroll jumps. Mutation MVC (`snapshotAnchor()` from JS `prepare()`) remains gated on `maintainVisibleContentPosition`.
+
+### B1.8 computeSection preserves Measured heights — break vLCV feedback loop ✅ FIXED
+
+**Fixed in `fix/compute-section-preserve-measured`:** Before writing an item, both `MasonryLayout::computeSection` and `FlowLayout::computeSection` now look up the cache for an existing `Measured` entry and reuse the Yoga-measured size as `itemPrimary`. Writing back the same frame is a no-op for `_version` → no LCV notification → feedback loop broken. `vLCV` drops from ~70 per scroll to ~initial measurement count only.
+
+---
+
+## B2 — Completed
+
+### B2.5 F3.6: Interludes ✅ DONE
+
+**Fixed:** `src/layouts/interludes.ts` exports `splitInterludes(primary, interludes)` → `{ sections, layout }`.
+Pure JS splitter on top of the existing compositional engine — no native changes.
+Anchors: `{ afterKey }` (tracks item identity across mutations), `{ afterIndex }`, `{ atKey: 'top'|'bottom' }`.
+Multiple interludes at the same anchor are stacked in declaration order.
+
+---
+
+## B3 — API (Completed)
+
+### B3.1 API review ✅ DONE (rename pass)
+
+All public types Riff-prefixed (`RiffLayout`, `RiffSection`, `RiffListConfig`, etc.); handle→ref via `forwardRef`; `renderItem` → `RiffRenderItemInfo<T>`. Remaining items (ScrollView callback surface, deprecated prop cleanup, `renderSectionHeader` missing prop) deferred.
+
+---
+
+## B4 — Residual Perf (Completed)
+
+### B4.1 Main container ShadowNode short-circuit ✅ FIXED
+
+**Fixed:** `shouldSkipCorrection()` added to `CollectionViewContainerShadowNode`. Caches `{cacheVersion, childCount, childTagsHash, yogaFrameHash}`. Returns early if all four match, skipping `correctChildPositionsIfNeeded` + `updateStateIfNeeded` entirely.
+
+### B4.2 Investigate spurious Yoga deltas on repeat scroll ✅ RESOLVED
+
+**Resolved by B1.8.** `vLCV=0` during steady-state scroll through already-measured content. Root cause was `computeSection` resetting Measured cells to estimated heights on every layout effect run.
+
+### B4.3 H-cell LCV memo removal ✅ FIXED (2026-05-22)
+
+Removed `(!slotIsHCell || prev.lcv === layoutCacheVersion)` from the Opt-7 element cache check. H-cell positions are owned by the sub-container ShadowNode, not CSS style, so the extra LCV guard was causing every H cell to miss the memo on every V scroll tick.
+
+### B4.4 Guard unconditional setContentHeight ✅ FIXED
+
+`setContentHeight(layoutContentHeight)` now guarded by `chChanged`. Avoids React reconciler overhead on layout effect runs where content height is stable.
+
+### B4.8 LayoutEngine protocol — enforce clear-before-compute structurally ✅ FIXED (2026-05-22)
+
+Moved `_cache->clear()` from each engine's `computeSections()` body into the JSI binding lambda. `computeSections()` is now a pure layout function; the clear is structurally enforced at the JSI call site for all 5 engines.
+
+### B4.9 Per-instance LayoutCache — eliminate shared global cache pollution ✅ FIXED (2026-05-22)
+
+`PerInstanceData` struct + `_instances` map in `CollectionViewModule`. `createLayoutCache()` / `destroyLayoutCache(id)` lifecycle JSI handlers. Per-instance JSI accessors (`layoutCacheById`, `getListLayoutById`, etc.). All 9 layout classes wire `_cache`/`_engine` to per-instance objects via `context.cacheId` in `prepare()`.
+
+**Branch:** `feat/b4-9-per-instance-cache` → merged to `main`
+
+---
+
+*For full milestone history (Phases 0–5, P1–P5, F2, F3.1–F3.5, H-1 through H-5, all Opts, all perf work) see `PLAN.md`. Archived plans in `docs/archived-plans/`.*

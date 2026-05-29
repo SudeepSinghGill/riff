@@ -125,7 +125,7 @@ export default function M3_3_ColdEviction() {
         data={DATA}
         keyExtractor={item => String(item.id)}
         renderItem={({ item }) => <EvictionCell item={item} />}
-        itemHeight={ITEM_H}
+        estimatedItemHeight={ITEM_H}
         itemSpacing={1}
         sectionInsetTop={8}
         sectionInsetBottom={24}

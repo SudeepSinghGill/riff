@@ -116,19 +116,19 @@ class ListLayout implements RiffLayout {
       runningFlatBase += (hasHeader ? 1 : 0) + sec.itemCount + (hasFooter ? 1 : 0);
 
       // Determine item heights for this section.
-      // Priority: measured (actual) → delegate heightForItem (estimate) → itemHeight → estimatedItemHeight.
+      // Priority: measured (actual) → estimatedHeightForItem (estimate) → estimatedItemHeight.
       const w = context.containerWidth;
       let itemHeights: number[] | undefined;
-      if (d.heightForItem || context.measuredHeightForItem) {
+      if (d.estimatedHeightForItem || context.measuredHeightForItem) {
         itemHeights = [];
         for (let i = 0; i < sec.itemCount; i++) {
           const measured = context.measuredHeightForItem?.(i, sIdx);
           if (measured !== undefined) {
             itemHeights.push(measured);
-          } else if (d.heightForItem) {
-            itemHeights.push(d.heightForItem(i, sIdx, w));
+          } else if (d.estimatedHeightForItem) {
+            itemHeights.push(d.estimatedHeightForItem(sIdx, i));
           } else {
-            itemHeights.push((typeof d.itemHeight === 'function' ? d.itemHeight(w) : d.itemHeight) ?? d.estimatedItemHeight ?? 44);
+            itemHeights.push(d.estimatedItemHeight ?? 44);
           }
         }
       }
@@ -165,7 +165,7 @@ class ListLayout implements RiffLayout {
         headerFlatIndex: hasHeader ? sectionFlatBase : -1,
         footerFlatIndex: hasFooter ? sectionFlatBase + (hasHeader ? 1 : 0) + sec.itemCount : -1,
         itemCount: sec.itemCount,
-        itemHeight: (typeof d.itemHeight === 'function' ? d.itemHeight(context.containerWidth) : d.itemHeight) ?? d.estimatedItemHeight ?? 44,
+        itemHeight: d.estimatedItemHeight ?? 44,
         viewportWidth: context.containerWidth,
         viewportHeight: context.containerHeight,
         horizontal: H,
@@ -295,7 +295,7 @@ class ListLayout implements RiffLayout {
     const sectionParams = context.sections.map((sec, sIdx) => {
       const params: Record<string, unknown> = {
         itemCount: sec.itemCount,
-        itemHeight: (typeof this.delegate.itemHeight === 'function' ? this.delegate.itemHeight(context.containerWidth) : this.delegate.itemHeight) ?? this.delegate.estimatedItemHeight ?? 44,
+        itemHeight: this.delegate.estimatedItemHeight ?? 44,
         viewportWidth: context.containerWidth,
         itemSpacing: this.delegate.itemSpacing ?? 0,
         section: sIdx,

@@ -91,7 +91,6 @@ class GridLayoutEngine implements RiffLayout {
     this._cache.setHorizontal(H);
 
     const effectiveColumns = typeof d.columns === 'function' ? d.columns(w) : d.columns;
-    const effectiveRowHeight = typeof d.rowHeight === 'function' ? d.rowHeight(w) : (d.rowHeight ?? 0);
 
     let runningFlatBase = 0;
     const sections = context.sections.map((sec, sectionIndex) => {
@@ -99,15 +98,14 @@ class GridLayoutEngine implements RiffLayout {
       const hasFooter = sec.supplementaryItems.some(s => s.kind === 'footer');
       const sectionFlatBase = runningFlatBase;
       runningFlatBase += (hasHeader ? 1 : 0) + sec.itemCount + (hasFooter ? 1 : 0);
-      // Build per-item heights when rows are dynamic (no fixed rowHeight).
-      // For horizontal mode: heights are cross-axis sizes derived from column count —
-      // no per-item measurement needed here; Yoga measures primary-axis widths.
+      // Build per-item heights for vertical grids (row height = max in row).
+      // For horizontal mode: Yoga measures primary-axis widths; heights are uniform.
       let itemHeights: number[] | undefined;
-      if (!H && !effectiveRowHeight && (d.heightForItem || context.measuredHeightForItem)) {
+      if (!H && (d.estimatedHeightForItem || context.measuredHeightForItem)) {
         itemHeights = new Array(sec.itemCount);
         for (let i = 0; i < sec.itemCount; i++) {
           const measured = context.measuredHeightForItem?.(i, sectionIndex);
-          itemHeights[i] = measured ?? (d.heightForItem ? d.heightForItem(i, sectionIndex, w) : 44);
+          itemHeights[i] = measured ?? (d.estimatedHeightForItem?.(sectionIndex, i) ?? 44);
         }
       }
 
@@ -135,7 +133,7 @@ class GridLayoutEngine implements RiffLayout {
         columnSpacing: d.columnSpacing ?? 0,
         rowSpacing: d.rowSpacing ?? 0,
         viewportWidth: w,
-        rowHeight: effectiveRowHeight,
+        rowHeight: d.estimatedItemHeight ?? 0,
         sectionInsetTop: sec.insets?.top ?? 0,
         sectionInsetBottom: sec.insets?.bottom ?? 0,
         sectionInsetLeft: sec.insets?.left ?? 0,

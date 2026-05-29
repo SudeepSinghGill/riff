@@ -373,7 +373,7 @@ export default function P1_1_CppWindowController() {
           data={DEMO_DATA}
           keyExtractor={item => String(item.id)}
           renderItem={renderItem}
-          itemHeight={56}
+          estimatedItemHeight={56}
           itemSpacing={2}
           sectionInsetTop={4}
           sectionInsetBottom={16}

@@ -64,13 +64,13 @@ import RNCollectionViewContainer from '../specs/RNCollectionViewContainerNativeC
 // kept available behind the flag for fallback debugging only.
 import RNOrthogonalSectionView from '../specs/RNOrthogonalSectionNativeComponent';
 import RNCollectionSubContainer from '../specs/RNCollectionSubContainerNativeComponent';
-import type { HSectionMeta } from '@riff/layouts/compositional';
+import type { HSectionMeta } from '../layouts/compositional';
 import { RiffSnapshot } from './CollectionSnapshot';
 import { SlotManager } from './SlotManager';
 import type { SlotInfo } from './SlotManager';
-import type { RiffLayout, RiffSection, LayoutContext, RiffRenderItemInfo, RiffScrollOptions, RiffScrollOffsetOptions } from '@riff/types/protocol';
-import type { LayoutAttributes } from '@riff/types/layout';
-import { list as listLayout } from '@riff/layouts/list';
+import type { RiffLayout, RiffSection, LayoutContext, RiffRenderItemInfo, RiffScrollOptions, RiffScrollOffsetOptions } from '../types/protocol';
+import type { LayoutAttributes } from '../types/layout';
+import { list as listLayout } from '../layouts/list';
 
 // ─── JSI module types ─────────────────────────────────────────────────────────
 
@@ -276,6 +276,8 @@ export interface RiffHandle<T = unknown> {
   getItemLayoutAt(index: number): LayoutAttributes | null;
 
   /**
+   * @unstable
+   *
    * Evict cached heights for items at the given flat indices.
    * Flat-mode convenience for invalidateKeys — resolves indices to keys internally.
    */
@@ -307,19 +309,35 @@ export interface RiffHandle<T = unknown> {
   apply(snap: RiffSnapshot<T>, setData?: ((data: T[]) => void) | boolean, animated?: boolean): void;
 
   /**
-   * Evict cached heights for the given keys so they are re-measured on the
-   * next render. Prefer the remeasureOnItemChange prop for automatic invalidation
-   * when item content changes. Use this as an escape hatch when the change is
-   * not reflected in the data prop (e.g. height driven by context or global state).
+   * @unstable
+   *
+   * Evict the cached height for the item at (sectionIndex, itemIndex) and
+   * trigger a re-measurement pass.
+   *
+   * Call this in the same event handler as your state update — React 19 batches
+   * both into one commit so the cell is measured at its new natural height
+   * without a second render pass.
+   */
+  invalidateItem(sectionIndex: number, itemIndex: number): void;
+
+  /**
+   * @unstable Low-level escape hatch. Prefer invalidateItem(sectionIndex, itemIndex)
+   * or invalidateAt(indices) — both resolve to the correct cache key internally.
+   *
+   * Evicts cached heights for the given keys and triggers a re-measurement pass.
+   * The key must be the exact string that keyExtractor returns for the item in
+   * flat mode. In sections mode use invalidateItem instead.
    */
   invalidateKeys(keys: Iterable<string>): void;
 
   /**
-   * Get full layout attributes for an item by its cache key.
-   * Returns LayoutAttributes from the layout engine, or null if not found.
-   * Key format: stable key from keyExtractor, or `${sectionKey}:${itemKey}`.
-   * Exposes frame, section, index, sizingState, isSticky, zIndex, and all
-   * other layout metadata — use with scrollToOffset for custom scroll math.
+   * @unstable Key format is an internal detail — consumers should not need to
+   * construct cache keys. A future version will accept (sectionIndex, itemIndex)
+   * instead.
+   *
+   * Returns full layout attributes (frame, sizingState, isSticky, zIndex, etc.)
+   * for the item with the given cache key, or null if not found. Useful for
+   * custom scroll math via scrollToOffset.
    */
   getItemLayout(key: string): LayoutAttributes | null;
 }
@@ -369,44 +387,42 @@ export interface RiffProps<T = unknown> {
    * Default: all headers share 'header' pool, all footers share 'footer' pool.
    */
   getSupplementaryType?: (kind: 'header' | 'footer', sectionIndex: number) => string;
-  /** Like FlatList's extraData — pass any value here to force re-renders when it changes. */
+  /**
+   * Like FlatList's `extraData` — changing this value forces a re-render of ALL visible cells
+   * and a layout re-measurement pass.
+   *
+   * Pass any value that changes when items resize. A simple version counter works well:
+   * ```ts
+   * const [resizeVersion, setResizeVersion] = useState(0);
+   * // in your resize handler:
+   * setResizeVersion(v => v + 1);
+   * // on the component:
+   * <Riff extraData={resizeVersion} ... />
+   * ```
+   *
+   * This re-renders all visible cells regardless of what changed. For lists with many
+   * cells this is acceptable; `invalidateItem` (unstable) is a more precise alternative
+   * when it is reliable.
+   */
   extraData?: unknown;
 
   /**
-   * Initial height estimate for uniform-height items. Yoga is always the authority
-   * for final cell dimensions — this value seeds the layout before measurement.
-   * When provided, the onLayout measurement pass is skipped (no per-cell height updates).
-   *
-   * WARNING: Only use this if you can guarantee that all items render at the same
-   * height in practice. If items render taller or shorter than this value, layout
-   * positions will be wrong and scroll offsets will drift — there is no correction
-   * pass to catch the error. When in doubt, use estimatedItemHeight instead.
-   *
-   * Only meaningful for the default vertical list (no `layout` prop). When a layout
-   * is provided, sizing is owned by the layout's heightForItem/sizeForItem delegates;
-   * this prop is used only as a stride fallback for the JS window computation and
-   * as the H-container height seed before the first measurement.
-   *
-   * Mutually exclusive with estimatedItemHeight.
-   */
-  itemHeight?: number;
-  /**
-   * Initial height estimate for variable-height items. Yoga is always the authority
-   * for final cell dimensions — this seeds the layout before measurement.
+   * Initial height estimate for items. Yoga is always the authority for final cell
+   * dimensions — this value seeds the layout before measurement.
    * Enables the onLayout measurement pass: cells report their measured height,
    * LayoutCache is updated incrementally, and scroll position is corrected so
    * visible content does not jump when an item above it changes size.
    *
    * Only meaningful for the default vertical list (no `layout` prop). When a layout
-   * is provided, sizing is owned by the layout's heightForItem/sizeForItem delegates;
-   * this prop is used only as a stride fallback for the JS window computation and
-   * as the H-container height seed before the first measurement.
-   *
-   * Mutually exclusive with itemHeight.
+   * is provided, sizing is owned by the layout's estimatedHeightForItem / estimatedSizeForItem
+   * delegates; this prop is used only as a stride fallback for the JS window computation
+   * and as the H-container height seed before the first measurement.
    */
   estimatedItemHeight?: number;
 
   /**
+   * @unstable This API is not yet stable and may change or be removed.
+   *
    * Called when an item's object reference changes behind the same key to decide
    * whether its cached height should be invalidated and the cell re-measured.
    *
@@ -414,12 +430,12 @@ export interface RiffProps<T = unknown> {
    * re-measurement. Override to skip remeasure when only non-height fields change
    * (e.g. a badge count update that doesn't affect cell height).
    *
-   * Only active in variable-height mode (estimatedItemHeight or a layout with
-   * heightForItem). Has no effect when itemHeight is used.
+   * **Known limitation:** This does NOT call `nativeLayoutCache.removeAttributes` — it only
+   * bumps `layoutCacheVersion`. If the LayoutCache still holds a stale measured height for the
+   * key, the re-render races with the Yoga re-measurement cycle and the cell may stay at its
+   * old height until the next layout pass. For reliable resize, use `extraData` instead.
    *
-   * Eliminates the need to call ref.current.invalidateKeys() manually for the
-   * common case of updating item content via setData. Matches the mental model
-   * of FlatList/FlashList: just update your data array, re-measurement is automatic.
+   * Works for all layout types (list, grid, masonry, flow, custom).
    */
   remeasureOnItemChange?: (prev: T, next: T) => boolean;
 
@@ -1102,7 +1118,6 @@ function RiffBase<T = unknown>({
   keyExtractor: propKeyExtractor,
   getItemType: propGetItemType,
   getSupplementaryType: propGetSupplementaryType,
-  itemHeight,
   estimatedItemHeight,
   remeasureOnItemChange,
   itemSpacing = 0,
@@ -1515,16 +1530,12 @@ function RiffBase<T = unknown>({
 
   const itemCount = data.length;
 
-  // NOTE: isVariableHeight means "the estimatedItemHeight API was used."
-  // It does NOT mean heights are fixed when false. ALL consumer-provided
-  // dimensions (itemHeight, estimatedItemHeight, heightForItem, sizeForItem,
-  // etc.) are estimates. Actual dimensions always come from Yoga via the
-  // LayoutCache. This flag exists only to control the default layout
-  // factory delegation (itemHeight vs estimatedItemHeight on the list
-  // delegate) — it should never be used as a proxy for "safe to skip
-  // measurement" or "sizes won't change."
+  // NOTE: isVariableHeight means "estimatedItemHeight was provided."
+  // ALL consumer-provided dimensions are estimates; Yoga is always the authority.
+  // This flag controls whether the default list layout uses the measurement path
+  // (estimatedItemHeight) or falls back to a bare estimate without measurement.
   const isVariableHeight  = estimatedItemHeight !== undefined;
-  const effectiveItemHeight = estimatedItemHeight ?? itemHeight ?? 44;
+  const effectiveItemHeight = estimatedItemHeight ?? 44;
   const stride    = effectiveItemHeight + itemSpacing;
   const itemWidth = Math.max(0, viewportWidth - sectionInsetLeft - sectionInsetRight);
 
@@ -1558,11 +1569,10 @@ function RiffBase<T = unknown>({
   const defaultLayout = useMemo(() => {
     if (layoutProp) return null;
     return listLayout({
-      itemHeight: isVariableHeight ? undefined : effectiveItemHeight,
-      estimatedItemHeight: isVariableHeight ? effectiveItemHeight : undefined,
+      estimatedItemHeight: effectiveItemHeight,
       itemSpacing,
     });
-  }, [layoutProp, isVariableHeight, effectiveItemHeight, itemSpacing]);
+  }, [layoutProp, effectiveItemHeight, itemSpacing]);
 
   const effectiveLayout = layoutProp ?? defaultLayout!;
 
@@ -2090,6 +2100,12 @@ function RiffBase<T = unknown>({
       }
       setLayoutCacheVersion(v => v + 1);
     },
+
+    invalidateItem: (sectionIndex: number, itemIndex: number) => {
+      const key = layoutContextRef.current?.sections[sectionIndex]?.itemKeys?.[itemIndex];
+      if (key) nativeLayoutCache.removeAttributes(key);
+      setLayoutCacheVersion(v => v + 1);
+    },
   }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps -- onDataChange intentionally included; callSiteSetter is pass-through
 
   // ── remeasureOnItemChange — auto height-cache invalidation ───────────────────
@@ -2108,8 +2124,8 @@ function RiffBase<T = unknown>({
       return fi._kind === 'item' ? fi.item : null;
     };
 
-    if (!isVariableHeight || !remeasureOnItemChange) {
-      // Still keep the map current so it's accurate if the prop is toggled on later.
+    if (!remeasureOnItemChange) {
+      // Still keep the map current so it's accurate if the prop is added later.
       if (data.length > 0 && keyExtractor) {
         for (let i = 0; i < data.length; i++) {
           const raw = data[i]!;
@@ -2143,7 +2159,6 @@ function RiffBase<T = unknown>({
     }
 
     if (keysToInvalidate.length > 0) {
-      for (const k of keysToInvalidate) nativeLayoutCache.removeAttributes(k);
       setLayoutCacheVersion(v => v + 1);
     }
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps -- intentional: only recheck when data changes

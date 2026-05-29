@@ -135,7 +135,7 @@ export default function M3_5_CellBudget() {
         data={DATA}
         keyExtractor={item => String(item.id)}
         renderItem={({ item }) => <BudgetCell item={item} />}
-        itemHeight={ITEM_H}
+        estimatedItemHeight={ITEM_H}
         itemSpacing={1}
         sectionInsetTop={8}
         sectionInsetBottom={24}

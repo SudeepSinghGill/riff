@@ -333,19 +333,19 @@ function RiffStorefront({ listRef }: { listRef: React.RefObject<any> }) {
     // S0: Flash Deals — single-row H carousel
     { range: 0, layout: list({ estimatedItemHeight: hCardWidth, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', itemSpacing: 8, sectionBackground: true, sectionSpacing: 12 }), horizontal: true },
     // S1: Top Picks — 2-col V grid
-    { range: 1, layout: grid({ columns: 2, rowHeight: 200, columnSpacing: 10, rowSpacing: 10, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }) },
+    { range: 1, layout: grid({ columns: 2, estimatedItemHeight: 200, columnSpacing: 10, rowSpacing: 10, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }) },
     // S2: Trending Now — 2-row H carousel
-    { range: 2, layout: grid({ columns: 2, rowHeight: 160, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }), horizontal: true },
+    { range: 2, layout: grid({ columns: 2, estimatedItemHeight: 160, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }), horizontal: true },
     // S3: Staff Picks — full-width V list
     { range: 3, layout: list({ estimatedItemHeight: 140, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', itemSpacing: 10, sectionBackground: true, sectionSpacing: 12 }) },
     // S4: Weekend Deals — single-row H carousel
     { range: 4, layout: list({ estimatedItemHeight: hCardWidth, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', itemSpacing: 8, sectionBackground: true, sectionSpacing: 12 }), horizontal: true },
     // S5: New Arrivals — V flow; card width matches H sections for visual consistency
-    { range: 5, layout: flow({ sizeForItem: () => ({ width: hCardWidth, height: 180 }), itemSpacing: 8, lineSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }) },
+    { range: 5, layout: flow({ estimatedSizeForItem: (_s: number, _i: number) => ({ width: hCardWidth, height: 180 }), itemSpacing: 8, lineSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }) },
     // S6: Popular — 2-row H carousel
-    { range: 6, layout: grid({ columns: 2, rowHeight: 160, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }), horizontal: true },
+    { range: 6, layout: grid({ columns: 2, estimatedItemHeight: 160, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }), horizontal: true },
     // S7: Recommended — 2-col V masonry (impossible to nest in FlashList)
-    { range: 7, layout: masonry({ columns: 2, heightForItem: () => 180, columnSpacing: 10, rowSpacing: 10, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }) },
+    { range: 7, layout: masonry({ columns: 2, estimatedItemHeight: 180, columnSpacing: 10, rowSpacing: 10, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: true, sectionSpacing: 12 }) },
   ]), [hCardWidth]);
 
   const SECTION_META = [

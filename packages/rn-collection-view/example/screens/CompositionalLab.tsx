@@ -22,7 +22,7 @@
  */
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Riff as CollectionView } from '@riff/components/CollectionView';
+import { Riff as CollectionView, type RiffHandle } from '@riff/components/CollectionView';
 import { compositional } from '@riff/layouts/compositional';
 import { list } from '@riff/layouts/list';
 import { grid } from '@riff/layouts/grid';
@@ -181,7 +181,7 @@ function LabCell({ item }: { item: LabItem }) {
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function CompositionalLab() {
-  const cvRef = useRef<any>(null);
+  const cvRef = useRef<RiffHandle<LabItem>>(null);
   const [sectionDatas, setSectionDatas] = useState<LabItem[][]>(
     INITIAL_DATA.map(d => [...d]),
   );
@@ -288,13 +288,13 @@ export function CompositionalLab() {
       // 1: list H — sticky header
       { layout: list({ estimatedItemHeight: 140, headerHeight: HEADER_H, itemSpacing: 8, sectionSpacing: 10, estimatedCrossAxisHeight: 120 }), horizontal: true },
       // 2: grid V 2-col — sticky header + footer + section bg
-      { layout: grid({ columns: gridCols, rowHeight: 100, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: sectionBgEnabled, sectionSpacing: 10 }) },
+      { layout: grid({ columns: gridCols, estimatedItemHeight: 100, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: sectionBgEnabled, sectionSpacing: 10 }) },
       // 3: grid H 2-row — sticky header
-      { layout: grid({ columns: 2, rowHeight: 80, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, sectionSpacing: 10, estimatedCrossAxisHeight: 180 }), horizontal: true },
+      { layout: grid({ columns: 2, estimatedItemHeight: 80, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, sectionSpacing: 10, estimatedCrossAxisHeight: 180 }), horizontal: true },
       // 4: masonry V 2-col — sticky header + footer + section bg
       { layout: masonry({ columns: gridCols, estimatedItemHeight: 80, columnSpacing: 8, rowSpacing: 8, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionBackground: sectionBgEnabled, sectionSpacing: 10 }) },
       // 5: flow V — sticky header + footer
-      { layout: flow({ sizeForItem: (i: number) => ({ width: flowSizeRef.current[i]?.width ?? 100, height: 34 }), itemSpacing: 6, lineSpacing: 6, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionSpacing: 10 }) },
+      { layout: flow({ estimatedSizeForItem: (_s: number, i: number) => ({ width: flowSizeRef.current[i]?.width ?? 100, height: 34 }), itemSpacing: 6, lineSpacing: 6, headerHeight: HEADER_H, footerHeight: FOOTER_H, stickyMode: 'push', sectionSpacing: 10 }) },
       // 6: list V — no chrome (control group)
       { layout: list({ estimatedItemHeight: 80, itemSpacing: 8, sectionSpacing: 10 }) },
     ];

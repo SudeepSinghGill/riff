@@ -95,7 +95,7 @@ export default function P5_1_Metrics() {
         renderItem={({ item }) => <MetricsCell item={item} />}
         {...(useEstimated
           ? { estimatedItemHeight: 60 }
-          : { itemHeight: 72 })}
+          : { estimatedItemHeight: 72 })}
         itemSpacing={1}
         renderMultiplier={1.5}
         showHUD={showHUD}

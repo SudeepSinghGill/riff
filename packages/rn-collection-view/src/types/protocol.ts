@@ -224,17 +224,17 @@ export interface RiffInvalidationScope {
 /**
  * List layout — single column vertical layout.
  *
- * Sizing: provide EITHER `itemHeight` (fixed) OR `heightForItem` (variable).
- * If both provided, `heightForItem` takes precedence.
- * If neither, `estimatedItemHeight` is used with measurement.
+ * Sizing: provide `estimatedHeightForItem` (per-item estimate) or `estimatedItemHeight`
+ * (scalar fallback). Yoga is always the authority for final dimensions.
  *
- * Header/footer sizing follows the same pattern as item sizing.
+ * Horizontal mode: provide `estimatedSizeForItem` for per-item size estimates;
+ * Yoga measures both width (primary axis) and height (cross axis) after render.
  */
 export interface RiffListConfig {
   /**
    * When true, items flow horizontally (primary axis = X).
-   * `itemHeight` is the estimated item width (primary axis). Yoga measures final width.
-   * `estimatedCrossAxisHeight` is the estimated item height (cross axis). Yoga measures final height.
+   * `estimatedSizeForItem` (or `estimatedItemHeight` as fallback) seeds primary-axis width.
+   * `estimatedCrossAxisHeight` seeds the cross-axis height before the first measurement.
    * The list's cross-axis height = max(all measured item heights) + vertical insets.
    */
   horizontal?: boolean;
@@ -247,15 +247,25 @@ export interface RiffListConfig {
    */
   estimatedCrossAxisHeight?: number;
 
-  // ── Item sizing (one of these) ──
-  /** Fixed height for all items, or a function of container width. Fast path — no measurement needed.
-   *  In horizontal mode: item size along the scroll axis (X). */
-  itemHeight?: number | ((containerWidth: number) => number);
-  /** Estimated height for variable-height items. Items will be measured after render. */
+  // ── Item sizing ──
+  /**
+   * Estimated item height for vertical lists, or primary-axis width for horizontal lists.
+   * Scalar fallback used when `estimatedHeightForItem` / `estimatedSizeForItem` is absent.
+   * Yoga measures the actual size after render. Default: 44.
+   */
   estimatedItemHeight?: number;
-  /** Per-item height callback. Called only for items in the windowed range.
-   *  `containerWidth` lets the consumer compute aspect-ratio or breakpoint-based heights. */
-  heightForItem?: (index: number, section: number, containerWidth: number) => number;
+  /**
+   * Per-item height estimate for vertical lists. Section-first param order.
+   * Called for items in the windowed range. Yoga measures actual heights.
+   * Falls back to `estimatedItemHeight ?? 44` when absent.
+   */
+  estimatedHeightForItem?: (section: number, index: number) => number;
+  /**
+   * Per-item size estimate for horizontal lists. Section-first param order.
+   * Returns `{ width, height }` — Yoga measures actual dimensions.
+   * Falls back to `{ width: estimatedItemHeight ?? 44, height: estimatedCrossAxisHeight ?? 200 }`.
+   */
+  estimatedSizeForItem?: (section: number, index: number) => Readonly<{ width: number; height: number }>;
 
   // ── Header sizing ──
   headerHeight?: number;
@@ -321,18 +331,20 @@ export interface RiffListConfig {
 /**
  * Masonry layout — fixed columns, variable-height items, shortest-column placement.
  *
- * `columns` is mandatory. Provide EITHER `heightForItem` (variable per-item heights)
- * OR `estimatedItemHeight` (uniform estimate, Yoga measures actual heights).
+ * `columns` is mandatory. Provide `estimatedHeightForItem` for per-item height estimates,
+ * or `estimatedItemHeight` as a scalar fallback. Yoga measures actual heights.
  * Width is derived from container width and column count.
  */
 export interface RiffMasonryConfig {
   /** Number of columns, or a function of container width for responsive layouts. Mandatory. */
   columns: number | ((containerWidth: number) => number);
-  /** Per-item height callback. Optional — provide for known heights or aspect-ratio content.
-   *  When omitted, `estimatedItemHeight` is used for initial lane assignment and Yoga
-   *  measures actual heights via applyMeasurements. */
-  heightForItem?: (index: number, section: number, containerWidth: number) => number;
-  /** Fallback height estimate used when `heightForItem` is not provided. Default: 44. */
+  /**
+   * Per-item height estimate. Section-first param order.
+   * Used for initial lane assignment; Yoga measures actual heights.
+   * Falls back to `estimatedItemHeight ?? 44` when absent.
+   */
+  estimatedHeightForItem?: (section: number, index: number) => number;
+  /** Scalar height estimate used when `estimatedHeightForItem` is absent. Default: 44. */
   estimatedItemHeight?: number;
 
   // ── Header/footer sizing ──
@@ -401,18 +413,33 @@ export interface RiffMasonryConfig {
 /**
  * Grid layout — fixed columns, row-aligned heights.
  *
- * Provide EITHER `rowHeight` (uniform rows) OR `heightForItem` (row height = tallest in row).
+ * Provide `estimatedHeightForItem` for per-item height estimates (row height = tallest in row),
+ * or `estimatedItemHeight` as a scalar fallback. Yoga measures actual heights.
  * Width is derived from container width and column count.
+ * Horizontal mode: `estimatedSizeForItem` provides per-item size estimates.
  */
 export interface RiffGridConfig {
   /** Number of columns, or a function of container width for responsive layouts. Mandatory. */
   columns: number | ((containerWidth: number) => number);
 
-  /** Fixed row height, or a function of container width (e.g. aspect-ratio cards). All rows same height. */
-  rowHeight?: number | ((containerWidth: number) => number);
-  /** Per-item height for dynamic rows. Row height = max(items in row).
-   *  `containerWidth` lets the consumer compute aspect-ratio heights. */
-  heightForItem?: (index: number, section: number, containerWidth: number) => number;
+  /**
+   * Scalar height estimate used as fallback when `estimatedHeightForItem` / `estimatedSizeForItem`
+   * is absent. For horizontal grids, seeds the primary-axis width estimate.
+   * Yoga measures actual dimensions. Default: 44.
+   */
+  estimatedItemHeight?: number;
+  /**
+   * Per-item height estimate for vertical grids. Row height = max estimate in each row.
+   * Section-first param order. Yoga measures actual heights.
+   * Falls back to `estimatedItemHeight ?? 44` when absent.
+   */
+  estimatedHeightForItem?: (section: number, index: number) => number;
+  /**
+   * Per-item size estimate for horizontal grids. Section-first param order.
+   * Returns `{ width, height }` — Yoga measures actual dimensions.
+   * Falls back to scalar fallbacks when absent.
+   */
+  estimatedSizeForItem?: (section: number, index: number) => Readonly<{ width: number; height: number }>;
 
   // ── Header/footer sizing ──
   headerHeight?: number;
@@ -481,15 +508,21 @@ export interface RiffGridConfig {
 /**
  * Flow layout — variable-width items, greedy bin-packing, wraps to next line.
  *
- * `sizeForItem` is MANDATORY — flow layout needs both width and height to
- * decide how many items fit per row (V) or column (H).
  * V-mode: items pack left-to-right, wrap when next item doesn't fit row width.
  * H-mode: items pack top-to-bottom, wrap when next item doesn't fit column height.
+ * `estimatedSizeForItem` provides per-item size estimates; Yoga measures actual dimensions.
  */
 export interface RiffFlowConfig {
-  /** Per-item size callback. Mandatory. Returns both width and height.
-   *  `containerWidth` lets the consumer derive proportional widths or aspect-ratio heights. */
-  sizeForItem: (index: number, section: number, containerWidth: number) => Readonly<{ width: number; height: number }>;
+  /**
+   * Per-item size estimate. Section-first param order. Returns `{ width, height }`.
+   * Yoga measures actual dimensions. Falls back to `{ width: containerWidth, height: estimatedItemHeight ?? 44 }`.
+   * For H-flow, also used for primary-axis height estimates.
+   */
+  estimatedSizeForItem?: (section: number, index: number) => Readonly<{ width: number; height: number }>;
+  /**
+   * Scalar height estimate used when `estimatedSizeForItem` is absent. Default: 44.
+   */
+  estimatedItemHeight?: number;
 
   // ── Header/footer sizing ──
   headerHeight?: number;

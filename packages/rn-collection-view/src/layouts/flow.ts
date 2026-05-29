@@ -107,7 +107,7 @@ class FlowLayoutEngine implements RiffLayout {
       const itemHeights: number[] = new Array(sec.itemCount);
 
       for (let i = 0; i < sec.itemCount; i++) {
-        const size = d.sizeForItem(i, sectionIndex, w);
+        const size = d.estimatedSizeForItem?.(sectionIndex, i) ?? { width: w, height: d.estimatedItemHeight ?? 44 };
         const measuredH = context.measuredHeightForItem?.(i, sectionIndex);
         itemWidths[i]  = size.width;
         itemHeights[i] = measuredH ?? size.height;

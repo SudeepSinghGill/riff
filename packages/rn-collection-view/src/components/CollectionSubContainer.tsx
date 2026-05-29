@@ -36,7 +36,7 @@ import type {
   RiffLayout,
   LayoutContext,
   SectionInfo,
-} from '@riff/types/protocol';
+} from '../types/protocol';
 
 const nativeMod = NativeCollectionViewModule as unknown as {
   layoutCacheId: number;
