@@ -9,11 +9,10 @@
  *   - Legacy custom layouts (pre-H-2): `circular`, `carousel` — built on a plain
  *     ScrollView with JS-side style updates per scroll tick.
  *   - H-2 framework demos: `h2-radial`, `h2-carousel3d`, `h2-spiral`, `h2-hex` —
- *     each uses the generic `CollectionSubContainer` + a layout from
+ *     each uses the main `<Riff>` component with a JS layout engine from
  *     `src/layouts/`. Frames + opacity + zIndex + CATransform3D are applied
- *     natively by `CollectionSubContainerShadowNode` → `RNCollectionSubContainerView`,
- *     with one JSI batch (`setAttributesBatch`) per scroll tick — no per-cell JSI,
- *     no React re-render of cells, no Yoga reflow.
+ *     natively via LayoutCache, with one JSI batch (`setAttributesBatch`) per
+ *     scroll tick — no per-cell JSI, no React re-render of cells, no Yoga reflow.
  *
  * Resize button: animates container to 60% width to show responsive
  * column reflow for grid (3→2→1) and masonry (2→1).
@@ -25,7 +24,7 @@ import { CircularList } from '../components/CircularList';
 import { Carousel3D } from '../components/Carousel3D';
 import { CompositionalDemo } from './CompositionalDemo';
 import { CompositionalLab } from './CompositionalLab';
-import { CollectionSubContainer } from '@riff/components/CollectionSubContainer';
+import { Riff } from '@riff/components/CollectionView';
 import { radial } from '@riff/layouts/radial';
 import { carousel3D as carousel3DLayout } from '@riff/layouts/carousel3D';
 import { spiral } from '@riff/layouts/spiral';
@@ -160,15 +159,14 @@ export default function RiffDemo() {
             />
           )}
 
-          {/* H-2 framework demos. Each uses CollectionSubContainer + a layout
-              from src/layouts/. Frames + transforms are applied natively by
-              CollectionSubContainerShadowNode → RNCollectionSubContainerView. */}
+          {/* H-2 framework demos. Each uses the main <Riff> component with a JS layout.
+              processScroll writes positions to LayoutCache per scroll tick;
+              the ShadowNode applies frames + CATransform3D natively. */}
           {tab === 'h2-radial' && (
-            <CollectionSubContainer
+            <Riff
               layout={radial({ radius: 130, itemSize: 70, scrollPerRevolution: 700 })}
               data={RADIAL_DATA}
               keyExtractor={(item) => `radial-${item.id}`}
-              sectionIndex={0}
               style={S.h2Container}
               renderItem={({ item }) => (
                 <View style={[S.circularCell, { backgroundColor: item.color }]}>
@@ -179,12 +177,10 @@ export default function RiffDemo() {
           )}
 
           {tab === 'h2-carousel3d' && (
-            <CollectionSubContainer
+            <Riff
               layout={carousel3DLayout({ itemSize: 200, gap: 28, perspective: 700, maxRotation: 55 })}
               data={CAROUSEL3D_DATA}
               keyExtractor={(item) => `c3d-${item.id}`}
-              sectionIndex={0}
-              crossAxisSize={260}
               style={S.h2CarouselWrap}
               renderItem={({ item }) => (
                 <View style={[S.carouselCard, { backgroundColor: item.color }]}>
@@ -195,11 +191,10 @@ export default function RiffDemo() {
           )}
 
           {tab === 'h2-spiral' && (
-            <CollectionSubContainer
+            <Riff
               layout={spiral({ a: 10, b: 14, angularStep: 0.55, itemSize: 56, scrollPerRevolution: 800 })}
               data={SPIRAL_DATA}
               keyExtractor={(item) => `sp-${item.id}`}
-              sectionIndex={0}
               style={S.h2Container}
               renderItem={({ item }) => (
                 <View style={[S.circularCell, { backgroundColor: item.color }]}>
@@ -210,12 +205,10 @@ export default function RiffDemo() {
           )}
 
           {tab === 'h2-hex' && (
-            <CollectionSubContainer
+            <Riff
               layout={hex({ hexSize: 64, paddingX: 12, paddingY: 12, gap: 6 })}
               data={HEX_DATA}
               keyExtractor={(item) => `hex-${item.id}`}
-              sectionIndex={0}
-              scrollDirection="none"
               style={S.h2Container}
               renderItem={({ item }) => (
                 <View style={[S.hexCell, { backgroundColor: item.color }]}>

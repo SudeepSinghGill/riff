@@ -39,7 +39,19 @@ export type {
   RiffRenderItemInfo,
   RiffScrollOptions,
   RiffScrollOffsetOptions,
+  JsLayoutScrollOptions,
+  JsLayoutScrollResult,
 } from './types/protocol';
 
-// Layout factories
+// Layout factories (C++ built-ins)
 export { list, masonry, grid, flow, customLayout } from './layouts';
+
+// JS layout factories
+export { radial } from './layouts/radial';
+export { carousel3D } from './layouts/carousel3D';
+export { spiral } from './layouts/spiral';
+export { hex } from './layouts/hex';
+
+// Sub-container component for compositional layouts
+export { RiffSubContainer, CollectionSubContainer } from './components/CollectionSubContainer';
+export type { RiffSubContainerProps, CollectionSubContainerProps } from './components/CollectionSubContainer';

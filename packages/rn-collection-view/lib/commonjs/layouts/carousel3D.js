@@ -71,8 +71,15 @@ class Carousel3DLayout {
     }, (_, i) => `carousel3D-${i}`);
     this._writeForOffset(0);
   }
-  processScroll(offset, _ctx) {
+  processScroll(offset, _ctx, _opts) {
     this._writeForOffset(offset.x);
+    const n = this.itemKeys.length;
+    return {
+      renderFirst: 0,
+      renderLast: n - 1,
+      visibleFirst: 0,
+      visibleLast: n - 1
+    };
   }
   _writeForOffset(scrollX) {
     if (!this.ctx) return;
