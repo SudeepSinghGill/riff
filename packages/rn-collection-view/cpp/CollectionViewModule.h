@@ -100,7 +100,7 @@ public:
    */
   void setMainThreadCPUCallback(std::function<double()> cb);
 
-  static constexpr const char* kModuleName = "RNCollectionViewModule";
+  static constexpr const char* kModuleName = "RiffModule";
 
   // ── Static LayoutCache registry ──────────────────────────────────────────
   // ShadowNodes (cloned by Fabric, value semantics) can't hold shared_ptr.

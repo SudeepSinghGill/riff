@@ -15,13 +15,13 @@
 using namespace facebook::react;
 
 /**
- * RNCollectionViewModule — New Arch TurboModule registration.
+ * RiffModule — New Arch TurboModule registration.
  *
  * M2.2b: holds the C++ module shared_ptr so it can register the
  * attachScrollView callback and install RNCVScrollObserver on the
  * UIScrollView on the main thread.
  */
-@interface RNCollectionViewModule () <RCTTurboModule>
+@interface RiffModule () <RCTTurboModule>
 @end
 
 // P5.3 — one os_log handle shared across all signpost intervals.
@@ -29,7 +29,7 @@ using namespace facebook::react;
 static os_log_t _rncvLog;
 static const BOOL kRNCVEnableSignposts = NO;
 
-@implementation RNCollectionViewModule {
+@implementation RiffModule {
   std::shared_ptr<CollectionViewModule> _cppModule;
   RNCVScrollObserver                   *_scrollObserver;
   // P5.1 — CADisplayLink for accurate frame-time measurement.
@@ -37,7 +37,7 @@ static const BOOL kRNCVEnableSignposts = NO;
   CFTimeInterval                        _lastTimestamp;
 }
 
-RCT_EXPORT_MODULE(RNCollectionViewModule)
+RCT_EXPORT_MODULE(RiffModule)
 
 - (std::shared_ptr<TurboModule>)getTurboModule:
     (const ObjCTurboModule::InitParams&)params
@@ -45,7 +45,7 @@ RCT_EXPORT_MODULE(RNCollectionViewModule)
   auto mod = std::make_shared<CollectionViewModule>(params.jsInvoker);
   _cppModule = mod;
 
-  __weak RNCollectionViewModule *weakSelf = self;
+  __weak RiffModule *weakSelf = self;
 
   mod->setAttachScrollViewCallback(^(int tag) {
     dispatch_async(dispatch_get_main_queue(), ^{

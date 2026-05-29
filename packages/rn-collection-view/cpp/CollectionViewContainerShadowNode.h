@@ -21,8 +21,8 @@
 #include <yoga/node/Node.h>
 
 // Codegen-generated props and event emitter.
-#include <react/renderer/components/RNCollectionViewSpec/Props.h>
-#include <react/renderer/components/RNCollectionViewSpec/EventEmitters.h>
+#include <react/renderer/components/RiffSpec/Props.h>
+#include <react/renderer/components/RiffSpec/EventEmitters.h>
 
 // Our custom state.
 #include "CollectionViewContainerState.h"

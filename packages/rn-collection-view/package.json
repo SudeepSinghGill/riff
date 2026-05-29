@@ -17,7 +17,7 @@
     "ios",
     "android",
     "CMakeLists.txt",
-    "RNCollectionView.podspec",
+    "Riff.podspec",
     "!lib/typescript/example"
   ],
   "scripts": {
@@ -51,7 +51,7 @@
     "typescript": "^5.0.0"
   },
   "codegenConfig": {
-    "name": "RNCollectionViewSpec",
+    "name": "RiffSpec",
     "type": "all",
     "jsSrcsDir": "src/specs",
     "ios": {
@@ -64,7 +64,7 @@
       }
     },
     "android": {
-      "javaPackageName": "com.rncollectionview"
+      "javaPackageName": "com.riff"
     }
   },
   "react-native-builder-bob": {

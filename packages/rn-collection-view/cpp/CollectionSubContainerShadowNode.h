@@ -22,8 +22,8 @@
 #include <react/renderer/core/LayoutContext.h>
 
 // Codegen-generated props and event emitter for RNCollectionSubContainer.
-#include <react/renderer/components/RNCollectionViewSpec/Props.h>
-#include <react/renderer/components/RNCollectionViewSpec/EventEmitters.h>
+#include <react/renderer/components/RiffSpec/Props.h>
+#include <react/renderer/components/RiffSpec/EventEmitters.h>
 
 #include "CollectionSubContainerState.h"
 #include "LayoutCache.h"

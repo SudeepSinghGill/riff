@@ -14,4 +14,4 @@ export interface Spec extends TurboModule {
   ping(): string;
 }
 
-export default TurboModuleRegistry.getEnforcing<Spec>('RNCollectionViewModule');
+export default TurboModuleRegistry.getEnforcing<Spec>('RiffModule');
