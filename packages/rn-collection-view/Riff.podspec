@@ -3,7 +3,7 @@ require "json"
 package = JSON.parse(File.read(File.join(__dir__, "package.json")))
 
 Pod::Spec.new do |s|
-  s.name         = "RNCollectionView"
+  s.name         = "Riff"
   s.version      = package["version"]
   s.summary      = package["description"]
   s.homepage     = "https://github.com/TODO/rn-collection-view"

@@ -7,5 +7,5 @@
  * The actual implementation is in CollectionViewModule.mm (ObjC++)
  * which wires the C++ module to the RN New Arch TurboModule registry.
  */
-@interface RNCollectionViewModule : NSObject <RCTBridgeModule>
+@interface RiffModule : NSObject <RCTBridgeModule>
 @end

@@ -1,9 +1,9 @@
 #import "RNScrollCoordinatedViewView.h"
 
-#import <react/renderer/components/RNCollectionViewSpec/ComponentDescriptors.h>
-#import <react/renderer/components/RNCollectionViewSpec/EventEmitters.h>
-#import <react/renderer/components/RNCollectionViewSpec/Props.h>
-#import <react/renderer/components/RNCollectionViewSpec/RCTComponentViewHelpers.h>
+#import <react/renderer/components/RiffSpec/ComponentDescriptors.h>
+#import <react/renderer/components/RiffSpec/EventEmitters.h>
+#import <react/renderer/components/RiffSpec/Props.h>
+#import <react/renderer/components/RiffSpec/RCTComponentViewHelpers.h>
 
 #import <React/RCTFabricComponentsPlugins.h>
 

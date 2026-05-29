@@ -10,5 +10,5 @@ var _reactNative = require("react-native");
  * Defines the JS-visible surface of the C++ JSI module.
  * Must only use codegen-supported types.
  */
-var _default = exports.default = _reactNative.TurboModuleRegistry.getEnforcing('RNCollectionViewModule');
+var _default = exports.default = _reactNative.TurboModuleRegistry.getEnforcing('RiffModule');
 //# sourceMappingURL=NativeCollectionViewModule.js.map
