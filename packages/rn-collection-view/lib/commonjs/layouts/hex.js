@@ -92,6 +92,7 @@ class HexLayout {
           width: sz,
           height: sz
         },
+        sizingState: 'placeholder',
         zIndex: 0,
         alpha: 1
       };

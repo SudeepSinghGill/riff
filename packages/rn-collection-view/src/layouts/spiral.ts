@@ -141,10 +141,11 @@ class SpiralLayout implements RiffLayout {
       const zIndex  = i;
 
       batch[i] = {
-        key:     this.itemKeys[i],
-        section: 0,
-        index:   i,
-        frame:   { x, y, width: sz, height: sz },
+        key:         this.itemKeys[i],
+        section:     0,
+        index:       i,
+        frame:       { x, y, width: sz, height: sz },
+        sizingState: 'placeholder',
         zIndex,
         alpha:   opacity,
         transform3D: scaleMatrix(scale),

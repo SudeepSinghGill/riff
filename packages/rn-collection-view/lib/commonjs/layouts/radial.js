@@ -98,6 +98,7 @@ class RadialLayout {
           width: sz,
           height: sz
         },
+        sizingState: 'placeholder',
         zIndex,
         alpha: opacity,
         transform3D: scaleMatrix(scale)

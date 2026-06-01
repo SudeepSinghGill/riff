@@ -117,6 +117,31 @@ UIKit-style `orthogonalScrollingBehavior` modes: paging, groupPaging, groupPagin
 
 ---
 
+### B2.7 JS layouts — re-attempt guide (reverted 2026-06-01)
+
+Reverted commits: 43e541d, f77040f, e70429a, a328588, 461168a
+
+**Root causes of regressions:**
+1. `correctChildPositionsIfNeeded` used Yoga-sequential positions for JS layout cells instead of the JS layout's LayoutCache positions → all cells stacked at top
+2. B1.1 in `layoutTree()` — dead code (Fabric only calls `layoutTree()` on RootShadowNode, never on component ShadowNodes)
+3. JS layouts writing `sizingState: 'measured'` → violated Yoga-authority principle, blocked height measurement
+
+**What was kept (already in main after revert):**
+- Visual attrs pipeline generalized for all layouts: alpha, transform3D, zIndex applied from LayoutCache in `applyPositionsFromState` without `_isJsLayout` guard
+- `cacheKey` property on `RNMeasuredCellView` always stored (not DEBUG-only)
+- `sizingState: 'placeholder'` in all 4 JS layout .ts files (radial, carousel3D, spiral, hex)
+
+**What needs to be done for re-attempt:**
+1. Add `'js'` layoutType back to codegen spec + C++ enum (from a328588)
+2. Add `isJsLayout` paths back to `CollectionView.tsx` (from 43e541d): `JsLayoutScrollOptions`, `JsLayoutScrollResult` types, updated `processScroll` signature, JS layout scroll handling
+3. **Critical fix**: Add JS-layout correction path in `correctChildPositionsIfNeeded` — for `layoutType == Js`, read x/y positions from LayoutCache instead of Yoga-sequential layout output. This is the core regression that needs new code.
+4. Visual attrs pipeline already generalized — will work for JS layouts automatically
+5. Test: H-2 tabs (radial/carousel3D/spiral/hex) show expected shapes with cell content visible
+
+**Effort:** ~1d (mostly the `correctChildPositionsIfNeeded` fix + wiring)
+
+---
+
 ## B3 — API & Quality (Remaining)
 
 ### B3.2 Cross-section sticky headers
@@ -563,3 +588,22 @@ Moved `_cache->clear()` from each engine's `computeSections()` body into the JSI
 ---
 
 *For full milestone history (Phases 0–5, P1–P5, F2, F3.1–F3.5, H-1 through H-5, all Opts, all perf work) see `PLAN.md`. Archived plans in `docs/archived-plans/`.*
+
+---
+
+## Architectural Decisions (Non-negotiable)
+
+### Yoga-Authority Principle
+
+**Yoga is the only authority for actual dimensions. All layout-provided sizes are estimates.**
+
+This was established during B1.1 planning (2026-06-01) when it was clarified that even a JS layout writing explicit `frame.width/height` in `prepare()` is providing an estimate, not a measurement. The JS layout's pre-computed sizes seed the LayoutCache for first-frame positioning; Yoga measures actual rendered content and may produce a different value.
+
+**API naming enforcement:** All size/dimension APIs exposed to consumers must carry the `estimated` prefix:
+- `estimatedItemHeight` (not `itemHeight`)
+- `estimatedHeightForItem` (not `heightForItem`)
+- `estimatedSizeForItem` (not `sizeForItem`)
+- `estimatedItemSize` (not `itemSize`)
+- `estimatedItemLayoutAttributes` (not `itemLayoutAttributes` or `layoutAttributes`)
+
+**Backlog item:** Rename all currently unqualified APIs in the existing layout engines (`heightForItem` in list/grid/masonry, `sizeForItem` in flow, `itemSize` in radial/carousel3D/spiral/hex, `itemHeight` in list params) to their `estimated` counterparts. This is a breaking API change — coordinate with any consumer-facing documentation update.

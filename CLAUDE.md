@@ -56,6 +56,16 @@ All logging is silenced in normal operation. To enable:
 - Native: set `RNCV_ENABLE_NATIVE_LOGS = 1` / `RNCV_ENABLE_STICKY_TRACE = 1`
 - Re-silence after verification.
 
+## Yoga is the only layout authority — ENFORCE STRICTLY
+
+**All consumer-provided dimensions are estimates. Yoga is always the authority for actual dimensions.**
+
+- Every size API exposed to consumers (`itemHeight`, `heightForItem`, `sizeForItem`, `itemSize`, `itemLayoutAttributes`, etc.) must carry the `estimated` prefix: `estimatedItemHeight`, `estimatedHeightForItem`, `estimatedSizeForItem`, `estimatedItemSize`, `estimatedItemLayoutAttributes`.
+- This applies to C++ layouts, JS layouts, and any future layout type.
+- A JS layout writing `frame.height=80` in `prepare()` is providing an **estimate** that seeds the LayoutCache. Yoga measures the actual rendered content and may produce a different value. The estimate drives first-frame positioning; Yoga drives correctness.
+- Never assume any layout-provided size is final. Gates and optimizations must use `sizingState == Measured` or cache version — never prop values.
+- When reviewing or writing layout code: if you see an unqualified `itemHeight`, `heightForItem`, `sizeForItem`, or `itemSize` in a public API, rename it with the `estimated` prefix before shipping.
+
 ## Project memory
 
 Session-persistent memory is in `/Users/rajatgupta/.claude/projects/-Users-rajatgupta-Dev-rn-new-arch-pocs-collection-view/memory/`. Check `MEMORY.md` there for cross-session context.

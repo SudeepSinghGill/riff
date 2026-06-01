@@ -109,6 +109,7 @@ class Carousel3DLayout {
           width: sz,
           height: sz
         },
+        sizingState: 'placeholder',
         zIndex,
         alpha: 0.45 + 0.55 * front,
         transform3D: buildRotationMatrix(angleRad, this.opts.perspective)
