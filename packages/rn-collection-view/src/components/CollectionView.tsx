@@ -311,12 +311,38 @@ export interface RiffHandle<T = unknown> {
   /**
    * @unstable
    *
-   * Evict the cached height for the item at (sectionIndex, itemIndex) and
-   * trigger a re-measurement pass.
+   * Signal that the item at (sectionIndex, itemIndex) has changed size and
+   * should be re-measured. Call this alongside any state update that changes
+   * the cell's rendered height — React 19 batches both into one commit.
    *
-   * Call this in the same event handler as your state update — React 19 batches
-   * both into one commit so the cell is measured at its new natural height
-   * without a second render pass.
+   * **What happens internally (two phases):**
+   *
+   * Phase 1 — Re-render (all window cells):
+   *   Bumps an internal `invalidateTrigger` counter, which is included in the
+   *   element-cache generation key (`renderGen`). All cells currently in the
+   *   render window miss the cache and re-render. Fabric skips re-measurement
+   *   for cells whose JSX is identical; only the cell whose content actually
+   *   changed produces a new Yoga-measured height. This phase is the same cost
+   *   as the old `extraData` workaround — O(window size) React re-renders.
+   *
+   * Phase 2 — Position reflow (changed item + everything after):
+   *   A double-RAF polls for the native LayoutCache version bump that
+   *   `applyMeasurements` emits once Fabric records the new Yoga height.
+   *   On detection, `processScroll` runs and calls C++ `invalidateFrom(i)`,
+   *   which recomputes cumulative offsets from the changed item's index onward.
+   *   Items before the changed item are untouched — this phase is O(n − i),
+   *   not O(n).
+   *
+   * **Usage:**
+   * ```ts
+   * // Grow the first item in section 1:
+   * setItems(prev => prev.map((item, i) => i === 0 ? { ...item, expanded: true } : item));
+   * ref.current?.invalidateItem(1, 0);
+   * ```
+   *
+   * `invalidateTrigger` is a fully internal counter — not exposed to consumers.
+   * Only `invalidateItem`, `invalidateAt`, `invalidateKeys`, and
+   * `remeasureOnItemChange` bump it.
    */
   invalidateItem(sectionIndex: number, itemIndex: number): void;
 
@@ -1372,7 +1398,7 @@ function RiffBase<T = unknown>({
   // all cached elements to be invalidated (extraData, stickyConfig, layout, vpWidth).
   const renderGenRef = useRef(0);
   const prevCacheDepsRef = useRef<{
-    extraData: unknown; layout: unknown; vpWidth: number;
+    extraData: unknown; layout: unknown; vpWidth: number; invalidate: number;
   } | null>(null);
 
   // P5.1 — counters for the debug HUD. Plain refs — no state, no re-renders.
@@ -1442,9 +1468,12 @@ function RiffBase<T = unknown>({
   // ShadowNode looks up the cache during layout() via this ID.
   const [layoutCacheId] = useState(() => nativeMod.createLayoutCache());
   const [layoutCacheVersion, setLayoutCacheVersion] = useState(0);
-  // Bumped by invalidateItem/invalidateAt/invalidateKeys/remeasureOnItemChange to
-  // trigger the double-RAF version-polling effect without calling removeAttributes
-  // (which would break the spatial index and lose the item's position).
+  // Internal counter bumped by all invalidation APIs and remeasureOnItemChange.
+  // Included in _curCacheDeps so it increments renderGen → all window cells
+  // miss the element cache → re-render → Fabric re-measures changed content.
+  // Also in the double-RAF deps so the version-polling effect fires and
+  // processScroll reflats positions once Fabric's applyMeasurements completes.
+  // NOT consumer-facing — only setInvalidateTrigger is called internally.
   const [invalidateTrigger, setInvalidateTrigger] = useState(0);
 
   // B4.9: Release per-instance cache when this CollectionView unmounts.
@@ -2072,12 +2101,20 @@ function RiffBase<T = unknown>({
     },
 
     invalidateKeys: (keys: Iterable<string>) => {
-      // Do NOT call removeAttributes — it deletes from the spatial index, making
-      // processScroll unable to find the item and leaving it at position zero.
-      // The double-RAF (keyed on invalidateTrigger) detects the native version
-      // bump after Fabric measures the resized content and reflats positions.
+      // Do NOT call removeAttributes — it deletes from the C++ spatial index,
+      // so processScroll's rect query can no longer find the item and it collapses
+      // to position zero. The cache entry must stay; only the measured height is stale.
+      //
+      // Two-phase invalidation (same as invalidateItem):
+      //   Phase 1: setInvalidateTrigger → _curCacheDeps.invalidate changes →
+      //            renderGen++ → all window cells miss element cache → re-render →
+      //            Fabric re-measures the changed cell → applyMeasurements bumps
+      //            the native cache version.
+      //   Phase 2: setLayoutCacheVersion + double-RAF keyed on invalidateTrigger →
+      //            polls native version → on bump: processScroll → invalidateFrom(i) →
+      //            reflows positions from changed item onward (O(n − i)).
       if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
-      void keys; // consumed by caller; trigger is sufficient
+      void keys; // key resolution is the caller's concern; trigger is sufficient
       setLayoutCacheVersion(v => v + 1);
       setInvalidateTrigger(v => v + 1);
     },
@@ -2109,6 +2146,11 @@ function RiffBase<T = unknown>({
     },
 
     invalidateItem: (sectionIndex: number, itemIndex: number) => {
+      // See invalidateKeys comment above for the two-phase mechanism.
+      // sectionIndex/itemIndex are not used here — the trigger is sufficient
+      // because renderGen invalidates all window cells and Fabric determines
+      // which cells changed. A future optimisation could re-render only the
+      // target cell by comparing (section, index) in the element cache check.
       void sectionIndex; void itemIndex;
       setLayoutCacheVersion(v => v + 1);
       setInvalidateTrigger(v => v + 1);
@@ -2995,12 +3037,13 @@ function RiffBase<T = unknown>({
   // a cascade: layoutCacheVersion bump → new stickyConfigMap reference → renderGen++
   // → ALL element cache entries invalidated → O(window_size) re-render on every
   // scroll tick where a Yoga measurement occurred (defeating Opt 4+7 entirely).
-  const _curCacheDeps = { extraData, layout: effectiveLayout, vpWidth: viewportWidth };
+  const _curCacheDeps = { extraData, layout: effectiveLayout, vpWidth: viewportWidth, invalidate: invalidateTrigger };
   if (
     prevCacheDepsRef.current === null ||
-    _curCacheDeps.extraData !== prevCacheDepsRef.current.extraData ||
-    _curCacheDeps.layout    !== prevCacheDepsRef.current.layout ||
-    _curCacheDeps.vpWidth   !== prevCacheDepsRef.current.vpWidth
+    _curCacheDeps.extraData  !== prevCacheDepsRef.current.extraData ||
+    _curCacheDeps.layout     !== prevCacheDepsRef.current.layout ||
+    _curCacheDeps.vpWidth    !== prevCacheDepsRef.current.vpWidth ||
+    _curCacheDeps.invalidate !== prevCacheDepsRef.current.invalidate
   ) {
     renderGenRef.current++;
     prevCacheDepsRef.current = _curCacheDeps;

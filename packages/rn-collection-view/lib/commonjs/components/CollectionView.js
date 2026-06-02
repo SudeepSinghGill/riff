@@ -830,9 +830,12 @@ function RiffBase({
   // ShadowNode looks up the cache during layout() via this ID.
   const [layoutCacheId] = (0, _react.useState)(() => nativeMod.createLayoutCache());
   const [layoutCacheVersion, setLayoutCacheVersion] = (0, _react.useState)(0);
-  // Bumped by invalidateItem/invalidateAt/invalidateKeys/remeasureOnItemChange to
-  // trigger the double-RAF version-polling effect without calling removeAttributes
-  // (which would break the spatial index and lose the item's position).
+  // Internal counter bumped by all invalidation APIs and remeasureOnItemChange.
+  // Included in _curCacheDeps so it increments renderGen → all window cells
+  // miss the element cache → re-render → Fabric re-measures changed content.
+  // Also in the double-RAF deps so the version-polling effect fires and
+  // processScroll reflats positions once Fabric's applyMeasurements completes.
+  // NOT consumer-facing — only setInvalidateTrigger is called internally.
   const [invalidateTrigger, setInvalidateTrigger] = (0, _react.useState)(0);
 
   // B4.9: Release per-instance cache when this CollectionView unmounts.
@@ -1438,12 +1441,20 @@ function RiffBase({
       });
     },
     invalidateKeys: keys => {
-      // Do NOT call removeAttributes — it deletes from the spatial index, making
-      // processScroll unable to find the item and leaving it at position zero.
-      // The double-RAF (keyed on invalidateTrigger) detects the native version
-      // bump after Fabric measures the resized content and reflats positions.
+      // Do NOT call removeAttributes — it deletes from the C++ spatial index,
+      // so processScroll's rect query can no longer find the item and it collapses
+      // to position zero. The cache entry must stay; only the measured height is stale.
+      //
+      // Two-phase invalidation (same as invalidateItem):
+      //   Phase 1: setInvalidateTrigger → _curCacheDeps.invalidate changes →
+      //            renderGen++ → all window cells miss element cache → re-render →
+      //            Fabric re-measures the changed cell → applyMeasurements bumps
+      //            the native cache version.
+      //   Phase 2: setLayoutCacheVersion + double-RAF keyed on invalidateTrigger →
+      //            polls native version → on bump: processScroll → invalidateFrom(i) →
+      //            reflows positions from changed item onward (O(n − i)).
       if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
-      void keys; // consumed by caller; trigger is sufficient
+      void keys; // key resolution is the caller's concern; trigger is sufficient
       setLayoutCacheVersion(v => v + 1);
       setInvalidateTrigger(v => v + 1);
     },
@@ -1464,6 +1475,11 @@ function RiffBase({
       setInvalidateTrigger(v => v + 1);
     },
     invalidateItem: (sectionIndex, itemIndex) => {
+      // See invalidateKeys comment above for the two-phase mechanism.
+      // sectionIndex/itemIndex are not used here — the trigger is sufficient
+      // because renderGen invalidates all window cells and Fabric determines
+      // which cells changed. A future optimisation could re-render only the
+      // target cell by comparing (section, index) in the element cache check.
       void sectionIndex;
       void itemIndex;
       setLayoutCacheVersion(v => v + 1);
@@ -2370,9 +2386,10 @@ function RiffBase({
   const _curCacheDeps = {
     extraData,
     layout: effectiveLayout,
-    vpWidth: viewportWidth
+    vpWidth: viewportWidth,
+    invalidate: invalidateTrigger
   };
-  if (prevCacheDepsRef.current === null || _curCacheDeps.extraData !== prevCacheDepsRef.current.extraData || _curCacheDeps.layout !== prevCacheDepsRef.current.layout || _curCacheDeps.vpWidth !== prevCacheDepsRef.current.vpWidth) {
+  if (prevCacheDepsRef.current === null || _curCacheDeps.extraData !== prevCacheDepsRef.current.extraData || _curCacheDeps.layout !== prevCacheDepsRef.current.layout || _curCacheDeps.vpWidth !== prevCacheDepsRef.current.vpWidth || _curCacheDeps.invalidate !== prevCacheDepsRef.current.invalidate) {
     renderGenRef.current++;
     prevCacheDepsRef.current = _curCacheDeps;
     // Bug fix: invalidate decoration cache synchronously on layout/data change.
