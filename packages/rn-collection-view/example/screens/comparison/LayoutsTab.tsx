@@ -12,10 +12,8 @@
  *   Masonry   — C++ MasonryLayout, shortest-column. FlashList: MasonryFlashList (available).
  *   Flow      — C++ FlowLayout, variable-width wrapping. FlashList: not possible.
  *              Shows the two-pass effect: estimated sizes → Yoga measurement → reflow.
- *   Radial Arc  — TS radial layout via <Riff>. FlashList: not possible.
- *   3D Carousel — TS carousel3D layout via <Riff>. FlashList: not possible.
- *   Spiral      — TS spiral layout via <Riff>. FlashList: not possible.
- *   Hex Grid    — TS hex layout via <Riff>, static. FlashList: not possible.
+ *   Radial Arc — TS custom layout, circular. FlashList: not possible.
+ *   3D Carousel — TS custom layout, perspective. FlashList: not possible.
  */
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, Animated, Easing } from 'react-native';
@@ -24,10 +22,8 @@ import { list } from '@riff/layouts/list';
 import { grid } from '@riff/layouts/grid';
 import { masonry } from '@riff/layouts/masonry';
 import { flow } from '@riff/layouts/flow';
-import { radial } from '@riff/layouts/radial';
-import { carousel3D as carousel3DLayout } from '@riff/layouts/carousel3D';
-import { spiral } from '@riff/layouts/spiral';
-import { hex } from '@riff/layouts/hex';
+import { CircularList } from '../../components/CircularList';
+import { Carousel3D } from '../../components/Carousel3D';
 
 // ── Shared colors ────────────────────────────────────────────────────────────
 
@@ -261,20 +257,6 @@ const CAROUSEL_DATA: CarouselItem[] = Array.from({ length: CAROUSEL_COUNT }, (_,
   color: COLORS[i % COLORS.length]!,
 }));
 
-type SpiralItem = { id: number; label: string; color: string };
-const SPIRAL_DATA: SpiralItem[] = Array.from({ length: 24 }, (_, i) => ({
-  id: i,
-  label: `${i + 1}`,
-  color: COLORS[i % COLORS.length]!,
-}));
-
-type HexItem = { id: number; label: string; color: string };
-const HEX_DATA: HexItem[] = Array.from({ length: 28 }, (_, i) => ({
-  id: i,
-  label: `${i + 1}`,
-  color: COLORS[i % COLORS.length]!,
-}));
-
 // ── List: shared components ──────────────────────────────────────────────────
 
 /** Counts ms since mount. If this view is never remounted, it never resets. */
@@ -455,7 +437,6 @@ export function ListDemo() {
   const [decoCount, setDecoCount] = useState(0);
   const insertCounter = useRef(S0_DATA.length);
   const cvRef = useRef<RiffHandle<ListItem>>(null);
-  const [resizeVersion, setResizeVersion] = useState(0);
 
   const listLayout = useMemo(() => list({
     estimatedItemHeight: 56,
@@ -490,20 +471,21 @@ export function ListDemo() {
   const resizeS0First = useCallback(() => {
     setS0Items(prev => prev.map((item, i) =>
       i === 0 ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(0, 0);
   }, []);
 
   const resizeS1First = useCallback(() => {
     setS1Items(prev => prev.map((item, i) =>
       i === 0 ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(1, 0);
   }, []);
 
   const resizeS2Last = useCallback(() => {
+    const lastIdx = s2Items.length - 1;
     setS2Items(prev => prev.map((item, i) =>
       i === prev.length - 1 ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
-  }, []);
+    cvRef.current?.invalidateItem(2, lastIdx);
+  }, [s2Items.length]);
 
   // ── Sections ───────────────────────────────────────────────────────────────
 
@@ -620,7 +602,6 @@ export function ListDemo() {
         maintainVisibleContentPosition={mvcEnabled}
         decorationRenderers={decorationRenderers}
         onDecorationCountChange={setDecoCount}
-        extraData={resizeVersion}
       />
     </View>
   );
@@ -654,7 +635,6 @@ export function GridDemo() {
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
-  const [resizeVersion, setResizeVersion] = useState(0);
   const insertCounter = useRef(GS0_DATA.length);
 
   // estimatedHeightForItem reads resize state from item data — no ref closures needed.
@@ -700,7 +680,7 @@ export function GridDemo() {
   const toggleResize = useCallback((id: string, sectionIndex: number, itemIndex: number) => {
     setGs0Items(prev => prev.map(item =>
       item.id === id ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(sectionIndex, itemIndex);
   }, []);
 
   const sections = useMemo(() => [
@@ -805,7 +785,6 @@ export function GridDemo() {
         onDecorationCountChange={setDecoCount}
         keyExtractor={keyExtractor}
         renderItem={renderItem}
-        extraData={resizeVersion}
       />
     </View>
   );
@@ -819,7 +798,6 @@ export function MasonryDemo() {
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
-  const [resizeVersion, setResizeVersion] = useState(0);
   const insertCounter = useRef(MS0_INIT.length);
 
   // estimatedHeightForItem reads resize state from item data — no ref closures needed.
@@ -855,7 +833,7 @@ export function MasonryDemo() {
   const toggleResize = useCallback((id: string, sectionIndex: number, itemIndex: number) => {
     setMs0Items(prev => prev.map(item =>
       item.id === id ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(sectionIndex, itemIndex);
   }, []);
 
   const sections = useMemo(() => [
@@ -925,7 +903,6 @@ export function MasonryDemo() {
         onDecorationCountChange={setDecoCount}
         keyExtractor={keyExtractor}
         renderItem={renderItem}
-        extraData={resizeVersion}
       />
     </View>
   );
@@ -1134,7 +1111,6 @@ export function FlowDemo() {
   const [s0Cards, setS0Cards] = useState<FlowCard[]>(FC_S0_INIT);
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
-  const [resizeVersion, setResizeVersion] = useState(0);
   const insertCounter = useRef(FC_S0_INIT.length);
 
   // Track the largest observed container width; when current width drops below
@@ -1185,14 +1161,14 @@ export function FlowDemo() {
     if (sectionIndex !== 0) return; // S1 items are static constants
     setS0Cards(prev => prev.map(item =>
       item.id === id ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(sectionIndex, itemIndex);
   }, []);
 
   const toggleTall = useCallback((id: string, sectionIndex: number, itemIndex: number) => {
     if (sectionIndex !== 0) return; // S1 items are static constants
     setS0Cards(prev => prev.map(item =>
       item.id === id ? { ...item, tall: !item.tall } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(sectionIndex, itemIndex);
   }, []);
 
   const sections = useMemo(() => [
@@ -1286,7 +1262,6 @@ export function FlowDemo() {
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         onContainerSizeChange={(w: number) => { if (w > flowBaseWidthRef.current) flowBaseWidthRef.current = w; }}
-        extraData={resizeVersion}
       />
     </View>
   );
@@ -1461,7 +1436,7 @@ const HFS = StyleSheet.create({
   tagSub:         { fontSize: 9, color: 'rgba(255,255,255,0.6)', marginTop: 2 },
 });
 
-type SubTab = 'list' | 'grid' | 'hgrid' | 'ahgrid' | 'masonry' | 'hmasonry' | 'flow' | 'hflow' | 'circular' | 'carousel' | 'spiral' | 'hex';
+type SubTab = 'list' | 'grid' | 'hgrid' | 'ahgrid' | 'masonry' | 'hmasonry' | 'flow' | 'hflow' | 'circular' | 'carousel';
 
 // ── Callout bullets per layout ───────────────────────────────────────────────
 type Bullet = { type: 'green' | 'amber' | 'red' | 'blue'; text: string };
@@ -1517,22 +1492,12 @@ const CALLOUTS: Record<SubTab, Bullet[]> = {
   circular: [
     { type: 'red', text: 'FlashList: Not possible. Radial positioning requires arbitrary (x, y) placement.' },
     { type: 'blue', text: 'Scroll vertically to rotate the arc.' },
-    { type: 'blue', text: 'Engine: TS radial layout via <Riff>. processScroll writes positions per scroll tick via setAttributesBatch.' },
+    { type: 'blue', text: 'Engine: TS custom layout. ContentDimension=None — layout governs everything.' },
   ],
   carousel: [
     { type: 'red', text: 'FlashList: Not possible. Requires per-item perspective transforms and z-ordering.' },
     { type: 'blue', text: 'Scroll horizontally to rotate the carousel.' },
-    { type: 'blue', text: 'Engine: TS carousel3D layout via <Riff>. processScroll computes rotateY matrix per item per tick.' },
-  ],
-  spiral: [
-    { type: 'red', text: 'FlashList: Not possible. Archimedean spiral requires (x, y) + scale per item.' },
-    { type: 'blue', text: 'Scroll vertically to unwind the spiral.' },
-    { type: 'blue', text: 'Engine: TS spiral layout via <Riff>. Angular phase offset applied per scroll tick.' },
-  ],
-  hex: [
-    { type: 'red', text: 'FlashList: Not possible. Honeycomb tiling requires per-item offset positioning.' },
-    { type: 'blue', text: 'Static layout — positions written once in prepare(). No scroll-driven recomputation.' },
-    { type: 'blue', text: 'Engine: TS hex layout via <Riff>. Offset grid with every other row shifted by half a hex width.' },
+    { type: 'blue', text: 'Engine: TS custom layout. ContentDimension=None — layout governs everything.' },
   ],
 };
 
@@ -1549,18 +1514,14 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'hflow', label: 'H-Flow' },
   { key: 'circular', label: 'Radial Arc' },
   { key: 'carousel', label: '3D Carousel' },
-  { key: 'spiral',   label: 'Spiral' },
-  { key: 'hex',      label: 'Hex Grid' },
 ];
 
 export default function LayoutsTab() {
   const [subTab, setSubTab] = useState<SubTab>('list');
   const [calloutsOpen, setCalloutsOpen] = useState(false);
 
-  const circularKey = useCallback((item: CircularItem) => `rc-${item.id}`, []);
-  const carouselKey = useCallback((item: CarouselItem) => `c3d-${item.id}`, []);
-  const spiralKey   = useCallback((item: SpiralItem)   => `sp-${item.id}`, []);
-  const hexKey      = useCallback((item: HexItem)       => `hex-${item.id}`, []);
+  const circularKey = useCallback((item: CircularItem) => String(item.id), []);
+  const carouselKey = useCallback((item: CarouselItem) => String(item.id), []);
 
   const bullets = CALLOUTS[subTab];
 
@@ -1611,11 +1572,10 @@ export default function LayoutsTab() {
         {subTab === 'hflow' && <HFlowDemo />}
 
         {subTab === 'circular' && (
-          <CollectionView
-            layout={radial({ radius: 130, itemSize: 70, scrollPerRevolution: 700 })}
+          <CircularList
             data={CIRCULAR_DATA}
+            itemSize={70}
             keyExtractor={circularKey}
-            style={S.flex}
             renderItem={({ item }) => (
               <View style={[S.circularCell, { backgroundColor: item.color }]}>
                 <Text style={S.circularText}>{item.label}</Text>
@@ -1625,42 +1585,14 @@ export default function LayoutsTab() {
         )}
 
         {subTab === 'carousel' && (
-          <CollectionView
-            layout={carousel3DLayout({ itemSize: 200, gap: 28, perspective: 700, maxRotation: 55 })}
+          <Carousel3D
             data={CAROUSEL_DATA}
+            itemWidth={160}
+            itemHeight={200}
             keyExtractor={carouselKey}
-            style={S.carouselContainer}
             renderItem={({ item }) => (
               <View style={[S.carouselCard, { backgroundColor: item.color }]}>
                 <Text style={S.carouselTitle}>{item.title}</Text>
-              </View>
-            )}
-          />
-        )}
-
-        {subTab === 'spiral' && (
-          <CollectionView
-            layout={spiral({ a: 10, b: 14, angularStep: 0.55, itemSize: 56, scrollPerRevolution: 800 })}
-            data={SPIRAL_DATA}
-            keyExtractor={spiralKey}
-            style={S.flex}
-            renderItem={({ item }) => (
-              <View style={[S.circularCell, { backgroundColor: item.color }]}>
-                <Text style={S.circularText}>{item.label}</Text>
-              </View>
-            )}
-          />
-        )}
-
-        {subTab === 'hex' && (
-          <CollectionView
-            layout={hex({ hexSize: 64, paddingX: 12, paddingY: 12, gap: 6 })}
-            data={HEX_DATA}
-            keyExtractor={hexKey}
-            style={S.flex}
-            renderItem={({ item }) => (
-              <View style={[S.hexCell, { backgroundColor: item.color }]}>
-                <Text style={S.hexText}>{item.label}</Text>
               </View>
             )}
           />
@@ -1728,14 +1660,10 @@ const S = StyleSheet.create({
   circularCell: { flex: 1, borderRadius: 35, alignItems: 'center', justifyContent: 'center' },
   circularText: { fontSize: 20, fontWeight: '700', color: '#fff' },
 
-  carouselContainer: { height: 260, marginTop: 20 },
   carouselCard: { flex: 1, borderRadius: 16, alignItems: 'center', justifyContent: 'center',
                   shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
                   shadowOpacity: 0.4, shadowRadius: 12 },
   carouselTitle: { fontSize: 20, fontWeight: '700', color: '#fff' },
-
-  hexCell: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  hexText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 });
 
 // ── Horizontal list demo ──────────────────────────────────────────────────────
@@ -1819,7 +1747,6 @@ export function HorizontalListDemo() {
   const [s0Items, setS0Items] = useState<HCard[]>(staticSections[0]!.items);
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
-  const [resizeVersion, setResizeVersion] = useState(0);
   const insertCounter = useRef(staticSections[0]!.items.length);
   const cvRef = useRef<RiffHandle<HCard>>(null);
 
@@ -1847,7 +1774,7 @@ export function HorizontalListDemo() {
   const resizeFirst = useCallback(() => {
     setS0Items(prev => prev.map((item, i) =>
       i === 0 ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(0, 0);
   }, []);
 
   // ── Sections ───────────────────────────────────────────────────────────────
@@ -1975,7 +1902,6 @@ export function HorizontalListDemo() {
           decorationRenderers={decorationRenderers}
           onDecorationCountChange={setDecoCount}
           scrollViewProps={{ style: { backgroundColor: 'transparent' }, indicatorStyle: 'white' }}
-          extraData={resizeVersion}
         />
       </View>
     </View>
@@ -2081,7 +2007,6 @@ export function HorizontalGridDemo() {
   const [mvcEnabled, setMvcEnabled] = useState(false);
   const [sepEnabled, setSepEnabled] = useState(false);
   const [decoCount, setDecoCount] = useState(0);
-  const [resizeVersion, setResizeVersion] = useState(0);
   const [containerH, setContainerH] = useState(HG_CONTAINER_H);
   const insertCounter = useRef(staticSections[0]!.items.length);
   const cvRef = useRef<RiffHandle<HGCard>>(null);
@@ -2119,7 +2044,7 @@ export function HorizontalGridDemo() {
   const resizeFirst = useCallback(() => {
     setS0Items(prev => prev.map((item, i) =>
       i === 0 ? { ...item, resized: !item.resized } : item));
-    setResizeVersion(v => v + 1);
+    cvRef.current?.invalidateItem(0, 0);
   }, []);
 
   const riffSections = useMemo(() => {
@@ -2244,7 +2169,6 @@ export function HorizontalGridDemo() {
               if (h > 0) setContainerH(prev => Math.abs(prev - h) > 2 ? h : prev);
             },
           }}
-          extraData={resizeVersion}
         />
       </View>
     </View>

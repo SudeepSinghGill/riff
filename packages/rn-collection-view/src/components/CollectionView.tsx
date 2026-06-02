@@ -311,12 +311,38 @@ export interface RiffHandle<T = unknown> {
   /**
    * @unstable
    *
-   * Evict the cached height for the item at (sectionIndex, itemIndex) and
-   * trigger a re-measurement pass.
+   * Signal that the item at (sectionIndex, itemIndex) has changed size and
+   * should be re-measured. Call this alongside any state update that changes
+   * the cell's rendered height — React 19 batches both into one commit.
    *
-   * Call this in the same event handler as your state update — React 19 batches
-   * both into one commit so the cell is measured at its new natural height
-   * without a second render pass.
+   * **What happens internally (two phases):**
+   *
+   * Phase 1 — Re-render (all window cells):
+   *   Bumps an internal `invalidateTrigger` counter, which is included in the
+   *   element-cache generation key (`renderGen`). All cells currently in the
+   *   render window miss the cache and re-render. Fabric skips re-measurement
+   *   for cells whose JSX is identical; only the cell whose content actually
+   *   changed produces a new Yoga-measured height. This phase is the same cost
+   *   as the old `extraData` workaround — O(window size) React re-renders.
+   *
+   * Phase 2 — Position reflow (changed item + everything after):
+   *   A double-RAF polls for the native LayoutCache version bump that
+   *   `applyMeasurements` emits once Fabric records the new Yoga height.
+   *   On detection, `processScroll` runs and calls C++ `invalidateFrom(i)`,
+   *   which recomputes cumulative offsets from the changed item's index onward.
+   *   Items before the changed item are untouched — this phase is O(n − i),
+   *   not O(n).
+   *
+   * **Usage:**
+   * ```ts
+   * // Grow the first item in section 1:
+   * setItems(prev => prev.map((item, i) => i === 0 ? { ...item, expanded: true } : item));
+   * ref.current?.invalidateItem(1, 0);
+   * ```
+   *
+   * `invalidateTrigger` is a fully internal counter — not exposed to consumers.
+   * Only `invalidateItem`, `invalidateAt`, `invalidateKeys`, and
+   * `remeasureOnItemChange` bump it.
    */
   invalidateItem(sectionIndex: number, itemIndex: number): void;
 
@@ -771,7 +797,6 @@ interface FlattenResult<T> {
 }
 
 const RNCV_DEBUG_LOGS = false;
-const RNCV_JS_LAYOUT_DEBUG = true; // temporary: trace JS layout key/frame chain
 // Consumer-facing debug/instrumentation callbacks:
 // showHUD, onRenderCountChange, onDecorationCountChange, onBlankArea.
 // Controlled at build time (not at runtime via __DEV__).
@@ -999,12 +1024,14 @@ function CellWrapper({
 // Receives a snapshotRef so it reads fresh JS-side counters without
 // subscribing to CollectionView state (no extra re-renders).
 
+type _NativeModT = typeof nativeMod;
+
 function CollectionViewHUD({
   snapshotRef,
   nativeMod,
 }: {
   snapshotRef: React.RefObject<() => HUDSnapshot>;
-  nativeMod:   typeof nativeMod;
+  nativeMod:   _NativeModT;
 }) {
   const [fps,         setFps]         = React.useState(0);
   const [frameTimeMs, setFrameTimeMs] = React.useState(0);
@@ -1371,7 +1398,7 @@ function RiffBase<T = unknown>({
   // all cached elements to be invalidated (extraData, stickyConfig, layout, vpWidth).
   const renderGenRef = useRef(0);
   const prevCacheDepsRef = useRef<{
-    extraData: unknown; stickyConfig: unknown; layout: unknown; vpWidth: number;
+    extraData: unknown; layout: unknown; vpWidth: number; invalidate: number;
   } | null>(null);
 
   // P5.1 — counters for the debug HUD. Plain refs — no state, no re-renders.
@@ -1441,6 +1468,13 @@ function RiffBase<T = unknown>({
   // ShadowNode looks up the cache during layout() via this ID.
   const [layoutCacheId] = useState(() => nativeMod.createLayoutCache());
   const [layoutCacheVersion, setLayoutCacheVersion] = useState(0);
+  // Internal counter bumped by all invalidation APIs and remeasureOnItemChange.
+  // Included in _curCacheDeps so it increments renderGen → all window cells
+  // miss the element cache → re-render → Fabric re-measures changed content.
+  // Also in the double-RAF deps so the version-polling effect fires and
+  // processScroll reflats positions once Fabric's applyMeasurements completes.
+  // NOT consumer-facing — only setInvalidateTrigger is called internally.
+  const [invalidateTrigger, setInvalidateTrigger] = useState(0);
 
   // B4.9: Release per-instance cache when this CollectionView unmounts.
   useEffect(() => {
@@ -1577,10 +1611,6 @@ function RiffBase<T = unknown>({
 
   const effectiveLayout = layoutProp ?? defaultLayout!;
 
-  // True for TypeScript-implemented layouts that define processScroll.
-  // C++ layouts (list, grid, masonry, flow) never define it.
-  const isJsLayout = typeof effectiveLayout.processScroll === 'function';
-
   // Stable callback that resolves measured height for an item by index.
   // Reads from LayoutCache (ShadowNode writes Yoga-measured heights there).
   const measuredHeightForItemRef = useRef<(index: number, section: number) => number | undefined>(() => undefined);
@@ -1634,9 +1664,6 @@ function RiffBase<T = unknown>({
               left: sectionInsetLeft,
               right: sectionInsetRight,
             },
-            itemKeys: propKeyExtractor
-              ? data.map((item: any, i: number) => propKeyExtractor!(item, i))
-              : Array.from({ length: data.length }, (_, i) => `_cv-0-${i}`),
           }],
       measuredHeightForItem: (index: number, section: number) =>
         measuredHeightForItemRef.current(index, section),
@@ -1700,36 +1727,6 @@ function RiffBase<T = unknown>({
       const sz = nativeLayoutCache.getTotalContentSize();
       console.log(`[RNCV-B05] prepare done type=${(effectiveLayout as any).type} contentSize=${sz.width.toFixed(0)}x${sz.height.toFixed(0)}`);
     }
-    // JS layout: establish initial render range immediately after prepare().
-    // The layout writes positions to LayoutCache and returns the render window.
-    // This replaces the stride-based initial range for JS layouts.
-    if (isJsLayout) {
-      const result = effectiveLayout.processScroll!(
-        { x: 0, y: 0 },
-        layoutContext,
-        { renderMultiplier, mountedWindowSize: effectiveMountedWindowSize, measureAheadMult: measureAhead },
-      );
-      const budgeted = {
-        first: Math.max(0, result.renderFirst),
-        last: Math.min(itemCount - 1, result.renderLast),
-      };
-      prevRenderRef.current = budgeted;
-      setRenderRange(budgeted);
-      if (__DEV__ && RNCV_JS_LAYOUT_DEBUG) {
-        const keys0 = layoutContext.sections[0]?.itemKeys;
-        console.log('[JSLAYOUT-PREPARE] type=' + (effectiveLayout as any).type
-          + ' cacheId=' + layoutContext.cacheId
-          + ' itemKeys[0..2]=' + JSON.stringify(keys0?.slice(0, 3))
-          + ' renderRange=' + JSON.stringify(budgeted)
-          + ' cacheVersion=' + nativeLayoutCache.version());
-        // Verify first key is in cache
-        const k0 = keys0?.[0];
-        if (k0) {
-          const attr = nativeLayoutCache.getAttributes(k0);
-          console.log('[JSLAYOUT-PREPARE] cache.getAttributes(' + k0 + ')=' + JSON.stringify(attr?.frame));
-        }
-      }
-    }
     // NOTE: computeCorrection() is NOT called here. It runs in native updateState:
     // AFTER Yoga has measured new items via applyMeasurements. Calling it here
     // (pre-Yoga) would produce corrections based on estimate heights, not actual.
@@ -1784,7 +1781,7 @@ function RiffBase<T = unknown>({
       if (raf2 !== null) cancelAnimationFrame(raf2);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutContext, extraData]);
+  }, [layoutContext, extraData, invalidateTrigger]);
 
   // Read content size — updates when layoutCacheVersion changes (measurements
   // shift item positions) WITHOUT re-calling prepare().
@@ -2104,9 +2101,22 @@ function RiffBase<T = unknown>({
     },
 
     invalidateKeys: (keys: Iterable<string>) => {
-      for (const k of keys) nativeLayoutCache.removeAttributes(k);
+      // Do NOT call removeAttributes — it deletes from the C++ spatial index,
+      // so processScroll's rect query can no longer find the item and it collapses
+      // to position zero. The cache entry must stay; only the measured height is stale.
+      //
+      // Two-phase invalidation (same as invalidateItem):
+      //   Phase 1: setInvalidateTrigger → _curCacheDeps.invalidate changes →
+      //            renderGen++ → all window cells miss element cache → re-render →
+      //            Fabric re-measures the changed cell → applyMeasurements bumps
+      //            the native cache version.
+      //   Phase 2: setLayoutCacheVersion + double-RAF keyed on invalidateTrigger →
+      //            polls native version → on bump: processScroll → invalidateFrom(i) →
+      //            reflows positions from changed item onward (O(n − i)).
       if (__DEV__ && RNCV_HGEST_DIAG) diagRef.current.cvBumps++;
+      void keys; // key resolution is the caller's concern; trigger is sufficient
       setLayoutCacheVersion(v => v + 1);
+      setInvalidateTrigger(v => v + 1);
     },
 
     scrollToIndex: (index: number, options?: RiffScrollOptions) => {
@@ -2130,19 +2140,20 @@ function RiffBase<T = unknown>({
     },
 
     invalidateAt: (indices: number[]) => {
-      for (const index of indices) {
-        const item = data[index];
-        if (item == null) continue;
-        const k = keyExtractor ? keyExtractor(item, index) : String(index);
-        nativeLayoutCache.removeAttributes(k);
-      }
+      void indices;
       setLayoutCacheVersion(v => v + 1);
+      setInvalidateTrigger(v => v + 1);
     },
 
     invalidateItem: (sectionIndex: number, itemIndex: number) => {
-      const key = layoutContextRef.current?.sections[sectionIndex]?.itemKeys?.[itemIndex];
-      if (key) nativeLayoutCache.removeAttributes(key);
+      // See invalidateKeys comment above for the two-phase mechanism.
+      // sectionIndex/itemIndex are not used here — the trigger is sufficient
+      // because renderGen invalidates all window cells and Fabric determines
+      // which cells changed. A future optimisation could re-render only the
+      // target cell by comparing (section, index) in the element cache check.
+      void sectionIndex; void itemIndex;
       setLayoutCacheVersion(v => v + 1);
+      setInvalidateTrigger(v => v + 1);
     },
   }), [data, keyExtractor, onDataChange, propSections, propKeyExtractor]); // eslint-disable-line react-hooks/exhaustive-deps -- onDataChange intentionally included; callSiteSetter is pass-through
 
@@ -2198,6 +2209,7 @@ function RiffBase<T = unknown>({
 
     if (keysToInvalidate.length > 0) {
       setLayoutCacheVersion(v => v + 1);
+      setInvalidateTrigger(v => v + 1);
     }
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps -- intentional: only recheck when data changes
 
@@ -2233,9 +2245,8 @@ function RiffBase<T = unknown>({
     // using the stride estimate — no layout cache needed. This lets React
     // mount the first screenful of cells in the SAME commit as the viewport
     // measurement, before any frame is painted.
-    if (prevRenderRef.current === null && w > 0 && h > 0 && !isJsLayout) {
+    if (prevRenderRef.current === null && w > 0 && h > 0) {
       // Use stride-based arithmetic for the very first range (before layout cache is seeded).
-      // JS layouts set their initial range in the prepare() effect via processScroll.
       // Multi-column layouts (grid, masonry) pack N items per row, so the effective stride
       // per flat index is rowHeight / N. Without this, Phase A under-counts the visible range.
       const rawCols = (effectiveLayout.type === 'grid' || effectiveLayout.type === 'masonry')
@@ -2284,46 +2295,6 @@ function RiffBase<T = unknown>({
       prevScrollXRef.current  = scrollX;
 
       const vpW = layoutMeasurement.width || viewportWidth;
-
-      // ── JS layout scroll path ──────────────────────────────────────────────
-      // JS-implemented layouts own their scroll handling. processScroll writes
-      // updated positions to LayoutCache and returns the render + visible ranges.
-      // The C++ nativeWindowController is bypassed entirely.
-      if (isJsLayout) {
-        const ctx = layoutContextRef.current;
-        if (ctx) {
-          const jsResult = effectiveLayout.processScroll!(
-            { x: scrollX, y: scrollY },
-            ctx,
-            { renderMultiplier, mountedWindowSize: effectiveMountedWindowSize, measureAheadMult: measureAhead },
-          );
-          const budgetedR = {
-            first: Math.max(0, Math.min(jsResult.renderFirst, jsResult.visibleFirst) - 1),
-            last:  Math.min(itemCount - 1, Math.max(jsResult.renderLast, jsResult.visibleLast) + 1),
-          };
-          if (rangeChanged(prevRenderRef.current, budgetedR)) {
-            prevRenderRef.current = budgetedR;
-            setRenderRange(budgetedR);
-          }
-          if (measureAhead > 0 && jsResult.measureFirst !== undefined) {
-            const newMR = { first: jsResult.measureFirst, last: jsResult.measureLast! };
-            if (newMR.first !== prevMeasureRef.current.first || newMR.last !== prevMeasureRef.current.last) {
-              prevMeasureRef.current = newMR;
-              setMeasureRange(newMR);
-            }
-          }
-          // Yoga may have measured cells since the last event — check cache version
-          // so ShadowNode-applied height corrections trigger a JS re-render.
-          const lcv = nativeLayoutCache.version();
-          if (lcv !== lastCacheVersionRef.current) {
-            lastCacheVersionRef.current = lcv;
-            setLayoutCacheVersion(v => v + 1);
-          }
-        }
-        nativeMod.signpost.end(0);
-        scrollViewProps?.onScroll?.(e);
-        return;
-      }
 
       // Single C++ call: version check + 2×spatial query + applyBudget + computeMeasureRange.
       // Replaces 4-6 individual JSI calls. LayoutAttributes are never marshalled to JS —
@@ -2400,8 +2371,8 @@ function RiffBase<T = unknown>({
         const d = _diagRef.current;
         d.totalScroll++;
         const _isBandSkip = !_lcvChanged && !_rrChanged &&
-          scrollResult.renderFirst === prevRenderRef.current.first &&
-          scrollResult.renderLast  === prevRenderRef.current.last;
+          scrollResult.renderFirst === prevRenderRef.current!.first &&
+          scrollResult.renderLast  === prevRenderRef.current!.last;
         if (_isBandSkip) d.bandSkip++;
         if (_lcvChanged) d.lcvRender++;
         if (_rrChanged)  d.rrRender++;
@@ -3066,12 +3037,13 @@ function RiffBase<T = unknown>({
   // a cascade: layoutCacheVersion bump → new stickyConfigMap reference → renderGen++
   // → ALL element cache entries invalidated → O(window_size) re-render on every
   // scroll tick where a Yoga measurement occurred (defeating Opt 4+7 entirely).
-  const _curCacheDeps = { extraData, layout: effectiveLayout, vpWidth: viewportWidth };
+  const _curCacheDeps = { extraData, layout: effectiveLayout, vpWidth: viewportWidth, invalidate: invalidateTrigger };
   if (
     prevCacheDepsRef.current === null ||
-    _curCacheDeps.extraData !== prevCacheDepsRef.current.extraData ||
-    _curCacheDeps.layout    !== prevCacheDepsRef.current.layout ||
-    _curCacheDeps.vpWidth   !== prevCacheDepsRef.current.vpWidth
+    _curCacheDeps.extraData  !== prevCacheDepsRef.current.extraData ||
+    _curCacheDeps.layout     !== prevCacheDepsRef.current.layout ||
+    _curCacheDeps.vpWidth    !== prevCacheDepsRef.current.vpWidth ||
+    _curCacheDeps.invalidate !== prevCacheDepsRef.current.invalidate
   ) {
     renderGenRef.current++;
     prevCacheDepsRef.current = _curCacheDeps;
@@ -3099,13 +3071,9 @@ function RiffBase<T = unknown>({
       return effectiveLayout.cacheKeyForSupplementary?.('footer', sk)
         ?? `${effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type}-${sk}-footer`;
     }
-    const ck = effectiveLayout.cacheKeyForItem?.(ik, sk)
+    return effectiveLayout.cacheKeyForItem?.(ik, sk)
       ?? (layoutContext?.sections[sk]?.itemKeys?.[ik]
         ?? `${effectiveLayout.keyPrefixForSection?.(sk) ?? (effectiveLayout.type === 'list' ? 'item' : effectiveLayout.type)}-${sk}-${ik}`);
-    if (__DEV__ && RNCV_JS_LAYOUT_DEBUG && isJsLayout && ik < 3) {
-      console.log('[JSLAYOUT-KEY] index=' + index + ' sk=' + sk + ' ik=' + ik + ' cacheKey=' + ck);
-    }
-    return ck;
   };
 
   let effFirst = 0;
@@ -3666,7 +3634,7 @@ function RiffBase<T = unknown>({
         style={{ flex: 1 }}
         layoutCacheId={layoutCacheId}
         layoutCacheVersion={layoutCacheVersion}
-        layoutType={isJsLayout ? 'js' : (effectiveLayout.type as any)}
+        layoutType={effectiveLayout.type as any}
         estimatedItemHeight={effectiveItemHeight}
         renderRangeStart={renderRangeStart}
         renderRangeEnd={renderRangeEnd}
@@ -3680,7 +3648,7 @@ function RiffBase<T = unknown>({
         horizontal={effectiveLayout.horizontal ?? false}
         showsVerticalScrollIndicator={scrollViewProps?.showsVerticalScrollIndicator ?? true}
         scrollEventThrottle={16}
-        onScroll={contractProps.onScroll}
+        onScroll={contractProps.onScroll as any}
         onScrollBeginDrag={scrollViewProps?.onScrollBeginDrag as any}
         onScrollEndDrag={scrollViewProps?.onScrollEndDrag as any}
         onMomentumScrollBegin={scrollViewProps?.onMomentumScrollBegin as any}

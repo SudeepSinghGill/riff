@@ -71,15 +71,8 @@ class Carousel3DLayout {
     }, (_, i) => `carousel3D-${i}`);
     this._writeForOffset(0);
   }
-  processScroll(offset, _ctx, _opts) {
+  processScroll(offset, _ctx) {
     this._writeForOffset(offset.x);
-    const n = this.itemKeys.length;
-    return {
-      renderFirst: 0,
-      renderLast: n - 1,
-      visibleFirst: 0,
-      visibleLast: n - 1
-    };
   }
   _writeForOffset(scrollX) {
     if (!this.ctx) return;
@@ -116,6 +109,7 @@ class Carousel3DLayout {
           width: sz,
           height: sz
         },
+        sizingState: 'placeholder',
         zIndex,
         alpha: 0.45 + 0.55 * front,
         transform3D: buildRotationMatrix(angleRad, this.opts.perspective)

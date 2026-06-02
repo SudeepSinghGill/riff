@@ -31,8 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * Cache key from props — used by applyPositionsFromState: to look up visual
- * attributes (alpha, transform3D, zIndex) from the LayoutCache and apply them
- * to this view's layer after the frame is set.
+ * attributes (alpha, transform3D, zIndex) from the LayoutCache.
  */
 @property (nonatomic, copy, nullable) NSString *cacheKey;
 

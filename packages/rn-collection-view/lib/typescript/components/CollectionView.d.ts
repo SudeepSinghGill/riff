@@ -118,12 +118,38 @@ export interface RiffHandle<T = unknown> {
     /**
      * @unstable
      *
-     * Evict the cached height for the item at (sectionIndex, itemIndex) and
-     * trigger a re-measurement pass.
+     * Signal that the item at (sectionIndex, itemIndex) has changed size and
+     * should be re-measured. Call this alongside any state update that changes
+     * the cell's rendered height — React 19 batches both into one commit.
      *
-     * Call this in the same event handler as your state update — React 19 batches
-     * both into one commit so the cell is measured at its new natural height
-     * without a second render pass.
+     * **What happens internally (two phases):**
+     *
+     * Phase 1 — Re-render (all window cells):
+     *   Bumps an internal `invalidateTrigger` counter, which is included in the
+     *   element-cache generation key (`renderGen`). All cells currently in the
+     *   render window miss the cache and re-render. Fabric skips re-measurement
+     *   for cells whose JSX is identical; only the cell whose content actually
+     *   changed produces a new Yoga-measured height. This phase is the same cost
+     *   as the old `extraData` workaround — O(window size) React re-renders.
+     *
+     * Phase 2 — Position reflow (changed item + everything after):
+     *   A double-RAF polls for the native LayoutCache version bump that
+     *   `applyMeasurements` emits once Fabric records the new Yoga height.
+     *   On detection, `processScroll` runs and calls C++ `invalidateFrom(i)`,
+     *   which recomputes cumulative offsets from the changed item's index onward.
+     *   Items before the changed item are untouched — this phase is O(n − i),
+     *   not O(n).
+     *
+     * **Usage:**
+     * ```ts
+     * // Grow the first item in section 1:
+     * setItems(prev => prev.map((item, i) => i === 0 ? { ...item, expanded: true } : item));
+     * ref.current?.invalidateItem(1, 0);
+     * ```
+     *
+     * `invalidateTrigger` is a fully internal counter — not exposed to consumers.
+     * Only `invalidateItem`, `invalidateAt`, `invalidateKeys`, and
+     * `remeasureOnItemChange` bump it.
      */
     invalidateItem(sectionIndex: number, itemIndex: number): void;
     /**

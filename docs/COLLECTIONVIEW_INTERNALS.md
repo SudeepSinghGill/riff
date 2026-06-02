@@ -546,31 +546,35 @@ These map to `UIScrollViewDelegate` methods in native:
 
 ## Dimension-Estimate Invariant
 
-**All consumer-provided dimensions are estimates. Actual dimensions always come from Yoga via the LayoutCache.**
+**Yoga is the only authority for actual dimensions. Every consumer-provided size — from every API, in every layout — is an estimate used for initial positioning only.**
 
-This applies universally to every sizing API across all four layout engines:
+This applies universally across all layout engines and layout types, including JS layouts:
 
-| Layout | Consumer APIs | All estimates? |
-|--------|--------------|----------------|
-| List | `itemHeight`, `estimatedItemHeight`, `heightForItem(i,s,w)` | ✅ |
-| Grid | `rowHeight`, `heightForItem(i,s,w)` | ✅ |
-| Masonry | `heightForItem(i,s,w)` | ✅ |
-| Flow | `sizeForItem(i,s,w)` (both width & height) | ✅ |
-| All | `headerHeight`, `footerHeight`, `estimatedHeaderHeight`, `estimatedFooterHeight` | ⚠️ Not measured by Yoga (declared heights) — correct for now |
+| Layout | Consumer APIs (all estimates) |
+|--------|-------------------------------|
+| List | `estimatedItemHeight`, `estimatedHeightForItem(i,s,w)` |
+| Grid | `estimatedRowHeight`, `estimatedHeightForItem(i,s,w)` |
+| Masonry | `estimatedHeightForItem(i,s,w)` |
+| Flow | `estimatedSizeForItem(i,s,w)` (width and height) |
+| JS layouts (radial, hex, carousel3D, spiral, custom) | `estimatedItemSize`, `estimatedItemLayoutAttributes`, or any size written to LayoutCache in `prepare()` |
+| All | `estimatedHeaderHeight`, `estimatedFooterHeight` |
+
+**There are no "fixed size" APIs.** Even when a JS layout writes a specific `frame.width/height` in `prepare()`, those values are estimates that seed the LayoutCache. Yoga measures the actual rendered content and is the ground truth. The layout's pre-computed sizes are an optimization — they let the first frame be positioned correctly without waiting for Yoga's first pass. They are not guarantees.
+
+**API naming rule (ENFORCED):** All layout size/dimension APIs visible to consumers must have the `estimated` prefix. Never expose `itemHeight`, `heightForItem`, `sizeForItem`, or any other unqualified size callback. The prefix communicates the contract: "this is your best guess; Yoga decides."
 
 Every layout engine uses the same priority chain in `prepare()`:
 
 ```
-Actual (Yoga-measured via measuredHeightForItem)
-  → Delegate callback (heightForItem / sizeForItem)
-    → Prop value (itemHeight / rowHeight)
-      → Estimated prop (estimatedItemHeight)
-        → Hardcoded fallback (44)
+Yoga-measured (via measuredHeightForItem / LayoutCache Measured entry)
+  → Consumer callback (estimatedHeightForItem / estimatedSizeForItem)
+    → Scalar prop (estimatedItemHeight / estimatedRowHeight)
+      → Hardcoded fallback (44)
 ```
 
-The ShadowNode's `correctChildPositionsIfNeeded()` (Phase 2) diffs Yoga-measured dimensions against cache entries and calls `engine->applyMeasurements()` to cascade position corrections. This is the mechanism that makes estimates converge to reality in a single frame.
+The ShadowNode's `correctChildPositionsIfNeeded()` diffs Yoga-measured dimensions against LayoutCache entries and calls `engine->applyMeasurements()` to cascade corrections. This is what makes estimates converge to reality — typically within one frame.
 
-**Rule**: No code path should assume consumer-provided dimensions are final. Any gate or optimization that relies on "sizes won't change" must use cache version or measurement state — never prop names.
+**Rule**: No code path may assume consumer-provided dimensions are final. Any optimization that bypasses re-measurement must use cache version or `sizingState == Measured` — never prop values or layout-provided sizes.
 
 ---
 

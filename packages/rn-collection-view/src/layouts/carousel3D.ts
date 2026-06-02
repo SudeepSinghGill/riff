@@ -18,8 +18,6 @@
 import type {
   RiffLayout,
   LayoutContext,
-  JsLayoutScrollOptions,
-  JsLayoutScrollResult,
 } from '../types/protocol';
 import type { LayoutAttributes, Rect, Size } from '../types';
 import NativeCollectionViewModule from '../specs/NativeCollectionViewModule';
@@ -113,14 +111,8 @@ class Carousel3DLayout implements RiffLayout {
     this._writeForOffset(0);
   }
 
-  processScroll(
-    offset: { x: number; y: number },
-    _ctx: LayoutContext,
-    _opts: JsLayoutScrollOptions,
-  ): JsLayoutScrollResult {
+  processScroll(offset: { x: number; y: number }, _ctx: LayoutContext): void {
     this._writeForOffset(offset.x);
-    const n = this.itemKeys.length;
-    return { renderFirst: 0, renderLast: n - 1, visibleFirst: 0, visibleLast: n - 1 };
   }
 
   private _writeForOffset(scrollX: number): void {
@@ -156,9 +148,9 @@ class Carousel3DLayout implements RiffLayout {
         section:     0,
         index:       i,
         frame:       { x, y, width: sz, height: sz },
-        sizingState: 'measured',
+        sizingState: 'placeholder',
         zIndex,
-        alpha:       0.45 + 0.55 * front,
+        alpha:   0.45 + 0.55 * front,
         transform3D: buildRotationMatrix(angleRad, this.opts.perspective),
       };
     }

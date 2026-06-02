@@ -10,11 +10,19 @@
 
 | # | Item | Est | Notes |
 |---|------|-----|-------|
-| 7 | **JS layouts audit** | 1d | Review Radial/Carousel/Spiral/Hex implementations: layout math stays in JS, but verify they wire through the core C++ engine (LayoutCache, ShadowNode positioning) correctly rather than going around it. Fix any bypasses found. B4.10 (scrollTo for these tabs) folds in here. |
-| 8 | **B2.6** Snap behaviors (H-6) | 1d | UIKit paging/groupPaging on H sections; FlashList has no equivalent |
-| 9 | **B5.2** Shareable artifacts — round 1 | 1d | README, benchmarks doc, FlashList comparison matrix (needs P6.2 numbers — now done) |
-| 10 | **B2.2 + B2.1** Snapshot API + C++ diff engine | 2d | NSDiffableDataSource-style mutation API + off-thread key diff |
-| 11 | Post-POC items | — | See section below |
+| 1 | **B1.3** Rename size APIs to `estimated` prefix | 0.5d | Breaking rename: `itemHeight` → `estimatedItemHeight` etc. across all 5 layout engines + public types. Coordinate with B5.2 docs. |
+| 2 | **B5.2** Shareable artifacts — round 1 | 1d | README, benchmarks doc, FlashList comparison matrix (P6.2 numbers done). |
+| 3 | **B4.11** `scrollTo` with unmeasured items | 1d | Scroll to exact offset even when intervening items are still Placeholder. See B4.11 below. |
+| 4 | **B3.2** Cross-section sticky headers | TBD | Design first; single sticky spanning multiple sections. |
+| 5 | **B2.3 + B2.4** Enter/exit + coordinated animations | 3.5d | Fade/collapse on delete; expand on insert; UIKit-parity spring batch animations. |
+| 6 | **B6.1–B6.4** State persistence | 3.5d | JSON cache serialization → FlatBuffers + scroll position restore. |
+| 7 | **B2.7** JS layouts re-attempt | 1d | `correctChildPositionsIfNeeded` JS-layout path. See B2.7 below. |
+| 8 | **B2.6** Snap behaviors (H-6) | 1d | UIKit paging/groupPaging on H sections; FlashList has no equivalent. |
+| 9 | **B2.2 + B2.1** Snapshot API + C++ diff engine | 2d | NSDiffableDataSource-style mutation API + off-thread key diff. |
+| 10 | **B4** Perf / threading | 1–2.5d | B4.7 threading audit + B4.5 transform positioning + B4.6 flat spatial arrays. Profile-driven; skip if not bottlenecked. |
+| 10 | **B8** Unit tests | 3d | C++ GoogleTest + TS Jest. |
+| 11 | **B7.0a + B7 polish** | — | Overscroll range contraction, flow justification, grid rowAlignment, H-masonry, MVC on resize, separator toggle shift. |
+| 12 | **B9** Android / Web | 8d+ | Android CMakeLists + Kotlin; RN Web JS fallbacks. |
 
 ---
 
@@ -59,27 +67,13 @@ The proxy is reliable today but not semantically precise. `displayType == Displa
 
 **Estimated cost:** ~0.5d. **Priority:** low — current proxies are reliable, this is a correctness and future-proofing improvement.
 
-### B1.10 In-place cell resize via local setState (Fabric limitation)
+### B1.10 In-place cell resize via local setState ✅ RESOLVED (2026-06-02)
 
-**Problem:** A cell whose content changes via an internal `useState` call (e.g. an expand/collapse toggle inside `renderItem` without updating the item data) does not resize in-place. The cell only picks up the new height after scrolling out of the render window and back in.
+**Resolution:** `ref.current.invalidateItem(sectionIndex, itemIndex)` is the correct pattern. Call it in the same event handler as the state update that changes the cell's height — React 19 batches both into one commit. The `invalidateItem` API bumps `invalidateTrigger` (internal counter, not consumer-facing), which:
+1. Increments `renderGen` → all window cells miss the element cache → re-render → Fabric re-measures the changed cell.
+2. Fires the double-RAF version-poll → once `applyMeasurements` records the new Yoga height, `processScroll` calls C++ `invalidateFrom(i)` → positions reflow from the changed item onward. O(n − i), not O(n).
 
-**Root cause investigated (2026-05-28):**
-Fabric's reconciliation for a local `setState` inside a cell processes the update within that cell's fiber subtree. `CollectionViewContainerShadowNode` is NOT re-cloned for this change — the container's structural output (its children array) is unchanged from Fabric's perspective. This means:
-- `layout()` on the container never fires
-- `correctChildPositionsIfNeeded()` never runs
-- The stale measured height in LayoutCache is never evicted
-
-**Approaches tried:**
-1. `completeClone()` override on `CollectionViewContainerShadowNode` — the container is not re-cloned for in-place cell state changes, so the override is never reached.
-2. `completeClone()` override on a custom `RNMeasuredCellShadowNode` — the cell ShadowNode is also not re-cloned for in-place `setState`. `[CELL-CLONE]` logs never appeared on tap.
-
-**Why UICollectionView sends an explicit `invalidateLayout` signal:** UIKit's `UICollectionViewLayout` is similarly decoupled — cell content changes don't automatically propagate to layout geometry. The app must call `invalidateLayout()` (or `performBatchUpdates`) to signal that layout should re-run. Riff's equivalent is `ref.current.invalidateKeys(keys)`.
-
-**Current recommendation:** Use `ref.current.invalidateKeys([key])` in the resize handler alongside the local state update. React 19 batches both state calls into one commit; the `layoutCacheVersion` bump triggers a container `layout()` call on the next Fabric pass.
-
-**Future investigation:** Deeper Fabric internals may expose a hook (e.g. via `YGNode::markDirty` propagation to ancestor) that could automate this. Not pursued — complexity high, explicit signal is clean and reliable.
-
-**Effort for future attempt:** 2d+ (Fabric internals), low probability of clean solution.
+**Root cause documented for posterity:** Fabric does not re-clone `CollectionViewContainerShadowNode` for in-cell `setState` (the container's child array is structurally unchanged). `layout()` never fires, so `correctChildPositionsIfNeeded` never runs and the stale cached height is never evicted. An explicit signal is necessary — this is by design, matching UIKit's `invalidateLayout()` pattern.
 
 ---
 
@@ -114,6 +108,31 @@ Per-item animation types (fade, slide, custom). Interruptible spring physics. Co
 UIKit-style `orthogonalScrollingBehavior` modes: paging, groupPaging, groupPagingCentered on H sections. Snap points via `UIScrollView.decelerationRate` + `scrollViewWillEndDragging:withVelocity:targetContentOffset:`.
 
 **Effort:** ~1d
+
+---
+
+### B2.7 JS layouts — re-attempt guide (reverted 2026-06-01)
+
+Reverted commits: 43e541d, f77040f, e70429a, a328588, 461168a
+
+**Root causes of regressions:**
+1. `correctChildPositionsIfNeeded` used Yoga-sequential positions for JS layout cells instead of the JS layout's LayoutCache positions → all cells stacked at top
+2. B1.1 in `layoutTree()` — dead code (Fabric only calls `layoutTree()` on RootShadowNode, never on component ShadowNodes)
+3. JS layouts writing `sizingState: 'measured'` → violated Yoga-authority principle, blocked height measurement
+
+**What was kept (already in main after revert):**
+- Visual attrs pipeline generalized for all layouts: alpha, transform3D, zIndex applied from LayoutCache in `applyPositionsFromState` without `_isJsLayout` guard
+- `cacheKey` property on `RNMeasuredCellView` always stored (not DEBUG-only)
+- `sizingState: 'placeholder'` in all 4 JS layout .ts files (radial, carousel3D, spiral, hex)
+
+**What needs to be done for re-attempt:**
+1. Add `'js'` layoutType back to codegen spec + C++ enum (from a328588)
+2. Add `isJsLayout` paths back to `CollectionView.tsx` (from 43e541d): `JsLayoutScrollOptions`, `JsLayoutScrollResult` types, updated `processScroll` signature, JS layout scroll handling
+3. **Critical fix**: Add JS-layout correction path in `correctChildPositionsIfNeeded` — for `layoutType == Js`, read x/y positions from LayoutCache instead of Yoga-sequential layout output. This is the core regression that needs new code.
+4. Visual attrs pipeline already generalized — will work for JS layouts automatically
+5. Test: H-2 tabs (radial/carousel3D/spiral/hex) show expected shapes with cell content visible
+
+**Effort:** ~1d (mostly the `correctChildPositionsIfNeeded` fix + wiring)
 
 ---
 
@@ -175,6 +194,23 @@ The `scrollTo*` / `scrollToSection` API implemented via `invokeScrollHandler` ro
 **Decision:** discuss before implementing. Note that the `scrollToSection` / `scrollToIndexPath` API semantics also differ for non-list layouts (radial has no "section" concept in the traditional sense).
 
 **Priority:** low; after core layout fixes
+
+### B4.11 `scrollTo` exact offset with unmeasured items
+
+**Problem:** `scrollToIndex` / `scrollToIndexPath` compute the target scroll offset by reading cumulative positions from the LayoutCache. Items that haven't entered the render window yet are still `Placeholder` — their heights are the `estimatedItemHeight` estimate, not the Yoga-measured value. If actual heights differ from estimates, the scroll lands at the wrong offset (sometimes by a lot for large lists with variable-height items).
+
+**Current behaviour:** Scrolling to a far-off item lands near but not exactly at the item. The first scroll brings the render window close; subsequent `applyMeasurements` passes correct individual heights; but there is no second-pass correction to adjust the scroll offset.
+
+**Desired behaviour:** After scrolling to an estimated position, once the target item becomes Measured, correct the scroll offset to the exact position. The user should not see a jump — either hold the final position still (suppress bounce) or apply the correction instantly.
+
+**Approaches:**
+1. **Two-pass correction**: after `scrollToIndex`, register the target key. When `applyMeasurements` marks that key as `Measured`, check if the current offset drifted from the correct position and call `setContentOffset:` to correct. Low cost; small visible jump possible on very slow devices.
+2. **Pre-render and scroll**: before scrolling, synchronously expand the render window to include the target item and wait one Fabric pass for measurement. Expensive for large jumps (O(distance) cells mounted).
+3. **Accept estimated offset + document limitation**: document that `scrollTo` is best-effort for unmeasured items. Correct for already-measured ranges. This is what FlashList does.
+
+**Recommended approach:** Option 1 (post-scroll correction). Register the target in a `pendingScrollCorrection` ref; clear it once applied or after a timeout.
+
+**Effort:** ~1d
 
 ---
 
@@ -249,17 +285,6 @@ Replace JSON with FlatBuffers. Zero-copy mmap hydration. 10k items: serialize < 
 **Signal:** Detect bounce via `scrollViewDidEndDecelerating` or by checking if content offset is outside `[0, contentSize - viewportSize]`.
 
 **Estimated cost:** ~0.5d. **Priority:** TBD.
-
-### B7.0b H free-width cell measurement ceiling at vpWidth
-
-**Problem:** H free-width cells (H-list, H-grid) are measured by Yoga within the H sub-container, whose Yoga width = vpWidth. Even with the `alignSelf/alignItems: flex-start` chain on the inner wrapper, Yoga passes `YGMeasureModeAtMost(vpWidth)` to Text nodes. Cells whose content naturally needs more than vpWidth will wrap at vpWidth.
-
-**Options:**
-1. Document as known limitation: consumers should set explicit `width` on cells that need > vpWidth.
-2. Framework provides a `maxMeasureWidth` hint prop on the H sub-container that overrides the Yoga available width for cell measurement.
-3. Make H cells `position: absolute` at the React level (unconstrained Yoga measurement). Complex, likely breaks other things.
-
-**Estimated cost:** Option 1 = 0 (just docs). Option 2 = ~0.5d. **Priority:** low.
 
 ### B7.1 Flow justification
 
@@ -365,6 +390,7 @@ Items that don't block the POC or FlashList comparison but are worth doing after
 | **B5.1** HLD + LLDs | 2.5d | Full architecture docs (LayoutCache, ShadowNode, ScrollPath, MVC, H sections) |
 | **B5.3** Contributor + optimization docs | 0.5d | Adding layouts walkthrough, Opt 1-7 reference |
 | **B6.1–B6.4** State persistence | 3.5d | JSON → FlatBuffers cache serialization + scroll position restore |
+| **B7.0b** H free-width measurement ceiling at vpWidth | 0.5d | H free-width cells wrap at vpWidth even with `alignSelf:flex-start`. Option 1: document limitation (cells needing > vpWidth must set explicit `width`). Option 2: `maxMeasureWidth` prop on sub-container. |
 | **B7.4** H-masonry H mode | 0.5d | All items same size in H mode; likely cross-axis sizing not reaching computeSection |
 | **B7.5** L-5/L-6 demo updates | — | H list/grid resize test in RiffDemo; supplementary model deliberation |
 | **B7.6** MVC on container resize | TBD | Keep anchor on orientation change / split view |
@@ -511,6 +537,14 @@ items the max extent is always correct.
 
 **Fixed in `fix/compute-section-preserve-measured`:** Before writing an item, both `MasonryLayout::computeSection` and `FlowLayout::computeSection` now look up the cache for an existing `Measured` entry and reuse the Yoga-measured size as `itemPrimary`. Writing back the same frame is a no-op for `_version` → no LCV notification → feedback loop broken. `vLCV` drops from ~70 per scroll to ~initial measurement count only.
 
+### B1.10 In-place cell resize via local setState ✅ RESOLVED (2026-06-02)
+
+**Resolution:** `ref.current.invalidateItem(sectionIndex, itemIndex)` is the recommended pattern. Call it in the same event handler as the state update that changes the cell's height — React 19 batches both. Internally, `invalidateItem` bumps `invalidateTrigger` (fully internal counter, not consumer-facing):
+1. `invalidateTrigger` is part of `_curCacheDeps` → increments `renderGen` → all window cells miss the element cache → re-render → Fabric re-measures the changed cell.
+2. Also in the double-RAF deps → polls native LayoutCache version → once `applyMeasurements` records the new Yoga height, `processScroll` calls `invalidateFrom(i)` → positions reflow from changed item onward (O(n − i)).
+
+**Root cause archived:** Fabric does not re-clone `CollectionViewContainerShadowNode` for in-cell `setState` (container child array is structurally unchanged). `layout()` never fires; stale cached height is never evicted. An explicit signal is required — this matches UIKit's `invalidateLayout()` pattern.
+
 ---
 
 ## B2 — Completed
@@ -563,3 +597,22 @@ Moved `_cache->clear()` from each engine's `computeSections()` body into the JSI
 ---
 
 *For full milestone history (Phases 0–5, P1–P5, F2, F3.1–F3.5, H-1 through H-5, all Opts, all perf work) see `PLAN.md`. Archived plans in `docs/archived-plans/`.*
+
+---
+
+## Architectural Decisions (Non-negotiable)
+
+### Yoga-Authority Principle
+
+**Yoga is the only authority for actual dimensions. All layout-provided sizes are estimates.**
+
+This was established during B1.1 planning (2026-06-01) when it was clarified that even a JS layout writing explicit `frame.width/height` in `prepare()` is providing an estimate, not a measurement. The JS layout's pre-computed sizes seed the LayoutCache for first-frame positioning; Yoga measures actual rendered content and may produce a different value.
+
+**API naming enforcement:** All size/dimension APIs exposed to consumers must carry the `estimated` prefix:
+- `estimatedItemHeight` (not `itemHeight`)
+- `estimatedHeightForItem` (not `heightForItem`)
+- `estimatedSizeForItem` (not `sizeForItem`)
+- `estimatedItemSize` (not `itemSize`)
+- `estimatedItemLayoutAttributes` (not `itemLayoutAttributes` or `layoutAttributes`)
+
+**Backlog item:** Rename all currently unqualified APIs in the existing layout engines (`heightForItem` in list/grid/masonry, `sizeForItem` in flow, `itemSize` in radial/carousel3D/spiral/hex, `itemHeight` in list params) to their `estimated` counterparts. This is a breaking API change — coordinate with any consumer-facing documentation update.
