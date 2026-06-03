@@ -7,7 +7,7 @@ Riff is a list and collection view for React Native New Architecture that runs i
 > **Via git** — add to `package.json`:
 > ```json
 > "dependencies": {
->   "@riff/collection-view": "github:your-org/riff#main"
+>   "@riff/collection-view": "git+ssh://git@github.com/ue6549/riff.git#main"
 > }
 > ```
 > **Via local publish** — clone the repo, run `yarn build` inside `packages/rn-collection-view`, then link with `yarn add ../path/to/riff/packages/rn-collection-view` or use `yalc`.
