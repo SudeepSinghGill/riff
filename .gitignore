@@ -31,3 +31,7 @@ local.properties
 
 # Ruby
 /vendor/bundle/
+
+# Internal tools
+mcp-code-index/
+logs/
