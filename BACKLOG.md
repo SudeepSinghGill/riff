@@ -16,10 +16,10 @@
 | 4 | **B3.2** Cross-section sticky headers | TBD | Design first; single sticky spanning multiple sections. |
 | 5 | **B2.3 + B2.4** Enter/exit + coordinated animations | 3.5d | Fade/collapse on delete; expand on insert; UIKit-parity spring batch animations. |
 | 6 | **B6.1–B6.4** State persistence | 3.5d | JSON cache serialization → FlatBuffers + scroll position restore. |
-| 7 | **B2.7** JS layouts re-attempt | 1d | `correctChildPositionsIfNeeded` JS-layout path. See B2.7 below. |
+| 7 | **B2.7 + B3.4** JS layouts fix + native layout plugin API | 2d | Fix `correctChildPositionsIfNeeded` for JS layouts; expose public C++ plugin registration. |
 | 8 | **B2.6** Snap behaviors (H-6) | 1d | UIKit paging/groupPaging on H sections; FlashList has no equivalent. |
 | 9 | **B2.2 + B2.1** Snapshot API + C++ diff engine | 2d | NSDiffableDataSource-style mutation API + off-thread key diff. |
-| 10 | **B4** Perf / threading | 1–2.5d | B4.7 threading audit + B4.5 transform positioning + B4.6 flat spatial arrays. Profile-driven; skip if not bottlenecked. |
+| 10 | **B4** Perf / threading | 1–2.5d | B4.7 threading audit + B4.5 transform positioning + B4.6 flat spatial arrays + B4.12 native invalidation callback. Profile-driven; skip if not bottlenecked. |
 | 10 | **B8** Unit tests | 3d | C++ GoogleTest + TS Jest. |
 | 11 | **B7.0a + B7 polish** | — | Overscroll range contraction, flow justification, grid rowAlignment, H-masonry, MVC on resize, separator toggle shift. |
 | 12 | **B9** Android / Web | 8d+ | Android CMakeLists + Kotlin; RN Web JS fallbacks. |
@@ -150,6 +150,22 @@ Document + export the H-2 `RNCollectionSubContainer` framework so consumers can 
 
 **Effort:** ~0.5d
 
+### B3.4 Public packaging API for user-defined native C++ layout engines
+
+`registerLayoutEngine(cacheId, name, enginePtr)` already exists internally and is how all 5 built-in layouts are registered at startup. What is missing is a clean public API for app or library code to register a custom `LayoutEngine` subclass from outside the Riff module — e.g. a separate npm package that ships a native C++ layout and registers it at app init.
+
+**Work needed:**
+- Define a public C++ interface (`RiffLayoutEnginePlugin`) that consumers inherit from
+- Expose a `RiffLayoutRegistry` singleton accessible from ObjC app-layer (iOS) and CMake (Android)
+- Add JS-side codegen enum entry (or string prop) to declare the custom layout type name to CollectionView
+- Write a reference example: `hex` layout extracted from Riff internals, published as a standalone plugin
+
+**Why it matters:** Enables community-contributed native layouts (circular carousels, physics-driven, etc.) without modifying Riff core. Same model as UICollectionViewLayout subclassing.
+
+**Effort:** ~1.5d
+
+**Priority:** After B2.7 (JS layout fix) to establish both extension paths simultaneously.
+
 ---
 
 ## B4 — Residual Perf (Remaining)
@@ -194,6 +210,20 @@ The `scrollTo*` / `scrollToSection` API implemented via `invokeScrollHandler` ro
 **Decision:** discuss before implementing. Note that the `scrollToSection` / `scrollToIndexPath` API semantics also differ for non-list layouts (radial has no "section" concept in the traditional sense).
 
 **Priority:** low; after core layout fixes
+
+### B4.12 Replace double-RAF version poll with direct native callback
+
+**Problem:** When `invalidateItem` is called without an active scroll, Riff detects the Yoga measurement completing by polling the C++ LayoutCache version counter in two consecutive `requestAnimationFrame` callbacks (~33ms at 60fps). This is the only remaining polling loop in the scroll path.
+
+**Why it exists:** The LayoutCache version is a C++ integer; JS has no listener API for it today. The double-RAF is the simplest bridge.
+
+**Better approach:** Emit a native event (or use a JSI callback) from `updateState:` in `RNCollectionViewContainerView` when `layoutRevision` changes. JS subscribes once; the callback fires synchronously on the same frame as the Fabric commit. This is what FlashList achieves via `onLayout` callbacks — Fabric fires them synchronously during the commit, no polling needed.
+
+**Impact:** Removes the last polling loop. Reduces invalidateItem-to-reflow latency from ~33ms to <1 frame. Low priority — only affects static-viewport invalidation; active scroll already uses the synthetic onScroll signal from `updateState:`.
+
+**Effort:** ~0.5d
+
+---
 
 ### B4.11 `scrollTo` exact offset with unmeasured items
 
