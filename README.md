@@ -28,7 +28,7 @@ A homepage with a hero banner, a horizontal product carousel, a 2-column grid, a
     { range: 0,       layout: list() },           // hero + editorial strip
     { range: [1, 2],  layout: grid({ columns: 2 }) },
     { range: 3,       layout: flow(),  horizontal: true },  // H carousel
-    { range: 4,       layout: masonry({ bins: 2 }) },
+    { range: 4,       layout: masonry({ columns: 2 }) },
   ])}
   sections={sections}
   renderItem={renderItem}
@@ -702,7 +702,37 @@ layout={list({
 })}
 ```
 
-**Horizontal mode** — set `horizontal: true` inside the config (or via `compositional` `horizontal` flag). Primary axis becomes X; `estimatedItemHeight` seeds item width; `estimatedCrossAxisHeight` (default 200) seeds the list's height. The list's cross-axis height snaps to the tallest measured item.
+#### Horizontal list (H-list)
+
+Set `horizontal: true` (or pass `horizontal: true` on the `CompositionalEntry`). The primary scroll axis becomes X. `estimatedItemHeight` now seeds item **width** (since width is the primary dimension). `estimatedCrossAxisHeight` seeds the list's **height** — after the first render, the cross-axis height snaps to the tallest measured item so the container self-sizes.
+
+Common uses: product carousel strip, story tray, horizontal editorial rail.
+
+```tsx
+// Standalone H-list
+<CollectionView
+  data={products}
+  keyExtractor={(p) => p.id}
+  renderItem={({ item }) => <ProductCard product={item} />}
+  layout={list({
+    estimatedItemHeight: 140,       // seeds item WIDTH (primary axis = X)
+    estimatedCrossAxisHeight: 160,  // seeds list HEIGHT; snaps to tallest measured item
+    itemSpacing: 12,
+    horizontal: true,
+  })}
+  style={{ height: 160 }}
+/>
+
+// Inside compositional (common pattern)
+compositional([
+  { range: 1, layout: list({ estimatedItemHeight: 140,
+                              estimatedCrossAxisHeight: 160 }),
+               horizontal: true,
+               estimatedSectionHeight: 160 },
+])
+```
+
+`estimatedCrossAxisHeight` and `estimatedSectionHeight` can be set to the same value — `estimatedCrossAxisHeight` tells the list its own height; `estimatedSectionHeight` tells the outer vertical layout how much vertical space to allocate for this section.
 
 **Key config props:**
 
@@ -739,7 +769,41 @@ layout={grid({
 })}
 ```
 
-**Horizontal mode** — set `horizontal: true`. Column layout becomes column-major (items tile top-to-bottom within a column, then advance left-to-right — mirrors `UICollectionViewFlowLayout` horizontal default). `columns` controls the number of rows (cross-axis count). `estimatedCrossAxisHeight` seeds item width.
+#### Horizontal grid (H-grid)
+
+Set `horizontal: true`. The layout becomes **column-major**: items tile top-to-bottom within a column (the cross axis), then the next column advances left-to-right (the primary axis). This mirrors `UICollectionViewFlowLayout`'s horizontal default — the classic dual-row shelf or swipeable category grid.
+
+- `columns` controls the **row count** (cross-axis item count per column).
+- `estimatedCrossAxisHeight` seeds item **width** (primary dimension); Yoga measures actual widths.
+- `columnSpacing` is the gap between rows; `rowSpacing` is the gap between columns.
+
+Common uses: two-row product shelf, swipeable category tiles, dual-row chip grid.
+
+```tsx
+// Standalone H-grid
+<CollectionView
+  data={products}
+  keyExtractor={(p) => p.id}
+  renderItem={({ item }) => <ProductCard product={item} />}
+  layout={grid({
+    columns: 2,               // 2 rows (cross-axis). Items advance L→R column by column.
+    columnSpacing: 8,         // vertical gap between the 2 rows
+    rowSpacing: 12,           // horizontal gap between columns (advance direction)
+    estimatedItemHeight: 200, // seeds item HEIGHT (cross-axis = vertical)
+    estimatedCrossAxisHeight: 160, // seeds item WIDTH (primary = horizontal)
+    horizontal: true,
+  })}
+  style={{ height: 416 }}    // (200 * 2) + 8 gap + 8 insets ≈ container height
+/>
+
+// Inside compositional
+compositional([
+  { range: 2, layout: grid({ columns: 2, columnSpacing: 8, rowSpacing: 12,
+                              estimatedItemHeight: 200 }),
+               horizontal: true,
+               estimatedSectionHeight: 420 },
+])
+```
 
 **Key config props:**
 
