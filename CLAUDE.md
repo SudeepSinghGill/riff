@@ -3,8 +3,8 @@
 ## Start of every session: read these files
 
 1. **`ethereal-seeking-willow.md`** — current working plan, recent decisions, next steps. Most up-to-date.
-2. **`PLAN.md`** — full milestone plan with execution order and completion status.
-3. **`docs/ARCHITECTURE.md`** — architecture overview, key decisions, RN Fabric learnings. Directionally correct but may lag behind latest code.
+2. **`docs/wip/PLAN.md`** — full milestone plan with execution order and completion status.
+3. **`docs/wip/ARCHITECTURE.md`** — architecture overview, key decisions, RN Fabric learnings. Directionally correct but may lag behind latest code.
 4. **`docs/COLLECTIONVIEW_INTERNALS.md`** — CollectionView.tsx implementation reference: section rendering pipeline, sticky mechanics, per-section insets, mutation API, codegen setup, two-layer identity design (cacheKey + Fabric tag). **Read before modifying any layout engine, decoration rendering, or native position application.**
 5. **Latest file(s) in `docs/ContextExchange/`** — session handoff notes. Read the most recent one(s) for root cause analyses and status.
 
