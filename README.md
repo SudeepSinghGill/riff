@@ -325,6 +325,40 @@ The first knob solves a *painting* problem; the second a *retention* problem; th
 
 **Visibility callback:** `onViewableRangeChange` fires when the set of items in the visible range changes. It receives `{ visible: { first, last }, render: { first, last } }` — the `visible` range reflects what the user can actually see; the `render` range reflects the broader painted buffer. Use this for analytics impression tracking or lazy-loading triggers rather than parsing scroll offsets manually.
 
+### Data prefetch — `onPrefetch` / `onEvict` / `prefetchAhead`
+
+The render window paints cells; the **prefetch window** is a wider band, outside the render window, where Riff fires `onPrefetch(keys)` so the consumer can warm caches (images, network requests, decoded data) *before* those cells mount. When items leave the prefetch window in the opposite direction, `onEvict(keys)` fires so in-flight loads can be cancelled and resources released.
+
+```tsx
+<Riff
+  data={products}
+  keyExtractor={(p) => p.id}
+  prefetchAhead={12}                          // default 12 viewport heights
+  onPrefetch={(keys) => imageCache.warm(keys)}
+  onEvict={(keys) => imageCache.cancel(keys)}
+  ...
+/>
+```
+
+**Props:**
+
+| Prop | Default | Behaviour |
+|---|---|---|
+| `prefetchAhead` | `12` (viewport heights) | How far beyond the render range the prefetch window extends, in either direction. Set to `0` to disable the prefetch system entirely. |
+| `onPrefetch?: (keys: string[]) => void` | — | Called with the set of `keyExtractor` keys **entering** the prefetch window since the last call. |
+| `onEvict?: (keys: string[]) => void` | — | Called with the set of keys **leaving** the prefetch window in the trailing direction. Use to cancel in-flight loads / free decoded resources. |
+
+**Semantics:**
+
+- The prefetch window is a *data* window, not a *layout* window. Cells in it are **not mounted**, **not laid out**, **not measured**. The callback only delivers the *keys* of items the consumer should start loading data for.
+- `onPrefetch` and `onEvict` fire **diff-only** — only the entering / leaving subsets, not the full window. A scroll that moves the window by 5 items produces 5 entering keys and 5 leaving keys, not 12 × viewport.
+- The range arithmetic is synchronous on the scroll path. The entering / leaving loops (which call `keyExtractor` for each item in the diff) are deferred to `setImmediate` so they never block a scroll frame. Coalescing is built in — if a new scroll tick lands before the previous callback ran, the pending callback is cancelled and replaced.
+- `onEvict` only fires after `onPrefetch` has fired at least once (it diffs against the prior prefetch range, so there's nothing to evict on first paint).
+
+**Why this matters.** On a typical product grid, the user fling-scrolls past one viewport in ~250 ms but image network round-trips are 200–500 ms. Without prefetch, every cell first paints with a placeholder, then the image arrives 1–2 frames late. With `prefetchAhead=12`, image requests start 12 viewport-heights before the cell mounts — by the time the cell paints, the cached `Image` source is hot. Combined with Riff's pool retention, scroll-back is instant: cells return from the pool with state preserved *and* their images already decoded.
+
+**Tuning.** Default `prefetchAhead=12` is a generous lead — appropriate for image-heavy feeds where the network is the dominant latency. Drop it for data-light pages (text-only lists where loading doesn't dominate) to reduce key-iteration work. Increase it for very long-form content where the user typically scrolls in large jumps. Set to `0` for fully static data where there's nothing to prefetch.
+
 ### React-level identity — state survives brief scroll-off
 
 `keyExtractor` output maps to a slot key in `SlotManager.dataKeyToSlot`. When an item returns while its slot is still in the pool, it is routed back to its exact slot — same React Fiber, same `useState`, same `useRef`, in-flight animations still running. An item that scrolls far enough to exhaust its pool slot remounts fresh on re-entry. State that must survive full eviction requires an external store, as with any virtual list.
