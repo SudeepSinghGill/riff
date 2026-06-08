@@ -836,7 +836,7 @@ Here's a commit in detail, from a JS state change to a pixel:
 
 Steps 1-2 happen on the JS thread. Steps 3-6 happen on whatever thread is committing (often JS thread, sometimes background). Steps 7-8 happen on the main thread.
 
-### D.2 The five platform hooks Riff uses
+### D.2 The six platform hooks Riff uses
 
 Mapped to commit-cycle steps:
 
@@ -850,6 +850,8 @@ Mapped to commit-cycle steps:
 | ⑥ | JSI bindings (TurboModule methods) | JS-to-C++ calls outside the commit | JS thread |
 
 Note that *most of Riff's runtime work happens in step 4* — inside the commit pipeline. That's why the hot path can be "in C++" without JS involvement: the commit thread runs `ShadowNode::layout()` purely in C++, and most scrolls produce no commit at all (because the band-skip in JS short-circuits before triggering any state update that would cause a commit).
+
+**A gated sub-path inside step 7 (worth surfacing).** When `applyPositionsFromState:` runs, it always applies frame geometry. The per-cell visual-attrs block (alpha / zIndex / transform3D) is **gated behind `layoutWritesVisualAttributes`** — a native boolean mirrored from the layout engine's `LayoutEngine::writesVisualAttributes()` flag (`cpp/LayoutEngine.h:125`). Static layouts (list/grid/masonry/flow) leave it `false`, and the bulk-attrs read (one mutex-locked cache lookup per cell) plus three `CALayer` property writes per cell are skipped entirely. Scroll-driven dynamic layouts (radial / carousel3D / spiral) and the TS custom-layout engine opt in. Compositional inherits `true` if any of its sections opt in. The gate landed alongside the version-split fix described in Part 3 and is a meaningful per-commit CPU saver on static-dominant compositional pages.
 
 The "no commit per scroll" property is what gives Riff its CPU advantage. Scrolling moves the user's eyes, the UIScrollView's `contentOffset`, and the visible viewport — but it does NOT change any React state, does NOT clone any ShadowNodes, does NOT produce mount instructions. The C++ `processScroll` JSI call updates a scroll-offset field in the LayoutCache; JS reads it to decide whether the render range crossed a boundary; if not, nothing else happens. Only on render-range boundary crossings does a real React state update fire, triggering a real commit.
 
@@ -925,7 +927,7 @@ public:
 
 **`RCTScrollViewComponentView` (iOS)** — `React/Fabric/Mounting/ComponentViews/ScrollView/RCTScrollViewComponentView.mm`:
 
-> **Aside on Riff's own scroll delegate vs C++ work:** the iOS V delegate (`RNCollectionViewContainerView.mm:346`) and H sub-container delegate (`RNCollectionSubContainerView.mm:1023`) are structurally the same — both throttle and fire a JS-side scroll event, neither calls C++ layout work directly from the delegate. JS then calls `nativeWindowController.processScroll` (V) or `processHScroll` (H) via JSI. What differs is *what `processScroll` does in C++ based on layout type*: for static layouts (`list`/`grid`/`masonry`/`flow`) it's an O(log n) render-range binary search with no position recomputation; for scroll-driven dynamic layouts (`radial`/`carousel3D`/`spiral`/`hex`, currently used only as H section types) it recomputes per-item frame/transform/alpha at the new scroll offset, because those layouts' geometry is a function of scroll position. The asymmetry in workload is layout-shape, not call-site.
+> **Aside on Riff's own scroll delegate vs C++ work:** the iOS V delegate (`RNCollectionViewContainerView.mm:358–398`) and H sub-container delegate (`RNCollectionSubContainerView.mm:1023–1044`) both throttle and fire a JS-side scroll event before any C++ layout work; neither calls C++ correction cascades directly. One asymmetry: the V delegate additionally writes scroll offset into the LayoutCache (`cache->setScrollOffset(...)`) on every untrottled tick so the ShadowNode's next `correctChildPositionsIfNeeded` reads a consistent value. The H delegate does not — H scroll offsets aren't consumed by C++ position math at the container layer. JS receives the event and calls `nativeWindowController.processScroll` (V) at `CollectionView.tsx:1903` or `processHScroll` (H) at `:2583` via JSI. **C++ `processScroll` is always a pure range query** — binary search or spatial query, returns a render range plus a flat frames array. It never recomputes visual attributes. Scroll-driven dynamic layouts (`radial`/`carousel3D`/`spiral`) live in TypeScript inside `CollectionSubContainer`; their per-tick `processScroll(offset, ctx)` writes new alpha/transform/zIndex into the LayoutCache via `setAttributesBatch` (which routes through `endHBatch` → bumps `_hMvcVersion`, see Part 3). `hex` is a static tile layout, no per-tick recompute. The asymmetry in workload is layout-shape, not call-site.
 
 
 - Line 728 — `scrollViewDidScroll:` (UIScrollViewDelegate method) calls `_updateStateWithContentOffset`
@@ -1082,65 +1084,82 @@ The takeaway: **every load-bearing mechanism Riff uses is also used somewhere in
 
 Several pieces of internal state are critical to scroll performance but not yet covered in either the slide deck or Part 1/2. They show up in code comments and diagnostic counters; engineers reading the codebase need to know what each means.
 
-## The two-version model (JS LCV vs C++ cache version)
+## The four-counter version model (1 JS LCV + 3 C++ cache counters)
 
-Riff has *two* monotonic "version" counters that look similar but serve different purposes. Confusing them produces real bugs (we've shipped one).
+Riff has *four* monotonic "version" counters that look similar but serve different purposes. Confusing them produces real bugs (we've shipped two).
 
-### C++ `LayoutCache._version`
+### C++ `LayoutCache._version` (global)
 
-A `uint64_t` counter in `cpp/LayoutCache.h:394`. Increments on every actual mutation of the cache:
-- `setAttributes(attrs)` — line 112
-- `setAttributesBatch(batch)` — line 125
-- `removeAttributes(key)` — line 177
-- `clear()` — line 193
-- `endBatch()` — when batched writes commit
+A `uint64_t` counter in `cpp/LayoutCache.h:410`. Increments on cross-cutting mutations of the cache (the changes every observer should react to). Bump sites:
+
+- `_setAttributesLocked` (the internal worker) bumps `_version` when **outside batch mode** AND the frame actually changed for an existing key, OR whenever a new entry is inserted (`cpp/LayoutCache.cpp:126, 139`). `setAttributes` is the public entry point but its bump is conditional on this — visual-attr-only changes for an existing key (alpha/zIndex/transform with same frame) do **not** bump `_version`.
+- `removeAttributes(key)` — always bumps.
+- `clear()` — always bumps.
+- `setAttributesBatch(batch)` — opens a batch, writes N entries, commits with **one** coalesced bump if any entry was frame-changing.
+- `endBatch()` — the explicit batch terminator, same single-bump semantics. Routes to `_version`.
 
 Reads (`getAttributes`, `getFramesForKeys`, `getAttributesForKeys`) do NOT bump.
 
-This is the **authoritative** state-version. If `cache->version()` is different from what you last observed, the cache really has new data. Used by `CollectionViewContainerShadowNode::shouldSkipCorrection` and `CollectionSubContainerShadowNode::shouldSkipCorrection` to know when to re-run correction.
+This is the **authoritative** cross-cutting state-version. Everyone watches it: V container, V sub-containers, H sub-containers.
+
+### C++ `LayoutCache._vVersion` (V container's own writes)
+
+A second `uint64_t` counter at `cpp/LayoutCache.h:412`. Bumped only by `endVBatch()` (`cpp/LayoutCache.cpp:100–107`).
+
+The V container's `correctChildPositionsIfNeeded` writes V cell position corrections via `endVBatch()` instead of `endBatch()` (`cpp/CollectionViewContainerShadowNode.cpp:600, 654`). These writes update V cell positions in response to Yoga measuring something taller than the estimate; they affect the V container itself but not any sub-container's geometry.
+
+**Only the V container reads `_vVersion`.** Sub-containers don't. The split is what prevents V's own per-cell position writes from invalidating every H sub-container's skip-check on every V height correction — measured 1:1 with V `applyMeasurements` count before the split landed.
+
+### C++ `LayoutCache._hMvcVersion` (H-batch writes)
+
+A third `uint64_t` counter at `cpp/LayoutCache.h:411`. Bumped only by `endHBatch()` (`cpp/LayoutCache.cpp:91–98`).
+
+H sub-containers' `correctChildPositionsIfNeeded` paths, and scroll-driven dynamic layouts' per-tick `processScroll → setAttributesBatch` paths, all route to `endHBatch()`. The scroll-driven dynamic case is the high-frequency one: `radial`/`carousel3D`/`spiral` write alpha/transform/zIndex on every H scroll tick (~60 Hz during a fling).
+
+**Only H sub-containers read `_hMvcVersion`.** Without this split, scroll-driven H writes would bump `_version` ~60 times per second and invalidate the V container's skip-check on every tick.
+
+### The symmetric reason both `_vVersion` and `_hMvcVersion` exist
+
+Same shape, opposite direction. `_version` is the cross-cutting authoritative counter; `_vVersion` and `_hMvcVersion` are the "this is my own work, don't make my peers re-run" private channels.
+
+|Counter | Bumped by | Watched by | Stops cascading into |
+|---|---|---|---|
+| `_version` | data mutations, structural changes, new-entry inserts | everyone | (intended) |
+| `_vVersion` | V container's own V cell position writes (`endVBatch`) | V container only | H/V sub-containers |
+| `_hMvcVersion` | H sub-container writes + per-tick dynamic-layout writes (`endHBatch`) | H sub-containers only | V container, sibling sub-containers |
+
+This is the architectural realisation that "one cache, one version" is a tempting simplification but doesn't scale to compositional layouts — every region writes to the cache for its own reasons, and not every read consumer cares about every reason.
 
 ### JS-side `layoutCacheVersion` (React state)
 
-A React state in `src/components/CollectionView.tsx:1475`. Bumped via `setLayoutCacheVersion(v => v + 1)` from eight call sites. It is **not authoritative state** — it's a **trigger** for Fabric to commit.
+A React state in `src/components/CollectionView.tsx`. Bumped via `setLayoutCacheVersion(v => v + 1)` from eight call sites. It is **not authoritative state** — it's a **trigger** for Fabric to commit.
 
 Why JS needs this: there's no other way for JS code to force a Fabric commit. React state changes → re-render → Fabric reconciles → ShadowNode clone → `layout()` fires. Without bumping LCV, JS-side changes don't propagate.
 
 The eight bump sites split into two categories:
 
 **Active bumps** — JS knows it needs to force a re-commit:
-- `invalidateItem(section, index)` (lines 2123, 2149) — consumer requested cell re-measure
-- `snapshot.apply(snap, setData)` data path (line 2160) — mutation needs commit
-- `remeasureOnItemChange` detected via data comparison (line 2216)
+- `invalidateKeys(keys)` (line 2147) — consumer requested re-measure for a set of keys (note: `keys` itself is unused; the trigger is the bump).
+- `invalidateAt(indices)` (line 2173) — consumer requested re-measure at indices (arg unused; trigger is the bump).
+- `invalidateItem(section, index)` (line 2184) — same shape; both `section` and `index` are explicitly `void`-discarded at line 2183. The user-visible "only the tail reflows" behaviour comes from `applyMeasurements` detecting which cell Yoga remeasured and calling C++ `invalidateFrom(i)` from there — the caller's args do not flow to C++.
+- `remeasureOnItemChange` detected via data comparison (line 2240).
 
 **Passive bumps** — JS noticed the C++ cache version changed and wants to propagate that observation to other JS consumers (content-size readers, sticky-position computers, JS-side `useEffect`s that depend on layoutCacheVersion):
-- Double-RAF post-layout poll (lines 1773, 1780)
-- Initial post-mount check (line 1972)
-- V scroll handler when scrollResult.cacheVersion changed AND content size changed (line 2346)
+- Double-RAF post-layout poll (lines 1797, 1804).
+- Initial post-mount check (line 1996).
+- V scroll handler when scrollResult.cacheVersion changed AND content size changed (line 2370).
 
-The bug we just fixed: H sub-containers' `shouldSkipCorrection` was treating every LCV change — passive or active — as a reason to re-run correction. But passive bumps are just downstream notifications of a C++ change that the sub-container can detect directly via `cache->version()` or Yoga hash. Reacting to passive LCV bumps caused 100% skip-rate failure on the first check, so the C++ checks never even ran.
+The bug we just fixed: H sub-containers' `shouldSkipCorrection` was treating every LCV change — passive or active — as a reason to re-run correction. But passive bumps are just downstream notifications of a C++ change that the sub-container can detect directly via `cache->version()`, `cache->hMvcVersion()`, or Yoga hash. Reacting to passive LCV bumps caused 100% skip-rate failure on the first check, so the C++ checks never even ran.
 
 The fix: in sub-container's `shouldSkipCorrection`, record the new LCV value (so the next call sees a stable value) but do not early-return. Fall through to the authoritative C++ checks below. Files: `cpp/CollectionSubContainerShadowNode.cpp` skip-correction function.
 
-### Why both exist (the design tension)
+### Why C++ and JS counters can't be unified
 
 You can't unify them because they live on opposite sides of the JSI boundary:
-- C++ can mutate `_version` cheaply and atomically, but can't make React re-render
-- JS can bump state to force a re-render, but doesn't observe C++ mutations until it explicitly reads them
+- C++ can mutate `_version` / `_vVersion` / `_hMvcVersion` cheaply and atomically, but can't make React re-render.
+- JS can bump state to force a re-render, but doesn't observe C++ mutations until it explicitly reads them.
 
-The right abstraction would be: JS LCV is the **trigger**, C++ version is the **state**. Triggers can fire for any reason; consumers must check authoritative state to decide what to do. Our sub-container had been treating the trigger AS state — that's the bug pattern to avoid.
-
-## The H-batch version (`hMvcVersion`)
-
-A *second* monotonic counter in the cache, separate from `_version` (`cpp/LayoutCache.h`). Bumps only on H-section batched writes via `endHBatch()`.
-
-The split exists because H sub-containers write their own cell positions during H scroll, and the main V container doesn't care. If H writes bumped `_version`, every H scroll tick would invalidate the V container's `shouldSkipCorrection` → V container would re-run correction for no reason.
-
-The convention:
-- Main V container's `shouldSkipCorrection` checks only `cache->version()` — doesn't care about `hMvcVersion`.
-- H sub-containers check both — `cache->version()` for cross-cutting changes (data mutations, V-driven corrections) AND `cache->hMvcVersion()` for their own H-batch writes.
-- V sub-containers (V layouts inside a compositional, e.g. a V grid section in a compositional layout) check only `cache->version()`.
-
-Files: `cpp/LayoutCache.cpp:90` (where `endHBatch` increments `_hMvcVersion`), `cpp/CollectionSubContainerShadowNode.cpp` (where the `isH` branch checks it).
+The right abstraction: JS LCV is the **trigger**, the three C++ counters are the **state**. Triggers can fire for any reason; consumers must check authoritative state to decide what to do. Our sub-container had been treating the trigger AS state — that's the bug pattern to avoid.
 
 ## The hash checks (`tagHash`, `yogaHash`)
 
@@ -1168,10 +1187,15 @@ The two hashes together are the catch-all for "did anything material change abou
 
 ## The skip-correction decision tree
 
-Combining all of the above, `CollectionSubContainerShadowNode::shouldSkipCorrection` evaluates (post-LCV-fix):
+Combining all of the above, `CollectionSubContainerShadowNode::shouldSkipCorrection` evaluates (post-fix):
 
 ```
                           shouldSkipCorrection()
+                                    │
+                                    ▼
+                  record props.layoutCacheVersion → lastLayoutCacheVersion_
+                  (PASSIVE signal — does NOT gate the skip; still recorded
+                   so next call sees a stable value. Diag: failLcv.)
                                     │
                                     ▼
                        cache available? ── no ── return false (run correction)
@@ -1200,7 +1224,7 @@ Combining all of the above, `CollectionSubContainerShadowNode::shouldSkipCorrect
                   (run correction)    (skip — nothing changed)
 ```
 
-Every authoritative reason is checked. None of them are bypassed by an earlier "fail fast." The diagnostic (`RNCV_HSUB_SKIP_DIAG`) counts each independently, so the breakdown shows the real distribution of failure causes — not just whichever one happened to be first in source order.
+Every authoritative reason is checked. None of them are bypassed by an earlier "fail fast." The diagnostic (`RNCV_HSUB_SKIP_DIAG`) counts each independently — `failLcv`, `failVer`, `failHMvc`, `failCnt`, `failHash` — so the breakdown shows the real distribution of failure causes, not just whichever one happened to be first in source order. (`failLcv` is recorded but does not contribute to the final OR.)
 
 ## Why this matters for performance
 
@@ -1208,11 +1232,20 @@ A 0% skip rate means **every Fabric commit fans out into full Phase 1-4 correcti
 
 A 90%+ skip rate (target after correctness fixes land) means most sub-container `layout()` calls bail out at the version check with zero further work — one cheap comparison, return, done. Only sub-containers whose cells actually changed run real correction.
 
-The same machinery exists on `CollectionViewContainerShadowNode` (the V container) with its own `shouldSkipCorrection`. Its checks are: `cache->version()`, child count, tag hash, Yoga hash — no LCV check at all (V container can't be invalidated by itself), no `hMvcVersion` check (V doesn't care). Same principle, fewer signals.
+The same machinery exists on `CollectionViewContainerShadowNode` (the V container) with its own `shouldSkipCorrection`. Its checks (`cpp/CollectionViewContainerShadowNode.cpp:132–185`) — six signals total:
+
+1. **`props.layoutCacheVersion`** — JS-side LCV, **early-return** on change (V container *does* react to LCV; this is the opposite policy from the sub-container's passive-record).
+2. **`cache->version()`** — global cross-cutting writes.
+3. **`cache->vVersion()`** — V container's own batched writes (its private channel; see the four-counter section above).
+4. **child count.**
+5. **`tagHash`.**
+6. **`yogaHash`.**
+
+V does NOT check `_hMvcVersion` (it doesn't care about H sub-container writes). Same skip-rate principle as the sub-container; different signal set.
 
 ## ShadowNode clone lifetime — the missing-clone-ctor trap
 
-A subtle Fabric mechanic that bit `shouldSkipCorrection` for a long time. Documenting it here so the next custom-ShadowNode author doesn't trip on the same wire.
+A subtle Fabric mechanic that bit `shouldSkipCorrection` for a long time on **both** of Riff's ShadowNode subclasses. The fix landed in both simultaneously on `fix/visual-attrs-gate`. Documenting it here so the next custom-ShadowNode author doesn't trip on the same wire.
 
 ### Fabric clones ShadowNodes on every commit
 
@@ -1280,7 +1313,13 @@ Rule of thumb: anything you compare *current* to *last* belongs in propagation. 
 
 If you find yourself adding `lastSomething_` style fields to a `ShadowNode` subclass — fields that exist specifically to compare across commits — your next line should be the clone constructor that propagates them. Treat them as a unit.
 
-A diagnostic that helps catch the silent failure: emit one log line per `shouldSkipCorrection` call showing `current → last` for each tracked field. If you see `last` stuck at the field's default initializer (`0` or `-1` or `{}`) on every line, you have the missing-clone-ctor bug. That's exactly the smoking gun this Riff bench produced before the fix landed.
+A diagnostic that helps catch the silent failure: emit one log line per `shouldSkipCorrection` call showing `current → last` for each tracked field. If you see `last` stuck at the field's default initializer (`0` or `-1` or `{}`) on every line, you have the missing-clone-ctor bug. That's exactly the smoking gun this Riff bench produced before the fix landed — sample shape was `lcv=-1→… ver=0→… hMvc=0→… N=0→…` on every diagnostic line. Look for the `last` side stuck at defaults across consecutive samples.
+
+**Reference fixes in Riff:**
+- `cpp/CollectionSubContainerShadowNode.cpp:166–178` — propagates six fields: `lastLayoutCacheVersion_`, `lastCacheVersion_`, `lastHMvcVersion_`, `lastChildCount_`, `lastChildTagsHash_`, `lastChildYogaFramesHash_`.
+- `cpp/CollectionViewContainerShadowNode.cpp:118–130` — same shape, propagates `lastLayoutCacheVersion_`, `lastCacheVersion_`, `lastVVersion_`, `lastChildCount_`, `lastChildTagsHash_`, `lastChildYogaFramesHash_`.
+
+Both subclasses needed the fix. The V container's bug was silently masked because V container's commit cadence is dominated by data-mutation commits anyway (which fail the skip check legitimately on `_version` change), so the missing propagation only mattered during steady-state scroll. The sub-container's bug was loud — 0% skip rate, measurable CPU regression.
 
 ---
 
