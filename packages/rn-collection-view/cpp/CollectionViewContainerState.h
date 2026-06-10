@@ -12,7 +12,10 @@
  */
 
 #include <react/renderer/graphics/Float.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-W#warnings"
 #include <react/renderer/graphics/Geometry.h>
+#pragma GCC diagnostic pop
 #include <vector>
 #include <unordered_map>
 
@@ -85,6 +88,9 @@ class CollectionViewContainerState final {
   }
 
 #ifdef RN_SERIALIZABLE_STATE
+  CollectionViewContainerState(
+      const CollectionViewContainerState &previousState,
+      folly::dynamic data);
   folly::dynamic getDynamic() const;
 #endif
 };
