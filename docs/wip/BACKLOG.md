@@ -149,6 +149,105 @@ Public-API consequence: `recyclePoolSize` deprecated. `measureAhead` becomes a s
 
 **Cross-references:** supersedes `B-pre83-pool` (folds into the unified mount-cap behaviour); reframes `B4.13` (memory-aware pool sizing → memory-aware mount cap); related to `B4.16` (per-H-section private pools — would become per-H-section sub-bands within the global cap).
 
+### B1.13 Making Riff impervious to Meta API drift (B-api-drift-defense)
+
+**Surfaced during:** architectural-stability discussion (2026-06-12).
+
+**Problem.** Riff uses several Fabric component-author APIs in unconventional ways. Most prominently: `RNMeasuredCellView` overrides `updateLayoutMetrics:` to *reject* the origin Fabric is about to apply (keeping the LayoutCache-set origin instead). The mechanism is documented and stable (`RCTViewComponentView::updateLayoutMetrics:` is part of the Fabric component-author API; core components like `RCTScrollViewComponentView` override it), but the *usage pattern* — overriding the hook to ignore Fabric's positioning — is not a documented pattern. It's the same architectural move that `react-native-screens`, Reanimated 3, and `react-native-skia` make (and that `RCTModalHostViewComponentView` makes most aggressively in core RN), but it places Riff in the broad "library that asserts non-Fabric authority for positioning" category that depends on stable platform internals.
+
+The risk isn't "Meta deletes `updateLayoutMetrics:`" — they can't, it would break their own ScrollView. The risk is signature changes, mount-pipeline reordering, or a new mount-layer step that *also* sets the frame after `updateLayoutMetrics:` has already run. Riff would need to chase those.
+
+**Five-layer defense strategy:**
+
+1. **Thin abstraction layer over platform hooks (highest leverage).** Concentrate every "creative" Fabric override behind one adapter — `RNFabricLayoutInterceptor` on iOS, `RNFabricLayoutInterceptor.kt` on Android. All of Riff's frame-application paths call into the adapter; the adapter is the only place that knows about `updateLayoutMetrics:` / `View.layout()`. A future signature change is a one-file fix. See B1.14 for the implementation plan.
+2. **CI matrix vs RN versions, including RN nightly.** Run Riff's bench + correctness suite against the two newest RN minors, RN nightly (catch breaks 4–8 weeks before they ship), and LTS. This is the single highest-value defense — you find out *first*, before consumers do. `react-native-screens` survives every RN release because they have exactly this.
+3. **Conformance harness mirroring how core RN uses the same hooks.** For every Fabric hook Riff uses, write a tiny test that exercises that hook the way `RCTScrollViewComponentView` (or another core component) does. If Meta changes the hook's contract, ScrollView breaks → your conformance test fails → you know within hours. This is meta-testing — testing the platform, not Riff.
+4. **Reduce surface area.** Audit every place Riff overrides Fabric internals. For each: is this load-bearing? The current audit shows the origin guard is the *only* truly creative usage; everything else (ShadowNode::layout override, custom State, applyPositionsFromState, KVO, JSI) is canonical pattern usage. A potential architectural move to eliminate even the origin guard is to delegate positioning to UICollectionView / RecyclerView entirely; see B-uicollectionview-spike.
+5. **Graceful degradation modes.** Build a `RIFF_FALLBACK_MODE` env-driven path that uses absolute positioning props (`position: 'absolute'`, `left`, `top` via React-rendered styles) instead of native frame writes. Performance drops 2–3×, but correctness holds. Never the default; a "broken glass" plan to keep shipping while the architectural fix lands.
+
+**Prioritization:**
+- **Tier 1 (do first, cheap):** #1 (abstraction layer — see B1.14) + #2 (CI matrix). Together ~3 days of setup. Pays off in every future RN bump.
+- **Tier 2 (medium, pays off when something breaks):** #3 (conformance harness) ~1 week. #5 (fallback mode) ~3 days.
+- **Tier 3 (architectural, requires evaluation):** #4 (UICollectionView migration — see B-uicollectionview-spike).
+
+**Effort:** Tier 1 ~3d, Tier 2 ~1.5w, Tier 3 see separate spike item.
+
+**Priority:** Tier 1 immediately, before Riff is positioned as production-grade. The CI matrix is what separates a hobby project from something teams can depend on.
+
+### B1.14 `RNFabricLayoutInterceptor` — unify creative Fabric overrides behind one adapter (B-fabric-interceptor)
+
+**Surfaced during:** architectural-stability discussion (2026-06-12).
+
+**Problem.** Riff's "creative" Fabric override (rejecting the origin in `updateLayoutMetrics:`) is implemented in three places today: `RNMeasuredCellView`, `RNCollectionViewContainerView`, `RNCollectionSubContainerView`. If Fabric changes the `updateLayoutMetrics:` signature in a future RN release, three files need updating under release pressure. Same applies to the Android port's `View.layout()` overrides.
+
+**Proposal.** Introduce one ObjC++ adapter `RNFabricLayoutInterceptor` (and one Kotlin/Java adapter `RNFabricLayoutInterceptor` on Android) that is the single entry point for all "Riff is overriding Fabric's positioning" logic. Every place that currently overrides `updateLayoutMetrics:` (or Android `View.layout()`) delegates to this adapter.
+
+**iOS sketch:**
+
+```objc
+@protocol RNExternallyPositioned <NSObject>
+@property (nonatomic, assign) BOOL shadowNodePositioned;
+- (CGRect)externalFrame;
+@end
+
+@interface RNFabricLayoutInterceptor : NSObject
+// Returns YES if Riff should override Fabric's metrics; outFrame is the LayoutCache-set frame.
++ (BOOL)shouldOverrideLayoutMetrics:(const facebook::react::LayoutMetrics&)metrics
+                            forView:(UIView<RNExternallyPositioned>*)view
+                           outFrame:(CGRect*)outFrame;
+
+// Single place to evolve the override policy (e.g., per-RN-version branching if needed).
+@end
+```
+
+Every view subclass's `updateLayoutMetrics:` override becomes a 3-line shim:
+
+```objc
+- (void)updateLayoutMetrics:(const LayoutMetrics&)metrics oldLayoutMetrics:(const LayoutMetrics&)oldMetrics {
+  CGRect overrideFrame;
+  if ([RNFabricLayoutInterceptor shouldOverrideLayoutMetrics:metrics forView:self outFrame:&overrideFrame]) {
+    LayoutMetrics adjusted = metrics;
+    adjusted.frame = facebook::react::Rect{ ... overrideFrame ... };
+    [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldMetrics];
+    return;
+  }
+  [super updateLayoutMetrics:metrics oldLayoutMetrics:oldMetrics];
+}
+```
+
+If Fabric changes the override signature (`updateLayoutMetrics:newMetrics:context:` for example, or splits into two methods), only `RNFabricLayoutInterceptor` and the shim signatures change — Riff's logic stays in one place.
+
+**Android sketch (same shape):**
+
+```kotlin
+object RNFabricLayoutInterceptor {
+  fun shouldOverrideLayout(view: RNExternallyPositioned, l: Int, t: Int, r: Int, b: Int): Rect? {
+    // Returns null if Fabric's coordinates should pass through; returns override rect otherwise.
+  }
+}
+
+// In the view subclass:
+override fun layout(l: Int, t: Int, r: Int, b: Int) {
+  val override = RNFabricLayoutInterceptor.shouldOverrideLayout(this, l, t, r, b)
+  if (override != null) {
+    super.layout(override.left, override.top, override.right, override.bottom)
+  } else {
+    super.layout(l, t, r, b)
+  }
+}
+```
+
+**Additional benefits beyond drift defense:**
+- **Diagnostic centralization.** All "Riff is fighting Fabric for positioning" decisions log through one place — easier to instrument, easier to add per-decision counters.
+- **Per-version branching.** If RN 0.85 changes mount-pipeline ordering and Riff needs a different override strategy, the branching lives in the adapter, not in every override site.
+- **Testing.** Unit-testable in isolation; doesn't require a full RN harness to verify the override policy.
+
+**Effort:** ~1–2d for iOS, ~1d for Android (if/when Android port is updated). The iOS refactor is straightforward — three call sites today, all become one-line delegations to the adapter. The "hard" part is correctly designing the adapter's interface so it doesn't need to change when override policy evolves.
+
+**Priority:** Tier 1 of B1.13's defense strategy. Land this before the CI matrix, so the CI matrix has one file (not three) to validate against new RN versions. Quick win.
+
+**Cross-references:** part of B1.13 (drift defense umbrella); useful even if B-uicollectionview-spike concludes the bigger architectural move makes sense — the adapter pattern still applies to the smaller surface area in that world.
+
 ---
 
 ## B2 — High-Impact Features (Remaining)
