@@ -8,7 +8,7 @@ import React, { useState } from 'react';
 import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import FeedComparisonTab from './comparison/FeedComparisonTab';
 
-type Engine = 'cv' | 'flash';
+type Engine = 'cv' | 'cv-ucv' | 'flash';
 
 export default function Comparison() {
   const [engine, setEngine] = useState<Engine>('cv');
@@ -21,6 +21,12 @@ export default function Comparison() {
           onPress={() => setEngine('cv')}
         >
           <Text style={[S.engineText, engine === 'cv' && S.engineTextActive]}>Riff</Text>
+        </Pressable>
+        <Pressable
+          style={[S.engineBtn, engine === 'cv-ucv' && S.engineBtnUCV]}
+          onPress={() => setEngine('cv-ucv')}
+        >
+          <Text style={[S.engineText, engine === 'cv-ucv' && S.engineTextUCV]}>Riff×UICV</Text>
         </Pressable>
         <Pressable
           style={[S.engineBtn, engine === 'flash' && S.engineBtnFlash]}
@@ -44,9 +50,11 @@ const S = StyleSheet.create({
   engineBtn:       { flex: 1, paddingVertical: 6, borderRadius: 6,
                      backgroundColor: '#1a1a1a', alignItems: 'center' },
   engineBtnActive: { backgroundColor: '#1e3a1e' },
+  engineBtnUCV:    { backgroundColor: '#1e2a3a' },
   engineBtnFlash:  { backgroundColor: '#3a1e1e' },
   engineText:      { fontSize: 12, fontWeight: '600', color: '#555' },
   engineTextActive:{ color: '#4ade80' },
+  engineTextUCV:   { color: '#60a5fa' },
   engineTextFlash: { color: '#f87171' },
 
   content:         { flex: 1 },

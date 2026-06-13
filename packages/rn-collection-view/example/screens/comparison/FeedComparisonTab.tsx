@@ -224,7 +224,7 @@ function TrackedFeedCell({ item }: { item: FeedItem }) {
 
 const LAYOUT = list({ estimatedItemHeight: 140 }); // measured by Yoga; estimate for Phase A windowing
 
-export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
+export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'cv-ucv' | 'flash' }) {
   const renderCount     = useRef(0);
   const prevOffsetRef   = useRef(0);
   const prevTimeRef     = useRef(0);
@@ -273,7 +273,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
       getScrollVelocity={getScrollVelocity}
       getBlankAreaPct={getBlankAreaPct}
       scrollRef={listRef}
-      engine={mode === 'cv' ? 'riff' : 'flash'}
+      engine={mode === 'flash' ? 'flash' : 'riff'}
       tab="feed"
       itemCount={FEED_DATA.length}
       itemHeight={140}
@@ -309,6 +309,7 @@ export default function FeedComparisonTab({ mode }: { mode: 'cv' | 'flash' }) {
         keyExtractor={item => String(item.id)}
         renderItem={renderItem}
         layout={LAYOUT}
+        experimental_useUICollectionView={mode === 'cv-ucv'}
         onBlankArea={({ offsetStart, offsetEnd }) => {
           const vpH = vpHeightRef.current;
           feedBlankAreaPct = vpH > 0
