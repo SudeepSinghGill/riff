@@ -195,12 +195,17 @@ using namespace facebook::react;
 // ── Child management ────────────────────────────────────────────────────────
 // Children from React are mounted into _contentView, not directly into self.
 
+- (UIView *)contentViewForChildMounting { return _contentView; }
+
 - (void)mountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
                           index:(NSInteger)index
 {
   RNCV_LOG("mountChild index=%ld tag=%ld beforeSubviews=%lu",
            (long)index, (long)childComponentView.tag, (unsigned long)_contentView.subviews.count);
-  [_contentView insertSubview:childComponentView atIndex:index];
+  UIView *target = [RNFabricLayoutInterceptor mountTargetForChild:childComponentView
+                                                      inContainer:self
+                                                    defaultTarget:self];
+  [target insertSubview:childComponentView atIndex:index];
 
   // Pass layoutCacheId to sticky children so they can read positions directly
   // from the LayoutCache in updateLayoutMetrics: (bypasses async state update).

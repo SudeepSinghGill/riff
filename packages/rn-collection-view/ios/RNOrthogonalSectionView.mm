@@ -290,11 +290,14 @@ using namespace facebook::react;
 - (void)updateLayoutMetrics:(const facebook::react::LayoutMetrics &)layoutMetrics
            oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
 {
+  CGRect incoming = CGRectMake(layoutMetrics.frame.origin.x, layoutMetrics.frame.origin.y,
+                               layoutMetrics.frame.size.width, layoutMetrics.frame.size.height);
+  RNLayoutInterceptDecision d = [RNFabricLayoutInterceptor decisionForView:self incomingFrame:incoming];
   auto adjusted = layoutMetrics;
-  if (_shadowNodePositioned) {
-    adjusted.frame.origin.x = self.frame.origin.x;
-    adjusted.frame.origin.y = self.frame.origin.y;
-  }
+  adjusted.frame.origin.x    = d.adjustedFrame.origin.x;
+  adjusted.frame.origin.y    = d.adjustedFrame.origin.y;
+  adjusted.frame.size.width  = d.adjustedFrame.size.width;
+  adjusted.frame.size.height = d.adjustedFrame.size.height;
   [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldLayoutMetrics];
 }
 
@@ -302,11 +305,16 @@ using namespace facebook::react;
 // Fabric mounts H-section cells as children of this view.
 // They land in _contentView, absolutely positioned along the H axis.
 
+- (UIView *)contentViewForChildMounting { return _contentView; }
+
 - (void)mountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
                           index:(NSInteger)index
 {
   CFTimeInterval t0 = CACurrentMediaTime();
-  [_contentView insertSubview:childComponentView atIndex:index];
+  UIView *target = [RNFabricLayoutInterceptor mountTargetForChild:childComponentView
+                                                      inContainer:self
+                                                    defaultTarget:self];
+  [target insertSubview:childComponentView atIndex:index];
   CFTimeInterval dt = CACurrentMediaTime() - t0;
 #if RNCV_HGEST_LOGS
   [HGestWorkAggregator addMountMs:dt * 1000.0];

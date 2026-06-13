@@ -3,6 +3,8 @@
 #import <React/RCTViewComponentView.h>
 #import <UIKit/UIKit.h>
 
+#import "RNFabricLayoutInterceptor.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /**
@@ -18,7 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
  * Scroll events (when scrollable) fire onSubScroll, which JS uses to invoke
  * the layout's processScroll() (e.g. radial drives rotation from scroll).
  */
-@interface RNCollectionSubContainerView : RCTViewComponentView <UIScrollViewDelegate>
+@interface RNCollectionSubContainerView : RCTViewComponentView <UIScrollViewDelegate, RNFullFrameExternallyPositioned, RNContentViewProvider>
 
 /// Set to YES by the parent container's applyPositionsFromState when the
 /// ShadowNode has positioned this wrapper from the LayoutCache. Prevents

@@ -3,6 +3,8 @@
 #import <React/RCTViewComponentView.h>
 #import <UIKit/UIKit.h>
 
+#import "RNFabricLayoutInterceptor.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /**
@@ -22,7 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
  *   sticky: translateY = max(0, scrollY - naturalY)
  *   push:   translateY = max(0, min(scrollY - naturalY, boundaryY - naturalY - headerHeight))
  */
-@interface RNScrollCoordinatedViewView : RCTViewComponentView
+@interface RNScrollCoordinatedViewView : RCTViewComponentView <RNCacheBasedOrigin>
 
 /// Set by the container so this view can read positions directly from
 /// the LayoutCache in updateLayoutMetrics: (bypasses async state update).

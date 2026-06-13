@@ -3,6 +3,8 @@
 #import <React/RCTViewComponentView.h>
 #import <UIKit/UIKit.h>
 
+#import "RNFabricLayoutInterceptor.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /**
@@ -16,7 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
  * On every H scroll tick, fires onHScroll({ sectionIndex, scrollX }) so JS
  * can call processHScroll(sectionIndex, scrollX) to update the render range.
  */
-@interface RNOrthogonalSectionView : RCTViewComponentView <UIScrollViewDelegate>
+@interface RNOrthogonalSectionView : RCTViewComponentView <UIScrollViewDelegate, RNExternallyPositioned, RNContentViewProvider>
 
 /**
  * Set to YES by RNCollectionViewContainerView.applyPositionsFromState when the

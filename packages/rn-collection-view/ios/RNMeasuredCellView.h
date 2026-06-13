@@ -3,6 +3,8 @@
 #import <React/RCTViewComponentView.h>
 #import <UIKit/UIKit.h>
 
+#import "RNFabricLayoutInterceptor.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /**
@@ -19,7 +21,7 @@ NS_ASSUME_NONNULL_BEGIN
  *   useLayoutEffect → ref.measure() (bridge call) → RAF batch → setMeasuredVersion
  * and replaces it with a single direct event that arrives before the first paint.
  */
-@interface RNMeasuredCellView : RCTViewComponentView
+@interface RNMeasuredCellView : RCTViewComponentView <RNExternallyPositioned>
 
 /**
  * Set to YES by RNCollectionViewContainerView.applyPositionsFromState when this

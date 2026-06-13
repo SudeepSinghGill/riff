@@ -3,6 +3,8 @@
 #import <React/RCTViewComponentView.h>
 #import <UIKit/UIKit.h>
 
+#import "RNFabricLayoutInterceptor.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /**
@@ -16,7 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
  *
  * Phase 1: Basic UIScrollView wrapper, children rendered inside scroll content.
  */
-@interface RNCollectionViewContainerView : RCTViewComponentView <UIScrollViewDelegate>
+@interface RNCollectionViewContainerView : RCTViewComponentView <UIScrollViewDelegate, RNContentViewProvider>
 
 @end
 

@@ -97,16 +97,11 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
 // self.frame.origin includes the transform (visual position), NOT the natural
 // position.  We must compute the natural origin from center/bounds.
 
-- (void)updateLayoutMetrics:(const facebook::react::LayoutMetrics &)layoutMetrics
-           oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
+- (CGPoint)cacheBasedOrigin
 {
-  auto adjusted = layoutMetrics;
   CGFloat naturalX = self.center.x - self.bounds.size.width * 0.5f;
   CGFloat naturalY = self.center.y - self.bounds.size.height * 0.5f;
 
-  // If we have a layoutCacheId and cacheKey, read the definitive position directly
-  // from the cache. The LayoutCache is updated synchronously on the BG thread
-  // before the Fabric commit, making it the most current layout state.
   std::shared_ptr<rncv::LayoutCache> cache = _layoutCacheId != 0 ?
       facebook::react::layoutCacheForId(_layoutCacheId) : nullptr;
 
@@ -120,8 +115,18 @@ static inline bool isPush(RNScrollCoordinatedViewBehavior b) {
     }
   }
 
-  adjusted.frame.origin.x = naturalX;
-  adjusted.frame.origin.y = naturalY;
+  return CGPointMake(naturalX, naturalY);
+}
+
+- (void)updateLayoutMetrics:(const facebook::react::LayoutMetrics &)layoutMetrics
+           oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
+{
+  CGRect incoming = CGRectMake(layoutMetrics.frame.origin.x, layoutMetrics.frame.origin.y,
+                               layoutMetrics.frame.size.width, layoutMetrics.frame.size.height);
+  RNLayoutInterceptDecision d = [RNFabricLayoutInterceptor decisionForView:self incomingFrame:incoming];
+  auto adjusted = layoutMetrics;
+  adjusted.frame.origin.x = d.adjustedFrame.origin.x;
+  adjusted.frame.origin.y = d.adjustedFrame.origin.y;
   [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldLayoutMetrics];
   [self _applyTransform];
 }

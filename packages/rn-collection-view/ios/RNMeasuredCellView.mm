@@ -154,17 +154,14 @@ using namespace facebook::react;
 - (void)updateLayoutMetrics:(const facebook::react::LayoutMetrics &)layoutMetrics
            oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
 {
+  CGRect incoming = CGRectMake(layoutMetrics.frame.origin.x, layoutMetrics.frame.origin.y,
+                               layoutMetrics.frame.size.width, layoutMetrics.frame.size.height);
+  RNLayoutInterceptDecision d = [RNFabricLayoutInterceptor decisionForView:self incomingFrame:incoming];
   auto adjusted = layoutMetrics;
-  if (_shadowNodePositioned) {
-    // ShadowNode (applyPositionsFromState) is the position authority for V-section
-    // cells that are direct children of RNCollectionViewContainerView.
-    // Preserve the native origin — it was set by applyPositionsFromState and is
-    // the source of truth. Only let Yoga-measured SIZE through.
-    adjusted.frame.origin.x = self.frame.origin.x;
-    adjusted.frame.origin.y = self.frame.origin.y;
-  }
-  // else: Fabric/Yoga CSS absolute position is the authority (H-section cells inside
-  // RNOrthogonalSectionView). Let layoutMetrics.frame.origin through unchanged.
+  adjusted.frame.origin.x    = d.adjustedFrame.origin.x;
+  adjusted.frame.origin.y    = d.adjustedFrame.origin.y;
+  adjusted.frame.size.width  = d.adjustedFrame.size.width;
+  adjusted.frame.size.height = d.adjustedFrame.size.height;
   [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldLayoutMetrics];
 
 #if DEBUG && RNCV_DEBUG_COLLECTION_VISUALS

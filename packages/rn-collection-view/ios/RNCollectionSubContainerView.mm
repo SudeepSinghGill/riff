@@ -356,31 +356,14 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
            oldLayoutMetrics:(const facebook::react::LayoutMetrics &)oldLayoutMetrics
 {
   RNHGEST_TRACE_ENTER("updateLayoutMetrics");
+  CGRect incoming = CGRectMake(layoutMetrics.frame.origin.x, layoutMetrics.frame.origin.y,
+                               layoutMetrics.frame.size.width, layoutMetrics.frame.size.height);
+  RNLayoutInterceptDecision d = [RNFabricLayoutInterceptor decisionForView:self incomingFrame:incoming];
   auto adjusted = layoutMetrics;
-  if (_shadowNodePositioned) {
-    // Authoritative geometry is set by the parent main container's
-    // applyPositionsFromState — preserve it through subsequent commits.
-    // See file-header comment block on Yoga vs. layout-cache authority.
-    adjusted.frame.origin.x    = self.frame.origin.x;
-    adjusted.frame.origin.y    = self.frame.origin.y;
-    adjusted.frame.size.width  = self.frame.size.width;
-    adjusted.frame.size.height = self.frame.size.height;
-  } else if (self.frame.size.height > 0 && self.frame.size.width > 0) {
-    // Defensive sub-pixel filter for the brief window before the parent has
-    // claimed authority via shadowNodePositioned=YES (first commit only).
-    //
-    // C++ finalizeHSection rounds & hysteresis-stabilizes the wrapper height
-    // in the layout cache (see CompositionalLayout::finalizeHSection), so
-    // by the time the parent's applyPositionsFromState runs, the height is
-    // already integer-point and stable across MVC cycles. This filter is
-    // a backstop: if Yoga ever proposes a height delta < 0.5pt in this
-    // pre-positioned window, ignore it. Real layout deltas are >= 1pt and
-    // pass through unchanged.
-    const CGFloat dh = std::abs((CGFloat)layoutMetrics.frame.size.height - self.frame.size.height);
-    const CGFloat dw = std::abs((CGFloat)layoutMetrics.frame.size.width  - self.frame.size.width);
-    if (dh < 0.5f) adjusted.frame.size.height = self.frame.size.height;
-    if (dw < 0.5f) adjusted.frame.size.width  = self.frame.size.width;
-  }
+  adjusted.frame.origin.x    = d.adjustedFrame.origin.x;
+  adjusted.frame.origin.y    = d.adjustedFrame.origin.y;
+  adjusted.frame.size.width  = d.adjustedFrame.size.width;
+  adjusted.frame.size.height = d.adjustedFrame.size.height;
   [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldLayoutMetrics];
   RNHGEST_TRACE_EXIT("updateLayoutMetrics");
 }
@@ -606,11 +589,16 @@ static NSString *_hScrollKey(int32_t cacheId, int32_t sectionIdx) {
 // frame compares per mount. With our typical N (cells-in-window ≈ 5–8)
 // this is well below the cost of one extra CA commit.
 
+- (UIView *)contentViewForChildMounting { return _contentView; }
+
 - (void)mountChildComponentView:(UIView<RCTComponentViewProtocol> *)childComponentView
                           index:(NSInteger)index
 {
   RNHGEST_TRACE_ENTER("mountChildComponentView");
-  [_contentView insertSubview:childComponentView atIndex:index];
+  UIView *target = [RNFabricLayoutInterceptor mountTargetForChild:childComponentView
+                                                      inContainer:self
+                                                    defaultTarget:self];
+  [target insertSubview:childComponentView atIndex:index];
   [self _applyChildVisualStates];
   RNHGEST_TRACE_EXIT("mountChildComponentView");
 }
