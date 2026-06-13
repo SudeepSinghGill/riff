@@ -741,6 +741,14 @@ export interface RiffProps<T = unknown> {
    * Default false (opt-in).
    */
   maintainVisibleContentPosition?: boolean;
+
+  /**
+   * @experimental iOS only. When true, backs the V-list rendering with a
+   * UICollectionView instead of the default UIScrollView+subviews path.
+   * Use only with layout={list()} and no sections.
+   * Enables 3-way bench in FeedComparisonTab (Riff / Riff×UICV / FlashList).
+   */
+  experimental_useUICollectionView?: boolean;
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -1203,6 +1211,7 @@ function RiffBase<T = unknown>({
   initialWidth,
   initialHeight,
   maintainVisibleContentPosition = false,
+  experimental_useUICollectionView = false,
 }: RiffProps<T>, ref: React.ForwardedRef<RiffHandle<T>>) {
 
   // ── H-1 debug: 1-second JS health summary ──────────────────────────────────
@@ -3684,6 +3693,7 @@ function RiffBase<T = unknown>({
         sectionInsetBottom={sectionInsetBottom}
         sectionInsetLeft={sectionInsetLeft}
         sectionInsetRight={sectionInsetRight}
+        experimental_useUICollectionView={experimental_useUICollectionView}
         scrollEnabled={scrollViewProps?.scrollEnabled ?? true}
         bounces={scrollViewProps?.bounces ?? true}
         horizontal={effectiveLayout.horizontal ?? false}

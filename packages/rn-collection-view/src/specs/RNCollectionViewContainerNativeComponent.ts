@@ -74,6 +74,10 @@ interface NativeProps extends ViewProps {
   // Scroll offset correction when items above viewport change height.
   maintainVisibleContentPosition?: WithDefault<boolean, true>;
 
+  // When true, use UICollectionView as the rendering backend (iOS POC).
+  // V-list only; requires layout={list()} with no sections.
+  experimental_useUICollectionView?: WithDefault<boolean, false>;
+
   // Scroll axis — when true, UIScrollView scrolls horizontally.
   horizontal?: WithDefault<boolean, false>;
 
