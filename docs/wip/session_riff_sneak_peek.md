@@ -175,14 +175,15 @@ For each: 30s of *where, what, why*.
 
 ### R2.1 — ① `CollectionViewContainerShadowNode::layout()`
 
-- `cpp/CollectionViewContainerShadowNode.h:64`, `.cpp:99–122`
+- Declared `cpp/CollectionViewContainerShadowNode.h:76`; defined `.cpp:187–215`.
 - Fabric calls this once per commit. Riff calls `correctChildPositionsIfNeeded()` → `updateStateIfNeeded()`.
-- **Hash short-circuit (validated):** `shouldSkipCorrection()` at `.cpp:51–97` — 4-field hash (cache version, child count, child tags, Yoga frames). All match → whole correction is a no-op.
+- **6-signal short-circuit (validated):** `shouldSkipCorrection()` at `.cpp:132–185` — checks (1) JS-side `props.layoutCacheVersion`, (2) `cache->version()` (global), (3) `cache->vVersion()` (V container's own batched writes), (4) child count, (5) tag hash, (6) Yoga-frame hash. All match → whole correction is a no-op. Three cache counters exist (`_version`, `_vVersion`, `_hMvcVersion`); V container watches `_version` + `_vVersion`, H sub-containers watch `_version` + `_hMvcVersion`. The split prevents V scroll's height corrections from invalidating every sub-container's skip-check and vice versa.
 
 ### R2.2 — ② `applyPositionsFromState:` (tag→UIView map)
 
-- `ios/RNCollectionViewContainerView.mm:535–661`
+- `ios/RNCollectionViewContainerView.mm:547–695`. Tag→view map built at `:583–587`; per-cell frame-apply loop at `:609–694`.
 - Reads `state.childTags[]` and `state.positions[]`. Builds `NSMutableDictionary tagToView`. Sets `child.frame` *by tag*, not by subview index. See R5 for the bug this fixes.
+- The per-cell visual-attrs block (alpha / zIndex / transform3D) is **gated behind `layoutWritesVisualAttributes`** — for static layouts (list/grid/masonry/flow) the bulk-attrs read + three CALayer writes per cell are skipped entirely. See R7.1.
 
 ### R2.3 — ③ `updateLayoutMetrics:` on `RNMeasuredCellView` *(honest framing)*
 
@@ -191,14 +192,15 @@ For each: 30s of *where, what, why*.
 
 ### R2.4 — ④ `scrollViewDidScroll:` *(honest framing)*
 
-- `ios/RNCollectionViewContainerView.mm:346–385` (V), `ios/RNCollectionSubContainerView.mm:1023` (H)
-- Both delegates throttle and fire a JS-side scroll event. Neither calls C++ `processScroll` directly via JSI from the delegate. JS receives the event and calls `nativeWindowController.processScroll` / `processHScroll` in response.
+- V: `ios/RNCollectionViewContainerView.mm:358–398`. H sub-container: `ios/RNCollectionSubContainerView.mm:1023–1044`.
+- Both delegates throttle and fire a JS-side scroll event. Neither calls C++ `processScroll` directly via JSI from the delegate. JS receives the event and calls `nativeWindowController.processScroll` (`CollectionView.tsx:1903`) / `processHScroll` (`:2583`) in response.
+- One asymmetry worth surfacing: the V delegate additionally writes scroll offset into the LayoutCache (`cache->setScrollOffset(...)`) on every untrottled tick, so the ShadowNode's next layout pass reads a consistent value. The H delegate does not — H scroll offsets aren't consumed by C++ position math at the container layer.
 - The band-skip lives in *JS render-range computation*: if the returned render range and cache version are unchanged from the previous tick, JS early-returns with no React work.
-- The V/H asymmetry is in *what C++ does* inside `processScroll`, not who calls it: for static layouts (`list`/`grid`/`masonry`/`flow`) it's an O(log n) render-range binary search with no position recomputation; for scroll-driven dynamic layouts (`radial`/`carousel3D`/`spiral`/`hex`, currently used only as H section types) it recomputes per-item frame/transform/alpha at the new scroll offset, because those layouts' geometry is a function of scroll position.
+- **C++ `processScroll` is always a pure range query** — binary search (contiguous layouts) or spatial query, returns range + flat frames array. It never recomputes visual attributes. Scroll-driven dynamic layouts (`radial`, `carousel3D`, `spiral`) live in TypeScript inside a `CollectionSubContainer`; they implement their own per-tick `processScroll(offset, ctx)` that writes new alpha/transform/zIndex into the LayoutCache via `setAttributesBatch`. `hex` is a static tile layout, no per-tick recompute.
 
 ### R2.5 — ⑤ KVO on `contentOffset` for sticky views
 
-- `ios/RNScrollCoordinatedView.mm:219–242`, `259–267`
+- File: `ios/RNScrollCoordinatedViewView.mm` (note the doubled "View" in the filename). KVO add at `:232–237`; callback at `:259–267`.
 - `addObserver:forKeyPath:@"contentOffset"`. Separate from the delegate chain (which the container already owns).
 - **Single instance** per sticky — one view, transformed; not a duplicate floating copy.
 
@@ -231,26 +233,28 @@ Anchor for each: *"where is the JS thread during this?"* — three of the four f
 
 - **`renderMultiplier`** (consumer prop, default **0.5**) — how much beyond the visible viewport to *want* in the render range. With default, render range ≈ visible + 0.5× vp leading + 0.5× vp trailing = 2× vp wide.
 
-- **`mountedWindowSize`** (consumer prop, default **2.0**) — a **hard cap** on the resulting render range, *not* a separate concentric ring. `applyBudget` (CollectionView.tsx:760–780) trims render range if it would exceed `mountedWindowSize × vpHeight`. At defaults the two align.
+- **`mountedWindowSize`** (consumer prop, default **2.0**) — a **hard cap** on the resulting render range, *not* a separate concentric ring. `applyBudget` (CollectionView.tsx:778+) trims render range if it would exceed `mountedWindowSize × vpHeight`. At defaults the two align. *(JSDoc on the prop at `:502` says "Default 5.0" — that comment is stale; runtime default is 2.0.)*
   - **Why have both knobs when defaults align?** Three reasons:
     1. *Different intent* — `renderMultiplier` expresses behaviour ("how much prefetch I want"); `mountedWindowSize` expresses safety ("absolute mount ceiling").
-    2. *Memory-pressure response is asymmetric* — CollectionView.tsx:1445 applies `memoryMultiplier` to `mountedWindowSize` only. The system shrinks the cap silently under pressure without rewriting the consumer's stated prefetch intent.
+    2. *Memory-pressure response is asymmetric* — CollectionView.tsx:1474 applies `memoryMultiplier` to `mountedWindowSize` only. The system shrinks the cap silently under pressure without rewriting the consumer's stated prefetch intent.
     3. *Trim policy* — `applyBudget` (symmetric around visible midpoint, visible always preserved) belongs to the ceiling, not the prefetch knob.
   - Honest framing for the talk: "two knobs where most libraries have one — API complexity vs. clean separation of intent and safety; in practice the cap rarely fires."
 
 - **`measureAhead`** (consumer prop, default **0 = OFF**) — adds a separate band ahead of the render range where slots mount with `Activity=hidden` so Yoga can measure them early. Disabled in the default config and in the perf bench.
 
-- **`recyclePoolSize`** (consumer prop, default **auto**) — per-`getItemType` LIFO afterlife. Auto formula: `max(renderRangeSize, maxHWindow × 2, 8)`, recomputed every `sync()` — tracks viewport changes automatically; no consumer wiring for rotation. The `maxPoolSize = 4` in `SlotManager.ts:74` is the pre-first-sync placeholder.
+- **`recyclePoolSize`** (consumer prop, default **auto**) — per-`getItemType` LIFO afterlife. Auto formula: `max(renderRangeSize, maxHWindow × 2, 8)` at `CollectionView.tsx:3230–3233`, recomputed every `sync()` — tracks viewport changes automatically; no consumer wiring for rotation. The `maxPoolSize = 4` in `SlotManager.ts:80` is the pre-first-sync placeholder.
+
+- **`crossSectionRecycling`** (consumer prop, default `true`) — pool keying strategy. When `true`, slot pools are keyed by `itemType` alone → a slot evicted by section A can be reclaimed by section B if they share `getItemType`. When `false`, pools are keyed by `(sectionIndex, itemType)` → each section keeps a private pool. Set to `false` when the same widget type is used everywhere on a feed and cross-section churn dominates (the storefront bench case). Runtime-tunable via `setCrossSectionRecycling()` without unmounting anything. Wired into the demo `PerfHood`.
 
 #### H-section windowing in compositional layouts
 
 A beat worth its own slide:
 - **V is global** — one render range across the whole list
 - **H is per-section** — each H section runs its own `processHScroll` with its own render range, cacheVersion, band-skip
-- Multiplier precedence: `section.renderMultiplier ?? hRenderMultiplier ?? renderMultiplier ?? 0.5`
-- H cells inside V range but outside their section's H range go to the pool via SlotManager's `excludeIndices` (CollectionView.tsx:3198)
+- Multiplier precedence (`CollectionView.tsx:2580–2582`): `section.renderMultiplier ?? hRenderMultiplier ?? renderMultiplier ?? 0.5`
+- H cells inside V range but outside their section's H range go to the pool via SlotManager's `excludeIndices` (built at `CollectionView.tsx:3251+`, passed into `SlotManager.sync(...)` at `:3346`)
 
-Sources: `CollectionView.tsx` (props 1156–1158, MVC 1445, ranges 2258–2309, auto-pool 3188–3196), `SlotManager.ts`.
+Sources: `CollectionView.tsx` (prop JSDoc at `:480–556`, defaults at `:1177–1183`, memoryMultiplier at `:1466 + 1474`, auto-pool at `:3230–3233`, exclude indices at `:3251+`), `SlotManager.ts`.
 
 ### R4.2 — Lifecycle, honest version *(load-bearing slide)*
 
@@ -272,10 +276,12 @@ Sources: `CollectionView.tsx` (props 1156–1158, MVC 1445, ranges 2258–2309, 
               REMOVED from activeSlots  (React finally drops the Fiber)
 ```
 
-- "Activity=hidden in mounted cap but outside render range" is *only* a thing when `measureAhead > 0`. With the default `measureAhead=0`, nothing is pre-mounted ahead; only the pool retains slots backward.
-- **Primary unmount** = Phase 2 (SlotManager.ts:207–211, "pool full → push fails → delete").
-- **Defensive unmount** = Phase 4 (294–304, "maxPoolSize was reduced dynamically → trim excess"). Only fires when `recyclePoolSize` is changed or the auto-formula's window shrank.
-- Within the pool, slot keeps its Fiber. React `key={slotKey}` (CollectionView.tsx:3399) is stable; same data returning → routed back to its slot via `dataKeyToSlot` (SlotManager.ts:71) → prop update, no remount.
+- "Activity=hidden in mounted cap but outside render range" is *only* a thing when `measureAhead > 0`. With the default `measureAhead=0`, nothing is pre-mounted ahead; only the pool retains evicted slots (direction-agnostic).
+- **Primary unmount** = Phase 2 (SlotManager.ts:206–233; the delete is line 229, "pool full → push fails → delete").
+- **Defensive unmount** = Phase 4 (`SlotManager.ts:321–332`; delete at 328, "maxPoolSize was reduced dynamically → trim excess"). Only fires when `recyclePoolSize` is changed or the auto-formula's window shrank.
+- Within the pool, slot keeps its Fiber. React `key={slotKey}` flows through `renderCell(..., slotKey)` at `CollectionView.tsx:3436` and is consumed at `:2780–2781`; same data returning → routed back to its slot via `dataKeyToSlot` (SlotManager.ts:77) → prop update, no remount.
+
+> **Subtle bug worth a 30-second aside.** Skip-correction state (`lastCacheVersion_`, `lastVVersion_`, `lastHMvcVersion_`, hashes) lives on the ShadowNode instance. Fabric clones ShadowNodes on every commit using the `(source, fragment)` clone constructor — **not** the C++ default copy ctor (which is `=delete`d by Fabric). Riff's two ShadowNode subclasses each need an explicit clone ctor that field-by-field propagates the `lastXxx_` state. Without it, every clone resets state to defaults and `shouldSkipCorrection()` silently returns false forever — 0% skip rate. Both `CollectionViewContainerShadowNode.cpp:118–130` and `CollectionSubContainerShadowNode.cpp:166–178` carry these explicit ctors now; the bug was latent before the perf push.
 
 ### R4.3 — The "aha"
 
@@ -298,7 +304,7 @@ Different memory profile (Riff 2–3× lower in the bench). Different state sema
 
 - `Activity` is only on RN 0.83+. CollectionView.tsx:51–56 has `const Activity = (React as any).Activity | undefined` with a `<>{children}</>` fallback at line 1016.
 - On RN < 0.83 the fallback renders the cell normally. The cell's React component runs, `useEffect` fires, Yoga measures — full mount cost. UIScrollView clips it visually but compute is unsaved.
-- The `top:-9999` references in CollectionView.tsx (lines 14, 506, 2742) are **stale comments** from an earlier design. There is no actual offscreen-parking styling in code. Don't repeat the README's "graceful degradation via top:-9999" claim; it isn't true.
+- There is no `top:-9999` offscreen-parking implementation in code (a `grep -n "9999"` against `CollectionView.tsx` returns only `zIndex: 9999` for the HUD and sentinel max-values). The README has been updated to describe the pre-0.83 fallback honestly (Fragment + UIScrollView clip); don't repeat any earlier `top:-9999` claim.
 - **There is no clean Activity substitute** — Activity is the only React primitive that suspends a subtree's rendering while keeping its Fiber alive. The honest message: "On RN 0.83+ Activity unlocks the pool's compute benefit. Pre-0.83 the pool is a memory-only optimisation; we may want to clamp `maxPoolSize=0` to avoid the auto-pool keeping many cells alive that all re-render on every parent reconcile." (Filed as backlog item B-pre83-pool.)
 
 ---
@@ -348,7 +354,7 @@ Different memory profile (Riff 2–3× lower in the bench). Different state sema
 
 ### R7.2 — Honest gaps *(this slide builds trust)*
 
-- **`invalidateItem` is misleading.** README §9 frames it as targeted invalidation from `(section, index)`. Implementation (CollectionView.tsx:2148–2157) ignores both arguments — it's a global render-gen bump that re-renders all window cells. Yoga ends up re-measuring everything in the window. Works in practice; the API is more honestly named `invalidateWindow()`. (Filed as **B-invalidate-api-truth**.)
+- **`invalidateItem` is misleading.** README §9 frames it as targeted invalidation from `(section, index)`. Implementation at `CollectionView.tsx:2177–2186` literally has `void sectionIndex; void itemIndex;` on line 2183 and only bumps `setLayoutCacheVersion` + `setInvalidateTrigger`. The `i` passed to C++ `invalidateFrom` is determined later by which cell Yoga remeasures during `applyMeasurements`, not by the caller. User-visible behaviour is correct (only the tail reflows) but the API is more honestly named `invalidateWindow()`. README now discloses this in its #9 truthfulness note. (Filed as **B-invalidate-api-truth**.)
 - **TS `customLayout` has a known correction bug.** README §12 admits this. `correctChildPositionsIfNeeded` reads Yoga sequential positions for custom-layout cells instead of layout-provided positions → stacking. Planned milestone.
 - **Static invalidation has ~33ms detection lag.** README §13. Double-RAF poll. Direct native callback is on the roadmap.
 
@@ -363,9 +369,9 @@ Different memory profile (Riff 2–3× lower in the bench). Different state sema
 
 Three short ones. Point at the *shape*, not the details.
 
-1. **`cpp/CollectionViewContainerShadowNode.cpp:99–122`** — show how few lines the `layout()` override is. The whole hot path fits on one screen.
-2. **`ios/RNCollectionViewContainerView.mm:571–626`** — the tag→UIView map. Show the loop, point at `tagToView[@(childTags[i])]`.
-3. **`src/components/SlotManager.ts:200–304`** — the Phase 2 / Phase 4 split. Highlight line 300 (the unmount point).
+1. **`cpp/CollectionViewContainerShadowNode.cpp:187–215`** — show how few lines the `layout()` override is. The whole hot path fits on one screen.
+2. **`ios/RNCollectionViewContainerView.mm:583–614`** — the tag→UIView map build + frame-apply loop. Point at `tagToView[@(childTags[i])]`.
+3. **`src/components/SlotManager.ts:200–332`** — the Phase 2 / Phase 4 split. Highlight line 229 (Phase 2 unmount) and line 328 (Phase 4 trim).
 
 ---
 
@@ -373,16 +379,20 @@ Three short ones. Point at the *shape*, not the details.
 
 | Question | File:line |
 |---|---|
-| Where is the ShadowNode override? | `cpp/CollectionViewContainerShadowNode.cpp:99` |
-| Where does unmount actually happen? | `src/components/SlotManager.ts:207–211` (primary), `294–304` (defensive) |
-| Where's the band-skip? | C++: `cpp/CollectionViewContainerShadowNode.cpp:51–97`. JS: `CollectionView.tsx` (renderGen + cacheVersion equality) |
-| Where's the tag-map fix? | `ios/RNCollectionViewContainerView.mm:571–626` |
-| Where's the JSI surface? | `cpp/CollectionViewModule.cpp:541, 1209–1306` + registries 42–97 |
-| Where's the slot pool? | `src/components/SlotManager.ts:70–303` |
-| Where's MVC? | `cpp/LayoutCache.h:256–313` + `ios/RNCollectionViewContainerView.mm:331` |
-| Auto-pool-size formula? | `src/components/CollectionView.tsx:3188–3196` |
-| `applyBudget` trim policy? | `src/components/CollectionView.tsx:760–780` |
-| Per-section H windowing? | `src/components/CollectionView.tsx:484–492` (props), `2549–2558` (handler), `3251` (precedence) |
+| Where is the ShadowNode override? | `cpp/CollectionViewContainerShadowNode.cpp:187` |
+| Where does unmount actually happen? | `src/components/SlotManager.ts:206–233` (primary, delete at `:229`), `321–332` (defensive, delete at `:328`) |
+| Where's the band-skip? | C++: `cpp/CollectionViewContainerShadowNode.cpp:132–185` (6-signal). JS: `CollectionView.tsx` (renderGen + cacheVersion equality) |
+| Where's the tag-map fix? | `ios/RNCollectionViewContainerView.mm:583–614` |
+| Where's the JSI surface? | `cpp/CollectionViewModule.cpp:541` (`processScroll`), `1209–1306` (`scrollTo*`) + registries `42–97` |
+| Where does JS call into JSI? | `CollectionView.tsx:1903` (V `processScroll`), `:2583` (H `processHScroll`) |
+| Where's the slot pool? | `src/components/SlotManager.ts:70–332` |
+| Where's MVC? | `cpp/LayoutCache.h` (MVC fields) + `ios/RNCollectionViewContainerView.mm` (delegate hooks) |
+| Auto-pool-size formula? | `src/components/CollectionView.tsx:3230–3233` |
+| `applyBudget` trim policy? | `src/components/CollectionView.tsx:778+` |
+| Per-section H windowing? | `src/components/CollectionView.tsx:480–556` (JSDoc), `2557+` (handler), `2580–2582` (precedence) |
+| Three cache versions? | `cpp/LayoutCache.h:410–412` declares `_version`, `_hMvcVersion`, `_vVersion`; `LayoutCache.cpp:82–107` is `endBatch`/`endHBatch`/`endVBatch` |
+| `crossSectionRecycling` pool keying? | `src/components/SlotManager.ts:91, 410` (`_poolKey`), `CollectionView.tsx:556, 1183, 1407` (prop plumbing) |
+| `writesVisualAttributes` gate? | `cpp/LayoutEngine.h:125` (flag), `ios/RNCollectionViewContainerView.mm:594–606 + 672–693` (native gated path), `src/types/protocol.ts:146` (TS) |
 
 ---
 
@@ -398,17 +408,20 @@ Within each H FlashList instance, RLV's per-section recycler keeps cards stable 
 
 ---
 
-## Deviations from the README (be honest in the talk)
+## Deviations from the README (status)
 
-Validated as wrong/overstated. Session reflects code reality, not README.
+Originally compiled during plan validation. The current README has been edited to fix most of these; the table below tracks the residual gaps (if any) as of this revision.
 
-1. **`scrollViewDidScroll:` does not call C++ `processScroll` synchronously.** Writes scroll offset to LayoutCache + throttled JS event. Band-skip is in JS render-range logic.
-2. **`invalidateItem(section, index)` ignores both arguments.** Global render-gen bump → all window cells re-render.
-3. **`updateLayoutMetrics:` is an origin guard, not a "Yoga vs. cache" arbitration.**
-4. **Slot unmount is not at the render-window edge.** Activity=hidden → pool → only true unmount on per-type pool overflow.
-5. **"Three concentric windows" framing is misleading.** `mountedWindowSize` is a ceiling on the render range itself, not a ring.
-6. **Pool default does auto-track window size** (README correct); the `maxPoolSize=4` in SlotManager is a pre-first-sync placeholder.
-7. **"Graceful degradation via top:-9999"** is not in code; only `<>{children}</>` fragment fallback exists.
+1. **`scrollViewDidScroll:` does not call C++ `processScroll` synchronously.** README now describes this honestly — V delegate writes scroll offset to LayoutCache + emits throttled JS event; JS then calls `processScroll`/`processHScroll`. **Fixed.**
+2. **`invalidateItem(section, index)` ignores both arguments.** README §9 now carries an explicit truthfulness note. **Fixed.**
+3. **`updateLayoutMetrics:` is an origin guard, not a "Yoga vs. cache" arbitration.** README now describes it as an origin guard. **Fixed.**
+4. **Slot unmount is not at the render-window edge.** README now describes pool-overflow as the unmount trigger. **Fixed.**
+5. **"Three concentric windows" framing.** README now uses two-knobs + ceiling + pool (+ cross-section recycling as a fifth knob). **Fixed.**
+6. **Pool default auto-tracks window size; `maxPoolSize=4` is a pre-first-sync placeholder.** README correct. **Fixed.**
+7. **No `top:-9999` graceful-degradation in code.** README pre-0.83 fallback now described honestly (Fragment + UIScrollView clip). **Fixed.**
+8. **`processScroll` does NOT recompute per-item visual attrs in C++.** Used to claim this for radial/carousel3D/spiral/hex. C++ `processScroll` is always a pure range query; per-tick attribute writes happen in TypeScript inside `CollectionSubContainer`. `hex` is a static layout, not scroll-driven. **Fixed in this revision.**
+9. **`customLayout` already sets `writesVisualAttributes = true` internally** — users of the factory cannot toggle it. The flag is only relevant when implementing `RiffLayout` directly. **Fixed in this revision.**
+10. **"Flat int array per scroll event"** — actually a JSI object with scalar fields + a flat double-array of frames. **Fixed in this revision.**
 
 ---
 

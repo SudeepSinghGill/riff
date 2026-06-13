@@ -97,6 +97,157 @@ The proxy is reliable today but not semantically precise. `displayType == Displa
 
 **Priority:** Pick up before any concerted RN < 0.83 support work. Not urgent for the current target (RN 0.83.4).
 
+### B1.12 `mountedWindowSize` as a real mount ceiling (B-mount-cap-real)
+
+**Surfaced during:** mount-semantics discussion (2026-06-12).
+
+**Today's state.** `mountedWindowSize` is a *trim policy parameter* for `applyBudget` — it caps the render range itself but does not introduce a separate mount tier. The per-type slot pool (`recyclePoolSize`, default auto-sized to `max(renderRangeSize, maxHWindow×2, 8)`) is what retains slots beyond the render range. On RN 0.83+ pooled slots are `Activity=hidden` (no paint, effects suspended). On RN < 0.83 the Activity wrapper degrades to a `<>{children}</>` fragment — pooled cells render full cost on every parent reconcile, giving the pool a memory benefit (Fiber preserved) but zero compute benefit (and arguably a compute liability). Pool unmount happens only on overflow, which is unobservable to consumers.
+
+Three problems with the current semantics:
+
+1. **Pre-0.83 regression risk.** Pool members re-render on every parent commit when Activity is absent. `B1.11` plans a `measureAhead` clamp; `B-pre83-pool` plans a `maxPoolSize=0` clamp. Both are bandages on the underlying issue: the pool tier doesn't have a coherent mount story when Activity is unavailable.
+2. **Consumer mental model is opaque.** "How many cells stay mounted?" has no public-API answer today — it's `renderRange + pool`, where pool is auto-formula-sized and the value isn't surfaced. `mountedWindowSize` exists but doesn't actually mean what its name suggests.
+3. **`recyclePoolSize` exposed publicly is a footgun.** Consumers tune it without a clear mental model. The default auto formula often produces pool sizes comparable to render range, so on continuous scroll the pool churns rather than retains — the bounce-back state-preservation benefit is real but smaller than it sounds.
+
+**Proposal.** Make `mountedWindowSize` a real mount ceiling:
+
+- **Render range** (`renderMultiplier`) → painted, interactive. `Activity=visible` on 0.83+; normal render pre-0.83.
+- **Mounted-but-suspended band** (between render range and `mountedWindowSize × vpHeight`) →
+  - **0.83+:** mounted with `Activity=hidden`, effects suspended, paint suppressed.
+  - **pre-0.83:** *unmounted*. Activity-absent Fragment fallback gives no compute saving, so the band collapses to zero — items live only in the render range tier, outside that the cap is the unmount edge.
+- **Past `mountedWindowSize`** → always unmounted. Hard ceiling, observable, consumer-controlled.
+- **Slot pool** → internal optimization living inside the mounted band; not a public API. The "did this Fiber survive?" question becomes a function of "was this item inside `mountedWindowSize` at all points since it left the render range?", not "did the pool happen to retain it?"
+
+Public-API consequence: `recyclePoolSize` deprecated. `measureAhead` becomes a sub-range knob inside the mounted band (extend it ahead by N viewports for Yoga measurement), simpler semantics.
+
+**What this preserves.**
+- Render-range state preservation when items briefly leave and re-enter (within the mounted band, on 0.83+, the Fiber stays alive — same as today).
+- The C++ scroll hot path. Cap is a JS-side concept; C++ doesn't change.
+- Auto-formula intelligence — the cap's *default* can still be `max(2.0 × vpH, maxHWindow × 2 + renderRange, 8 cells)` so H-carousel-heavy pages get retention; consumers can override with a single number.
+
+**What it changes for consumers.**
+- Long-distance bounce-back loses Fiber preservation past the cap. Items returning from beyond `mountedWindowSize × vpHeight` cold-mount. Probably fine — consumers needing longer state preservation should externalize to a store anyway.
+- The `crossSectionRecycling` knob remains relevant (pool keying strategy is independent of pool retention semantics).
+
+**What we measure to validate.**
+- Storefront / homepage bench at default + extreme `mountedWindowSize` values — confirm CPU/memory profiles match or improve current pool-based scheme.
+- Pre-0.83 simulation (force `Activity = undefined`) — confirm compute drops vs current pool-renders-on-reconcile path.
+- Bounce-back smoothness on real device — visual regressions during fast V scroll where pool retention was masking cold-mount.
+
+**Backwards compat.**
+- `recyclePoolSize`: warn for one release, no-op for one more, remove. Document migration: "leave undefined; the default mount-cap auto-formula now handles retention."
+- `mountedWindowSize`: existing values (default 2.0) keep working, just gain hard-cap semantics. Document the contract change.
+
+**Effort:** ~3–5d.
+- SlotManager simplification: collapse pool into "mounted-band membership" check + LRU eviction at the cap.
+- `applyBudget` becomes the single ceiling enforcer; `recyclePoolSize`'s code paths fold in.
+- Pre-0.83 path: detect missing `Activity`, route the mounted band to "render range only" semantics.
+- Tests + bench validation.
+- README + protocol JSDoc updates.
+
+**Priority:** Pursue after `B1.11` (pre-0.83 `measureAhead` clamp) — that's a smaller fix that buys time. The bigger refactor can land in a Riff 2.x milestone. Worth doing before broad pre-0.83 adoption is encouraged.
+
+**Cross-references:** supersedes `B-pre83-pool` (folds into the unified mount-cap behaviour); reframes `B4.13` (memory-aware pool sizing → memory-aware mount cap); related to `B4.16` (per-H-section private pools — would become per-H-section sub-bands within the global cap).
+
+### B1.13 Making Riff impervious to Meta API drift (B-api-drift-defense)
+
+**Surfaced during:** architectural-stability discussion (2026-06-12).
+
+**Problem.** Riff uses several Fabric component-author APIs in unconventional ways. Most prominently: `RNMeasuredCellView` overrides `updateLayoutMetrics:` to *reject* the origin Fabric is about to apply (keeping the LayoutCache-set origin instead). The mechanism is documented and stable (`RCTViewComponentView::updateLayoutMetrics:` is part of the Fabric component-author API; core components like `RCTScrollViewComponentView` override it), but the *usage pattern* — overriding the hook to ignore Fabric's positioning — is not a documented pattern. It's the same architectural move that `react-native-screens`, Reanimated 3, and `react-native-skia` make (and that `RCTModalHostViewComponentView` makes most aggressively in core RN), but it places Riff in the broad "library that asserts non-Fabric authority for positioning" category that depends on stable platform internals.
+
+The risk isn't "Meta deletes `updateLayoutMetrics:`" — they can't, it would break their own ScrollView. The risk is signature changes, mount-pipeline reordering, or a new mount-layer step that *also* sets the frame after `updateLayoutMetrics:` has already run. Riff would need to chase those.
+
+**Five-layer defense strategy:**
+
+1. **Thin abstraction layer over platform hooks (highest leverage).** Concentrate every "creative" Fabric override behind one adapter — `RNFabricLayoutInterceptor` on iOS, `RNFabricLayoutInterceptor.kt` on Android. All of Riff's frame-application paths call into the adapter; the adapter is the only place that knows about `updateLayoutMetrics:` / `View.layout()`. A future signature change is a one-file fix. See B1.14 for the implementation plan.
+2. **CI matrix vs RN versions, including RN nightly.** Run Riff's bench + correctness suite against the two newest RN minors, RN nightly (catch breaks 4–8 weeks before they ship), and LTS. This is the single highest-value defense — you find out *first*, before consumers do. `react-native-screens` survives every RN release because they have exactly this.
+3. **Conformance harness mirroring how core RN uses the same hooks.** For every Fabric hook Riff uses, write a tiny test that exercises that hook the way `RCTScrollViewComponentView` (or another core component) does. If Meta changes the hook's contract, ScrollView breaks → your conformance test fails → you know within hours. This is meta-testing — testing the platform, not Riff.
+4. **Reduce surface area.** Audit every place Riff overrides Fabric internals. For each: is this load-bearing? The current audit shows the origin guard is the *only* truly creative usage; everything else (ShadowNode::layout override, custom State, applyPositionsFromState, KVO, JSI) is canonical pattern usage. A potential architectural move to eliminate even the origin guard is to delegate positioning to UICollectionView / RecyclerView entirely; see B-uicollectionview-spike.
+5. **Graceful degradation modes.** Build a `RIFF_FALLBACK_MODE` env-driven path that uses absolute positioning props (`position: 'absolute'`, `left`, `top` via React-rendered styles) instead of native frame writes. Performance drops 2–3×, but correctness holds. Never the default; a "broken glass" plan to keep shipping while the architectural fix lands.
+
+**Prioritization:**
+- **Tier 1 (do first, cheap):** #1 (abstraction layer — see B1.14) + #2 (CI matrix). Together ~3 days of setup. Pays off in every future RN bump.
+- **Tier 2 (medium, pays off when something breaks):** #3 (conformance harness) ~1 week. #5 (fallback mode) ~3 days.
+- **Tier 3 (architectural, requires evaluation):** #4 (UICollectionView migration — see B-uicollectionview-spike).
+
+**Effort:** Tier 1 ~3d, Tier 2 ~1.5w, Tier 3 see separate spike item.
+
+**Priority:** Tier 1 immediately, before Riff is positioned as production-grade. The CI matrix is what separates a hobby project from something teams can depend on.
+
+### B1.14 `RNFabricLayoutInterceptor` — unify creative Fabric overrides behind one adapter (B-fabric-interceptor)
+
+**Surfaced during:** architectural-stability discussion (2026-06-12).
+
+**Problem.** Riff's "creative" Fabric override (rejecting the origin in `updateLayoutMetrics:`) is implemented in three places today: `RNMeasuredCellView`, `RNCollectionViewContainerView`, `RNCollectionSubContainerView`. If Fabric changes the `updateLayoutMetrics:` signature in a future RN release, three files need updating under release pressure. Same applies to the Android port's `View.layout()` overrides.
+
+**Proposal.** Introduce one ObjC++ adapter `RNFabricLayoutInterceptor` (and one Kotlin/Java adapter `RNFabricLayoutInterceptor` on Android) that is the single entry point for all "Riff is overriding Fabric's positioning" logic. Every place that currently overrides `updateLayoutMetrics:` (or Android `View.layout()`) delegates to this adapter.
+
+**iOS sketch:**
+
+```objc
+@protocol RNExternallyPositioned <NSObject>
+@property (nonatomic, assign) BOOL shadowNodePositioned;
+- (CGRect)externalFrame;
+@end
+
+@interface RNFabricLayoutInterceptor : NSObject
+// Returns YES if Riff should override Fabric's metrics; outFrame is the LayoutCache-set frame.
++ (BOOL)shouldOverrideLayoutMetrics:(const facebook::react::LayoutMetrics&)metrics
+                            forView:(UIView<RNExternallyPositioned>*)view
+                           outFrame:(CGRect*)outFrame;
+
+// Single place to evolve the override policy (e.g., per-RN-version branching if needed).
+@end
+```
+
+Every view subclass's `updateLayoutMetrics:` override becomes a 3-line shim:
+
+```objc
+- (void)updateLayoutMetrics:(const LayoutMetrics&)metrics oldLayoutMetrics:(const LayoutMetrics&)oldMetrics {
+  CGRect overrideFrame;
+  if ([RNFabricLayoutInterceptor shouldOverrideLayoutMetrics:metrics forView:self outFrame:&overrideFrame]) {
+    LayoutMetrics adjusted = metrics;
+    adjusted.frame = facebook::react::Rect{ ... overrideFrame ... };
+    [super updateLayoutMetrics:adjusted oldLayoutMetrics:oldMetrics];
+    return;
+  }
+  [super updateLayoutMetrics:metrics oldLayoutMetrics:oldMetrics];
+}
+```
+
+If Fabric changes the override signature (`updateLayoutMetrics:newMetrics:context:` for example, or splits into two methods), only `RNFabricLayoutInterceptor` and the shim signatures change — Riff's logic stays in one place.
+
+**Android sketch (same shape):**
+
+```kotlin
+object RNFabricLayoutInterceptor {
+  fun shouldOverrideLayout(view: RNExternallyPositioned, l: Int, t: Int, r: Int, b: Int): Rect? {
+    // Returns null if Fabric's coordinates should pass through; returns override rect otherwise.
+  }
+}
+
+// In the view subclass:
+override fun layout(l: Int, t: Int, r: Int, b: Int) {
+  val override = RNFabricLayoutInterceptor.shouldOverrideLayout(this, l, t, r, b)
+  if (override != null) {
+    super.layout(override.left, override.top, override.right, override.bottom)
+  } else {
+    super.layout(l, t, r, b)
+  }
+}
+```
+
+**Additional benefits beyond drift defense:**
+- **Diagnostic centralization.** All "Riff is fighting Fabric for positioning" decisions log through one place — easier to instrument, easier to add per-decision counters.
+- **Per-version branching.** If RN 0.85 changes mount-pipeline ordering and Riff needs a different override strategy, the branching lives in the adapter, not in every override site.
+- **Testing.** Unit-testable in isolation; doesn't require a full RN harness to verify the override policy.
+
+**Effort:** ~1–2d for iOS, ~1d for Android (if/when Android port is updated). The iOS refactor is straightforward — three call sites today, all become one-line delegations to the adapter. The "hard" part is correctly designing the adapter's interface so it doesn't need to change when override policy evolves.
+
+**Priority:** Tier 1 of B1.13's defense strategy. Land this before the CI matrix, so the CI matrix has one file (not three) to validate against new RN versions. Quick win.
+
+**Cross-references:** part of B1.13 (drift defense umbrella); useful even if B-uicollectionview-spike concludes the bigger architectural move makes sense — the adapter pattern still applies to the smaller surface area in that world.
+
 ---
 
 ## B2 — High-Impact Features (Remaining)
@@ -207,13 +358,47 @@ Document + export the H-2 `RNCollectionSubContainer` framework so consumers can 
 
 ## B4 — Residual Perf (Remaining)
 
-### B4.5 Opt 3: Transform-based cell positioning
+### B4.5 Opt 3: Transform-based cell positioning (B-transform-positioning)
 
-Replace `setFrame:` with `layer.transform = CATransform3DMakeTranslation(x, y, 0)` in `applyPositionsFromState:`. For position-only changes, avoids UIView layout pass. Requires `hitTest:withEvent:` override on `_contentView`. Deferred during earlier perf work — revisit if native positioning shows up in profiles.
+**Surfaced during:** original perf plan; re-prioritised 2026-06-13 during Android-port debugging discussion.
 
-**Source:** PERF-PLAN.md Opt 3
+**Problem.** `applyPositionsFromState:` today writes `child.frame = CGRectMake(x, y, w, h)` per cell per commit. `setFrame:` triggers:
+- `setNeedsLayout` on the receiver
+- `layoutSubviews` if overridden by the cell's content
+- Recursive layout pass for size-dependent descendants
+- Composition update
 
-**Effort:** ~1d
+For position-only changes (the dominant case during steady-state scroll — Yoga sizes settle quickly, only `y` origins change), all of the above is wasted work. Cheaper paths exist:
+
+- **iOS, position-only:** `view.layer.position = CGPointMake(...)` or `view.center = ...` — no layout pass, just a CALayer property write.
+- **iOS, transform-based:** `view.transform = CGAffineTransformMakeTranslation(dx, dy)` — paint with offset, even cheaper.
+- **iOS, position + size:** fall back to `setFrame:` (today's path).
+- **Android, position-only:** `view.setTranslationX/Y` — no `layout()` pass.
+- **Android, position + size:** `view.layout(l, t, r, b)` (today's path on the Android port).
+
+**Per-cell diff strategy:**
+1. Cache each cell's *last-applied frame* in a sidecar map (`{tag → CGRect}`) on the container view.
+2. On each `applyPositionsFromState:` call, for each cell: diff new position+size vs cached.
+3. If size unchanged → cheap path (`layer.position` on iOS, `setTranslationX/Y` on Android). Update cache.
+4. If size changed → `setFrame:` / `view.layout(...)`. Update cache.
+
+**Expected impact.**
+- **iOS:** ~30–50% reduction in per-commit position-application cost. Most visible on storefront/homepage where many cells reposition per scroll tick.
+- **Android:** potentially **2–3× reduction**. Android's `view.layout(l, t, r, b)` is significantly more expensive than the iOS equivalent (broader layout-pass propagation, no UIKit-style lazy composition). The Android port's CPU regression vs FlashList may be partially explained by this — Android pays full layout-pass cost per cell per commit, where FlashList writes positions via `setTranslationX/Y` on absolute-positioned children.
+
+**Connection to the Android port.** This is a top suspect for the Android CPU regression (alongside missing origin guard, see B1.14). The Android port likely uses `view.layout(...)` for all position writes — full layout-pass cost per cell. Switching to `setTranslationX/Y` for size-unchanged cases would close a big slice of the iOS-vs-Android perf gap.
+
+**Implementation notes:**
+- The sidecar cache must invalidate when the cell is recycled (Case B in SlotManager) — different data may have arrived with different size expectations. Hook into SlotManager's slot reassignment.
+- Decoration views and supplementary views need the same treatment.
+- For sticky views (`RNScrollCoordinatedViewView`), the existing KVO-driven transform path already does this — no change needed there.
+- `hitTest:withEvent:` may need override if the content view's bounds no longer naturally clip subviews (depends on whether content view has clipsToBounds set).
+
+**Source:** PERF-PLAN.md Opt 3, plus 2026-06-13 architectural discussion.
+
+**Effort:** ~1d iOS + ~1d Android. Bench validation: re-run storefront and homepage on both platforms.
+
+**Priority:** **HIGH for Android port stabilization.** This may be the single biggest lever for closing the Android CPU gap vs FlashList. iOS gains are smaller but cumulative with B1.12 / B4.x work — worth doing as a package.
 
 ### B4.6 Opt 5: Flat arrays from spatial queries
 

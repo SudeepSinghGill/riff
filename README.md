@@ -22,7 +22,7 @@ Riff is a list and collection view for React Native New Architecture that runs i
 
 A homepage with a hero banner, a horizontal product carousel, a 2-column grid, a masonry, a full-width editorial strip, and a vertically-scrolling recommendations feed: in Riff this is one `CollectionView`, one scroll container, one set of infrastructure. Using `layout={compositional([...])}`, each section declares its own layout type and scroll direction. The next section can be a completely different layout. There is no nesting of list components, no per-section separate recycling pool, no per-section layout engine instance. All sections share one LayoutCache, one SlotManager, one ShadowNode — adding a new section type to a page costs nothing in infrastructure.
 
-```tsx
+``` tsx
 <CollectionView
   layout={compositional([
     { range: 0,       layout: list() },           // hero + editorial strip
@@ -39,7 +39,7 @@ This is Riff's equivalent of `UICollectionViewCompositionalLayout` — describe 
 
 ### 2. C++ layout engine — the scroll hot path is native
 
-Riff's layout engine runs in C++, inside Fabric's ShadowNode layout pass. During scroll, all position computation, spatial querying, and render-range calculation happens in C++ before any result reaches JS. JS receives a single flat int array per scroll event — no LayoutAttribute objects, no per-item bridge crossings. React reconciliation fires only when the render window boundary moves or content size changes; on steady-state scroll through a fully-measured list, JS executes fewer than 10 operations per frame.
+Riff's layout engine runs in C++, inside Fabric's ShadowNode layout pass. During scroll, all position computation, spatial querying, and render-range calculation happens in C++ before any result reaches JS. JS receives a small JSI result object — scalar range bounds (`renderFirst/Last`, `visibleFirst/Last`, `cacheVersion`) plus a flat double array of frames for the rendered range (4 floats per item) — no `LayoutAttribute` struct copies, no per-item bridge crossings. React reconciliation fires only when the render window boundary moves or content size changes; on steady-state scroll through a fully-measured list, JS executes fewer than 10 operations per frame.
 
 In our test bench (dummy e-commerce-like widgets, ~40 React nodes per card, iPhone 15 Pro), both Riff and FlashList achieve ~100% JS idle during scroll. The difference shows in CPU usage (2× lower for Riff) and memory (2× lower) — not raw FPS. The CPU gap comes from less React work per frame: no reconciliation on stable scroll, no per-item JS layout math.
 
@@ -91,7 +91,7 @@ Sticky views are wrapped in `RNScrollCoordinatedView`, which receives the view's
 
 ### 8. MVC — insert, delete, move, resize with partial reflow
 
-Insert at index 50 in a 1000-item list: C++ `invalidateFrom(50)` recomputes only items 50–999. Delete at 200: only 200–999. Resize at 75 (via `invalidateItem`): only 75–999. The LayoutCache version counter ensures stale positions are never applied. MVC (maintain visible content position) keeps the item at the top of the viewport stable across all mutation types — inserts or deletes above the current scroll position do not shift what the user sees.
+Insert at index 50 in a 1000-item list: C++ `invalidateFrom(50)` recomputes only items 50–999. Delete at 200: only 200–999. Resize at 75 (via `invalidateItem`): only 75–999. The LayoutCache version counter ensures stale positions are never applied. MVC (maintain visible content position, opt-in via `maintainVisibleContentPosition`) keeps the item at the top of the viewport stable across all mutation types — inserts or deletes above the current scroll position do not shift what the user sees.
 
 ### 9. `invalidateItem` — O(n − i) in-place cell resize
 
@@ -546,7 +546,7 @@ Riff's boundary views (`RNCollectionViewContainerView`, `RNMeasuredCellView`, `R
 
 **④ UIScrollViewDelegate — UI thread, before JS**
 
-`RNCollectionViewContainerView` is the UIScrollView's delegate. `scrollViewDidScroll:` fires on the UI thread — before the scroll event is delivered to JavaScript. Riff uses this to throttle and dispatch a JS-side scroll event; the native delegate does not call C++ layout work directly via JSI. JS receives the event and calls `nativeWindowController.processScroll` (for the main V) or `processHScroll` (for H sub-containers) via JSI. The returned render range and cache version drive a *band-skip* decision in JS — if neither has changed since the previous tick, React reconciliation is skipped entirely. What `processScroll` does in C++ depends on the layout type: for static layouts (`list`/`grid`/`masonry`/`flow`) it is an O(log n) binary search through cumulative positions, returning a render range with no per-item recomputation; for scroll-driven dynamic layouts (currently the `radial`/`carousel3D`/`spiral`/`hex` H section types) it additionally recomputes per-item frame, transform, alpha, and zIndex at the new scroll offset, because the layout's geometry is itself a function of scroll position. The full delegate chain — `willBeginDragging`, `didEndDragging:willDecelerate:`, `willBeginDecelerating`, `didEndDecelerating`, `didEndScrollingAnimation` — gives Riff precise knowledge of scroll phase for MVC snapshotting and for knowing when to flush deferred corrections.
+`RNCollectionViewContainerView` is the UIScrollView's delegate. `scrollViewDidScroll:` fires on the UI thread — before the scroll event is delivered to JavaScript. Riff uses this to throttle and dispatch a JS-side scroll event; the native delegate does not call C++ layout work directly via JSI. JS receives the event and calls `nativeWindowController.processScroll` (for the main V) or `processHScroll` (for H sub-containers) via JSI. The returned render range and cache version drive a *band-skip* decision in JS — if neither has changed since the previous tick, React reconciliation is skipped entirely. C++ `processScroll` is always a pure range query: it performs an O(log n) binary search (or spatial query for non-contiguous layouts) and returns a render range plus the flat frames array — it never recomputes visual attributes. Scroll-driven dynamic layouts (`radial`, `carousel3D`, `spiral`) live in TypeScript inside a `CollectionSubContainer`: they implement their own per-tick `processScroll(offset, ctx)` that writes new alpha / transform / zIndex into the LayoutCache via `setAttributesBatch` (JSI), and the C++ ShadowNode then applies them on the next layout pass. `hex` is a static tile layout — computed once in `prepare()`, no per-tick recompute. The full delegate chain — `willBeginDragging`, `didEndDragging:willDecelerate:`, `willBeginDecelerating`, `didEndDecelerating`, `didEndScrollingAnimation` — gives Riff precise knowledge of scroll phase for MVC snapshotting and for knowing when to flush deferred corrections.
 
 **⑤ KVO on `contentOffset` — UI thread (sticky views)**
 
@@ -987,11 +987,18 @@ layout={customLayout({
 
 `LayoutContext` provides: `containerWidth`, `containerHeight`, `scrollOffset`, `itemCount`, and the current Yoga-measured size for the item if available.
 
-### `writesVisualAttributes` — opt into the visual-attrs pipeline
+### `writesVisualAttributes` — gating the visual-attrs pipeline
 
-Layouts that need to push *per-frame* visual attributes (alpha, transform, zIndex) — radial, carousel3D, spiral, custom — set `writesVisualAttributes = true` on the layout object. Layouts that only position cells (list, grid, masonry, flow, and most compositional sections) leave it `false` (the default). Compositional layouts derive this flag automatically from their entries: if any nested section sets `true`, the parent inherits `true`.
+`writesVisualAttributes` is a flag on the `RiffLayout` protocol. When `true`, the native commit pipeline reads each cell's `alpha` / `zIndex` / `transform3D` from the LayoutCache and applies them to the corresponding `CALayer`. When `false` (the default for built-in static layouts), that entire per-cell block is skipped — a measurable CPU win on compositional pages dominated by static sections.
 
-The native side gates the visual-attrs path on this flag. When `false`, the per-commit pipeline that reads and applies alpha/transform/zIndex is skipped entirely — measurable CPU win on compositional pages where most sections are static. When `true`, it runs as before. Set this on any custom layout that needs the visual channel; leave it off if you only use the frame channel.
+You almost never need to set this yourself:
+
+- **Built-in static layouts** (`list`, `grid`, `masonry`, `flow`) leave it `false`.
+- **Built-in scroll-driven dynamic layouts** (`radial`, `carousel3D`, `spiral`) set it `true` internally.
+- **`customLayout(delegate)` sets it `true` by default** (safe choice — your delegate may return arbitrary alpha/transform/zIndex). It is baked into the engine; users of the `customLayout` factory do not need to opt in.
+- **`compositional` derives it automatically** as the union of its entries — if any sub-section is `true`, the parent inherits `true`.
+
+You only set it explicitly if you are implementing the `RiffLayout` protocol directly (bypassing `customLayout`). In that case, set it `false` to opt *out* of the visual-attrs path when you only write frames.
 
 ### Current status
 
