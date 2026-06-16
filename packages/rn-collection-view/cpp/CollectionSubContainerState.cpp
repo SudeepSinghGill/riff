@@ -31,6 +31,11 @@ folly::dynamic CollectionSubContainerState::getDynamic() const {
   folly::dynamic hs = folly::dynamic::array;
   folly::dynamic opacities = folly::dynamic::array;
   folly::dynamic zIndexes = folly::dynamic::array;
+  // hasTransform: one bool per child. childTransform: 16 floats per child,
+  // column-major (same layout as CATransform3D). Only populated when
+  // hasTransform is true; Android skips the block otherwise.
+  folly::dynamic hasTransformArr = folly::dynamic::array;
+  folly::dynamic transformArr = folly::dynamic::array;  // flat: N * 16
 
   for (const auto &child : children) {
     xs.push_back((double)child.x);
@@ -39,6 +44,16 @@ folly::dynamic CollectionSubContainerState::getDynamic() const {
     hs.push_back((double)child.h);
     opacities.push_back((double)child.opacity);
     zIndexes.push_back((double)child.zIndex);
+    hasTransformArr.push_back(child.hasTransform);
+    if (child.hasTransform) {
+      for (int k = 0; k < 16; ++k) {
+        transformArr.push_back((double)child.transform[k]);
+      }
+    } else {
+      // Push identity so the flat index stays aligned (16 values per child).
+      const double id[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+      for (int k = 0; k < 16; ++k) transformArr.push_back(id[k]);
+    }
   }
 
   folly::dynamic tagsArray = folly::dynamic::array;
@@ -55,6 +70,8 @@ folly::dynamic CollectionSubContainerState::getDynamic() const {
       ("childH", std::move(hs))
       ("childOpacity", std::move(opacities))
       ("childZIndex", std::move(zIndexes))
+      ("childHasTransform", std::move(hasTransformArr))
+      ("childTransform", std::move(transformArr))
       ("childTags", std::move(tagsArray))
       ("layoutRevision", layoutRevision);
 }

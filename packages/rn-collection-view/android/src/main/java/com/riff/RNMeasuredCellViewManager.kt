@@ -21,6 +21,10 @@ class RNMeasuredCellViewManager : ViewGroupManager<RNMeasuredCellView>(),
         const val NAME = "RNMeasuredCell"
     }
 
+    init {
+        setupViewRecycling()
+    }
+
     private val delegate = RNMeasuredCellManagerDelegate(this)
 
     override fun getName(): String = NAME
@@ -30,6 +34,19 @@ class RNMeasuredCellViewManager : ViewGroupManager<RNMeasuredCellView>(),
     override fun createViewInstance(context: ThemedReactContext): RNMeasuredCellView {
         return RNMeasuredCellView(context)
     }
+
+    override fun prepareToRecycleView(
+        reactContext: ThemedReactContext,
+        view: RNMeasuredCellView
+    ): RNMeasuredCellView {
+        view.prepareForRecycle()
+        return view
+    }
+
+    override fun recycleView(
+        reactContext: ThemedReactContext,
+        view: RNMeasuredCellView
+    ): RNMeasuredCellView = view
 
     @ReactProp(name = "type")
     override fun setType(view: RNMeasuredCellView, value: String?) {

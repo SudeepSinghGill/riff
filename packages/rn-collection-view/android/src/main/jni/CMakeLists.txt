@@ -75,6 +75,8 @@ target_link_libraries(
   fbjni
   jsi
   reactnative
+  android
+  log
 )
 
 target_compile_reactnative_options(${LIB_TARGET_NAME} PRIVATE)

@@ -20,6 +20,10 @@ class RNCollectionViewContainerViewManager : ViewGroupManager<RNCollectionViewCo
         const val NAME = "RNCollectionViewContainer"
     }
 
+    init {
+        setupViewRecycling()
+    }
+
     private val delegate = RNCollectionViewContainerManagerDelegate(this)
 
     override fun getName(): String = NAME
@@ -29,6 +33,19 @@ class RNCollectionViewContainerViewManager : ViewGroupManager<RNCollectionViewCo
     override fun createViewInstance(context: ThemedReactContext): RNCollectionViewContainerView {
         return RNCollectionViewContainerView(context)
     }
+
+    override fun prepareToRecycleView(
+        reactContext: ThemedReactContext,
+        view: RNCollectionViewContainerView
+    ): RNCollectionViewContainerView {
+        view.prepareForRecycle()
+        return view
+    }
+
+    override fun recycleView(
+        reactContext: ThemedReactContext,
+        view: RNCollectionViewContainerView
+    ): RNCollectionViewContainerView = view
 
     // ── Child management — route into internal contentView ───────────────────
 

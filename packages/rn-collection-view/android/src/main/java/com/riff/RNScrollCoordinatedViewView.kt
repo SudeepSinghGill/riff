@@ -36,6 +36,29 @@ class RNScrollCoordinatedViewView(context: Context) : FrameLayout(context) {
     private var isFooter: Boolean = false
     private var isHorizontal: Boolean = false
 
+    // ── Pending props — each setter stores here; flushPendingProps applies all ──
+    // This ensures any prop arriving in any Fabric commit order produces the
+    // correct final state (previously only behavior triggered updateProps).
+    var pendingBoundaryY: Float = Float.MAX_VALUE
+    var pendingBoundaryX: Float = Float.MAX_VALUE
+    var pendingHeaderHeight: Float = 0f
+    var pendingBehavior: String = "push"
+    var pendingEnabled: Boolean = true
+    var pendingKind: String = ""
+    var pendingHorizontal: Boolean = false
+
+    fun flushPendingProps() {
+        updateProps(
+            newBoundaryY    = pendingBoundaryY,
+            newBoundaryX    = pendingBoundaryX,
+            newHeaderHeight = pendingHeaderHeight,
+            behavior        = pendingBehavior,
+            newEnabled      = pendingEnabled,
+            kind            = pendingKind,
+            horizontal      = pendingHorizontal,
+        )
+    }
+
     // ── Parent scroll view tracking ──────────────────────────────────────────
     private var parentScrollView: ScrollView? = null
     private var parentHScrollView: HorizontalScrollView? = null

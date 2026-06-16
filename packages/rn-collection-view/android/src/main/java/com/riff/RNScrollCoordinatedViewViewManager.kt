@@ -10,6 +10,11 @@ import com.facebook.react.viewmanagers.RNScrollCoordinatedViewManagerInterface
 
 /**
  * Fabric ViewManager for RNScrollCoordinatedViewView (sticky headers/footers).
+ *
+ * All props are stored on the view and applied together so that any individual
+ * prop arriving in any order still produces correct sticky behaviour.
+ * Previously, only setBehavior called updateProps; all other setters were no-ops
+ * which meant boundary, headerHeight, enabled, kind, and horizontal were never applied.
  */
 @ReactModule(name = RNScrollCoordinatedViewViewManager.NAME)
 class RNScrollCoordinatedViewViewManager : ViewGroupManager<RNScrollCoordinatedViewView>(),
@@ -31,40 +36,53 @@ class RNScrollCoordinatedViewViewManager : ViewGroupManager<RNScrollCoordinatedV
 
     @ReactProp(name = "behavior")
     override fun setBehavior(view: RNScrollCoordinatedViewView, value: String?) {
-        view.updateProps(
-            newBoundaryY = Float.MAX_VALUE,
-            newBoundaryX = Float.MAX_VALUE,
-            newHeaderHeight = 0f,
-            behavior = value ?: "push",
-            newEnabled = true,
-            kind = "",
-            horizontal = false
-        )
+        view.pendingBehavior = value ?: "push"
+        view.flushPendingProps()
     }
 
     @ReactProp(name = "naturalY", defaultFloat = 0f)
-    override fun setNaturalY(view: RNScrollCoordinatedViewView, value: Float) {}
+    override fun setNaturalY(view: RNScrollCoordinatedViewView, value: Float) {
+        // naturalY is derived from layout position; no prop storage needed.
+    }
 
     @ReactProp(name = "boundaryY", defaultFloat = Float.MAX_VALUE)
-    override fun setBoundaryY(view: RNScrollCoordinatedViewView, value: Float) {}
+    override fun setBoundaryY(view: RNScrollCoordinatedViewView, value: Float) {
+        view.pendingBoundaryY = value
+        view.flushPendingProps()
+    }
 
     @ReactProp(name = "boundaryX", defaultFloat = Float.MAX_VALUE)
-    override fun setBoundaryX(view: RNScrollCoordinatedViewView, value: Float) {}
+    override fun setBoundaryX(view: RNScrollCoordinatedViewView, value: Float) {
+        view.pendingBoundaryX = value
+        view.flushPendingProps()
+    }
 
     @ReactProp(name = "headerHeight", defaultFloat = 0f)
-    override fun setHeaderHeight(view: RNScrollCoordinatedViewView, value: Float) {}
+    override fun setHeaderHeight(view: RNScrollCoordinatedViewView, value: Float) {
+        view.pendingHeaderHeight = value
+        view.flushPendingProps()
+    }
 
     @ReactProp(name = "enabled", defaultBoolean = true)
-    override fun setEnabled(view: RNScrollCoordinatedViewView, value: Boolean) {}
+    override fun setEnabled(view: RNScrollCoordinatedViewView, value: Boolean) {
+        view.pendingEnabled = value
+        view.flushPendingProps()
+    }
 
     @ReactProp(name = "horizontal", defaultBoolean = false)
-    override fun setHorizontal(view: RNScrollCoordinatedViewView, value: Boolean) {}
+    override fun setHorizontal(view: RNScrollCoordinatedViewView, value: Boolean) {
+        view.pendingHorizontal = value
+        view.flushPendingProps()
+    }
 
     @ReactProp(name = "type")
     override fun setType(view: RNScrollCoordinatedViewView, value: String?) {}
 
     @ReactProp(name = "kind")
-    override fun setKind(view: RNScrollCoordinatedViewView, value: String?) {}
+    override fun setKind(view: RNScrollCoordinatedViewView, value: String?) {
+        view.pendingKind = value ?: ""
+        view.flushPendingProps()
+    }
 
     @ReactProp(name = "index", defaultInt = 0)
     override fun setIndex(view: RNScrollCoordinatedViewView, value: Int) {}

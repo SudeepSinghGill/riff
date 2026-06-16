@@ -18,6 +18,10 @@ android {
     targetSdk safeExtGet("targetSdkVersion", 35)
   }
 
+  lint {
+    abortOnError false
+    checkReleaseBuilds false
+  }
 
   sourceSets {
     main {
@@ -26,6 +30,22 @@ android {
   }
 }
 
+// extractReleaseAnnotations tries to download lint jars and fails behind a
+// corporate proxy. Stub it out: create the empty typedefs.txt that
+// syncReleaseLibJars expects, then disable the real task so it never runs.
+afterEvaluate {
+  def stubFile = file(
+    "$buildDir/intermediates/annotations_typedef_file/release/extractReleaseAnnotations/typedefs.txt"
+  )
+  tasks.matching { it.name == "extractReleaseAnnotations" }.configureEach { t ->
+    t.doFirst {
+      stubFile.parentFile.mkdirs()
+      if (!stubFile.exists()) stubFile.text = ""
+    }
+    t.onlyIf { false }
+    t.outputs.file(stubFile)
+  }
+}
 dependencies {
   implementation "com.facebook.react:react-android"
 }

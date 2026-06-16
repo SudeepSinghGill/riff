@@ -28,12 +28,46 @@ class RNMeasuredCellView(context: Context) : FrameLayout(context) {
     private var lastFiredHeight: Int = 0
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        // When the ShadowNode (parent container) is the position authority, preserve the
+        // origin that applyPositionsFromState set via child.layout(). Only allow the size
+        // (right - left, bottom - top) to flow through from Yoga.
+        // Without this guard Fabric's sequential top-down layout() call overwrites the
+        // x/y that the C++ LayoutCache computed, causing cells to stack at y=0.
+        if (shadowNodePositioned && !changed) {
+            // Size hasn't changed and origin is already correct — nothing to do.
+            val w = right - left
+            val h = bottom - top
+            if (w == lastFiredWidth && h == lastFiredHeight) return
+            lastFiredWidth = w
+            lastFiredHeight = h
+            val density = resources.displayMetrics.density
+            dispatchOnMeasured(w / density, h / density)
+            return
+        }
+
+        if (shadowNodePositioned) {
+            // Size changed but we own the origin: re-apply the cached position so Fabric's
+            // layout call doesn't shift us to 0,0.
+            val w = right - left
+            val h = bottom - top
+            val l = this.left
+            val t = this.top
+            // Let super run with corrected geometry if Fabric changed the bounds.
+            super.onLayout(changed, l, t, l + w, t + h)
+
+            if (w == lastFiredWidth && h == lastFiredHeight) return
+            lastFiredWidth = w
+            lastFiredHeight = h
+            val density = resources.displayMetrics.density
+            dispatchOnMeasured(w / density, h / density)
+            return
+        }
+
         super.onLayout(changed, left, top, right, bottom)
 
         val w = right - left
         val h = bottom - top
 
-        // Skip if size hasn't changed or is degenerate.
         if (w == lastFiredWidth && h == lastFiredHeight) return
         if (h <= 0) return
 

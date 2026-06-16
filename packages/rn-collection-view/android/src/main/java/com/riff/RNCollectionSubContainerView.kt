@@ -37,6 +37,26 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
 
     private var scrollDirection: String = "none" // "none" | "horizontal" | "vertical"
 
+    // ── Pending props — stored by each setter; flushed atomically ────────────
+    // Fixes prop-ordering bug: previously each setter called updateProps with
+    // hardcoded "none"/0 for other values, so a later setLayoutCacheId would
+    // silently reset scrollDirection back to "none".
+    var pendingLayoutCacheId: Int = 0
+    var pendingSectionIndex: Int = 0
+    var pendingScrollDirection: String = "none"
+    var pendingContentWidth: Float = 0f
+    var pendingContentHeight: Float = 0f
+
+    fun flushPendingSubContainerProps() {
+        updateProps(
+            newSectionIndex    = pendingSectionIndex,
+            newLayoutCacheId   = pendingLayoutCacheId,
+            newScrollDirection = pendingScrollDirection,
+            contentWidth       = pendingContentWidth,
+            contentHeight      = pendingContentHeight,
+        )
+    }
+
     // ── Internal scroll view (created lazily) ────────────────────────────────
     private var hScrollView: HorizontalScrollView? = null
     private var vScrollView: ScrollView? = null
@@ -49,8 +69,10 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
     private var childH: FloatArray = FloatArray(0)
     private var childOpacity: FloatArray = FloatArray(0)
     private var childZIndex: FloatArray = FloatArray(0)
+    private var childHasTransform: BooleanArray = BooleanArray(0)
+    // Flat column-major 4×4 matrices, 16 floats per child (same layout as CATransform3D).
+    private var childTransforms: FloatArray = FloatArray(0)
     private var stateChildTags: IntArray = IntArray(0)
-    // TODO: transform matrix support (hasTransform + 16-float matrix per child)
 
     // ── Scroll position save/restore across Fabric recycles ──────────────────
     private var pendingRestoreScrollX: Float = 0f
@@ -109,15 +131,33 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
             reconfigureScrollView()
         }
 
-        // Apply content size to scroll view.
+        // Apply content size from props (prop-based fallback, same scroll-axis filtering as updateState).
         val density = resources.displayMetrics.density
         val cwPx = (contentWidth * density).toInt()
         val chPx = (contentHeight * density).toInt()
-        if (cwPx > 0 && chPx > 0) {
-            contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
-                width = cwPx
-                height = chPx
-            } ?: LayoutParams(cwPx, chPx)
+        when (scrollDirection) {
+            "horizontal" -> {
+                if (cwPx > 0) {
+                    contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
+                        width = cwPx
+                    } ?: LayoutParams(cwPx, LayoutParams.MATCH_PARENT)
+                }
+            }
+            "vertical" -> {
+                if (chPx > 0) {
+                    contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
+                        height = chPx
+                    } ?: LayoutParams(LayoutParams.MATCH_PARENT, chPx)
+                }
+            }
+            else -> {
+                if (cwPx > 0 && chPx > 0) {
+                    contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
+                        width = cwPx
+                        height = chPx
+                    } ?: LayoutParams(cwPx, chPx)
+                }
+            }
         }
     }
 
@@ -211,6 +251,7 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
     fun updateState(
         xs: FloatArray, ys: FloatArray, ws: FloatArray, hs: FloatArray,
         opacities: FloatArray, zIndexes: FloatArray,
+        hasTransforms: BooleanArray, transforms: FloatArray,
         tags: IntArray,
         contentWidth: Float, contentHeight: Float
     ) {
@@ -220,17 +261,47 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
         childH = hs
         childOpacity = opacities
         childZIndex = zIndexes
+        childHasTransform = hasTransforms
+        childTransforms = transforms
         stateChildTags = tags
 
-        // Apply content size to scroll view (scroll-axis only to avoid bounce disruption).
+        // Apply content size — only update the scroll axis to avoid disrupting
+        // rubber-band or deceleration on the cross-axis (matches iOS scroll-axis filtering).
         val density = resources.displayMetrics.density
         val cwPx = (contentWidth * density).toInt()
         val chPx = (contentHeight * density).toInt()
-        if (cwPx > 0 && chPx > 0) {
-            contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
-                width = cwPx
-                height = chPx
-            } ?: LayoutParams(cwPx, chPx)
+
+        when (scrollDirection) {
+            "horizontal" -> {
+                // H-scroll: width is the scroll axis; clamp height to max(bounds, contentHeight)
+                // so the H-scroll view always fills the wrapper height.
+                val boundsH = max(height, if (chPx > 0) chPx else height)
+                val newW = if (cwPx > 0) cwPx else contentViewChild.layoutParams?.width ?: 0
+                if (newW > 0 || boundsH > 0) {
+                    contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
+                        if (newW > 0) width = newW
+                        height = boundsH
+                    } ?: LayoutParams(newW, boundsH)
+                }
+            }
+            "vertical" -> {
+                // V-scroll: height is the scroll axis; keep width as-is.
+                val newH = if (chPx > 0) chPx else contentViewChild.layoutParams?.height ?: 0
+                if (newH > 0) {
+                    contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
+                        height = newH
+                    } ?: LayoutParams(LayoutParams.MATCH_PARENT, newH)
+                }
+            }
+            else -> {
+                // Non-scrollable: apply both when valid.
+                if (cwPx > 0 && chPx > 0) {
+                    contentViewChild.layoutParams = contentViewChild.layoutParams?.apply {
+                        width = cwPx
+                        height = chPx
+                    } ?: LayoutParams(cwPx, chPx)
+                }
+            }
         }
 
         applyChildVisualStates()
@@ -304,6 +375,62 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
             if (i < childZIndex.size && abs(child.translationZ - childZIndex[i]) > 1e-3f) {
                 child.translationZ = childZIndex[i]
             }
+
+            // 3D transform matrix — decompose column-major 4×4 into Android view properties.
+            // Handles the H-2 framework layouts: radial (scale), spiral (scale),
+            // carousel3D (rotateY + perspective), hex (identity).
+            if (i < childHasTransform.size) {
+                if (childHasTransform[i] && childTransforms.size >= (i + 1) * 16) {
+                    child.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                    applyTransform3D(child, childTransforms, i * 16, density)
+                } else if (!childHasTransform[i]) {
+                    // Reset to identity if a previously-transformed cell no longer has one.
+                    child.scaleX = 1f
+                    child.scaleY = 1f
+                    child.rotationY = 0f
+                    child.rotationX = 0f
+                    child.rotation = 0f
+                }
+            }
+        }
+    }
+
+    /**
+     * Decompose a column-major 4×4 CATransform3D matrix into Android View properties.
+     *
+     * Layout: t[col*4 + row], so:
+     *   m11=t[0]  m21=t[1]  m31=t[2]  m41=t[3]
+     *   m12=t[4]  m22=t[5]  m32=t[6]  m42=t[7]
+     *   m13=t[8]  m23=t[9]  m33=t[10] m43=t[11]
+     *   m14=t[12] m24=t[13] m34=t[14] m44=t[15]
+     *
+     * Handles the transforms produced by the H-2 layouts:
+     *   radial/spiral  → pure XY scale  (m11=m22=s, others identity)
+     *   carousel3D     → rotateY + perspective (m34 = -1/d in pt)
+     */
+    private fun applyTransform3D(view: View, t: FloatArray, offset: Int, density: Float) {
+        val m11 = t[offset + 0];  val m31 = t[offset + 2]
+        val m22 = t[offset + 5]
+        val m13 = t[offset + 8];  val m33 = t[offset + 10]
+        val m34 = t[offset + 14]
+
+        // Scale: column-0 magnitude for X, column-1 magnitude for Y.
+        // For pure rotateY, this correctly returns 1.0.
+        val scaleX = Math.sqrt((m11 * m11 + m31 * m31).toDouble()).toFloat()
+        val scaleY = m22  // column-1 magnitude for XY-uniform scale + rotateY
+
+        // RotationY: extracted from the rotation sub-matrix.
+        // For rotateY(θ): m11=cos θ, m13=-sin θ  → atan2(sin, cos) = atan2(-m13, m11)
+        val rotationYDeg = Math.toDegrees(Math.atan2(-m13.toDouble(), m11.toDouble())).toFloat()
+
+        view.scaleX = scaleX
+        view.scaleY = scaleY
+        view.rotationY = rotationYDeg
+
+        // Perspective: iOS m34 = -1/d (d in dp). Android cameraDistance is in px.
+        // Only set when non-zero to avoid overwriting the Android default.
+        if (m34 != 0f) {
+            view.cameraDistance = density / (-m34)
         }
     }
 
@@ -319,6 +446,23 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
         if (boundsChanged) {
             lastAppliedWidth = w
             lastAppliedHeight = h
+
+            // Sync scroll view frame to bounds — mirrors iOS _applyOrDeferScrollViewFrame.
+            // For H-scroll, also clamp the scroll view height to max(bounds, contentHeight)
+            // so the scroll area always covers the full wrapper height.
+            hScrollView?.let { hsv ->
+                val params = hsv.layoutParams as? LayoutParams ?: LayoutParams(
+                    LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT
+                )
+                val contentH = contentViewChild.layoutParams?.height ?: 0
+                params.width  = LayoutParams.MATCH_PARENT
+                params.height = max(h, if (contentH > 0) contentH else h)
+                hsv.layoutParams = params
+            }
+            vScrollView?.let { vsv ->
+                vsv.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            }
+
             applyChildVisualStates()
         }
     }
@@ -341,6 +485,8 @@ class RNCollectionSubContainerView(context: Context) : FrameLayout(context) {
         childH = FloatArray(0)
         childOpacity = FloatArray(0)
         childZIndex = FloatArray(0)
+        childHasTransform = BooleanArray(0)
+        childTransforms = FloatArray(0)
         stateChildTags = IntArray(0)
         lastScrollEventTime = 0
         lastAppliedWidth = 0
