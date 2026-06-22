@@ -114,9 +114,15 @@ class RiffModule(reactContext: ReactApplicationContext) :
     override fun initialize() {
         super.initialize()
         reactApplicationContext.registerComponentCallbacks(this)
-        val holder = reactApplicationContext.javaScriptContextHolder
-        if (holder != null && holder.get() != 0L) {
-            nativeInstall(holder.get())
+        // Must run on the JS thread — javaScriptContextHolder.get() is only a
+        // valid jsi::Runtime* when accessed from the JS queue thread. Calling it
+        // from mqt_v_native (where initialize() may arrive in bridgeless New Arch)
+        // produces a bad pointer whose vtable slot 0 reads as 0x0 → SIGSEGV.
+        reactApplicationContext.runOnJSQueueThread {
+            val holder = reactApplicationContext.javaScriptContextHolder
+            if (holder != null && holder.get() != 0L) {
+                nativeInstall(holder.get())
+            }
         }
     }
 

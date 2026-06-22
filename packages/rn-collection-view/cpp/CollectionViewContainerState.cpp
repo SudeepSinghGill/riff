@@ -11,7 +11,7 @@
 
 #include "CollectionViewContainerState.h"
 
-#ifdef RN_SERIALIZABLE_STATE
+#ifdef ANDROID
 #include <folly/dynamic.h>
 
 namespace facebook::react {
@@ -57,4 +57,4 @@ folly::dynamic CollectionViewContainerState::getDynamic() const {
 
 } // namespace facebook::react
 
-#endif // RN_SERIALIZABLE_STATE
+#endif // ANDROID

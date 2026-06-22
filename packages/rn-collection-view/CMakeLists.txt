@@ -9,6 +9,8 @@ set(RIFF_CPP_SOURCES
   cpp/CollectionViewModule.cpp
   cpp/CollectionViewContainerShadowNode.cpp
   cpp/CollectionSubContainerShadowNode.cpp
+  cpp/CollectionViewContainerState.cpp
+  cpp/CollectionSubContainerState.cpp
   cpp/LayoutCache.cpp
   cpp/DiffEngine.cpp
   cpp/SpatialIndex.cpp

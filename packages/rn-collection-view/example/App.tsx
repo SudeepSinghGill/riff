@@ -30,6 +30,9 @@ import StorefrontDemo from './screens/StorefrontDemo';
 import HomepageDemo from './screens/HomepageDemo';
 import SearchResultsDemo from './screens/SearchResultsDemo';
 
+// ── 0.80.2 Compatibility ──────────────────────────────────────────────────────
+import V0_ActivityProbe from './tests/V0_ActivityProbe';
+
 // ── Phase 1 — Layout Engine ───────────────────────────────────────────────────
 import M1_1_LayoutCache            from './tests/M1_1_LayoutCache';
 import M1_2_ListLayoutFixed        from './tests/M1_2_ListLayoutFixed';
@@ -141,6 +144,11 @@ const SCREENS: ScreenEntry[] = [
     group: 'Features & Comparison',
     component: SearchResultsDemo,
   },
+
+  // ── 0.80.2 Compatibility ──────────────────────────────────────────────────
+  { key: 'V0', label: 'Activity Probe — 0.80.2 compat',
+    detail: 'Confirms hidden Activity still lays out (Yoga measures) + suspends effects on RN 0.80.2 / React 19.1',
+    group: 'Tests — 0.80.2 Compatibility', component: V0_ActivityProbe },
 
   // ── Phase 1: Layout Engine ────────────────────────────────────────────────
   { key: 'M1_1', label: 'M1.1 — LayoutCache',
